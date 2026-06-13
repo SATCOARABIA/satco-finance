@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SATCO — Employee Finance & P&L</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f1f5f9; color:#0f172a; }
+  .container { max-width:1280px; margin:0 auto; padding:20px; }
+  .hr-btn { transition: background .15s; }
+  .hr-btn:hover { opacity:.9; }
+  .hr-row:hover { background:#f8fafc; }
+  ::-webkit-scrollbar { height:8px; width:8px; }
+  ::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// ============================================================
+// CONFIG — fill in your SATCO Accounts Supabase project here.
+// (Separate project from SATCO-HR to keep things light.)
+// ============================================================
+const SUPABASE_URL = 'https://mbwsfwebbrzurpozyxks.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1id3Nmd2ViYnJ6dXJwb3p5eGtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyODA0MzMsImV4cCI6MjA5Njg1NjQzM30.K2GhBkRnCCjwSv0n42fL-92k1HwXvmDnMszpFo4C8aY';
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Optional: read-only lookup of employees from SATCO-HR project,
+// just for the dropdown (Employee ID / Name). Leave as-is — these
+// are the same anon credentials already used in SATCO-HR.
+const HR_URL = 'https://oaerqjrkdpuhiproppaz.supabase.co';
+const HR_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hZXJxanJrZHB1aGlwcm9wcGF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTQ0NjksImV4cCI6MjA5NTUzMDQ2OX0.qBtb3OV1aFGX8e1QUg19qZmOwIIjipF6IZwBOLXY3YI';
+const hrDb = supabase.createClient(HR_URL, HR_KEY);
+
+const S = {
+  th: { textAlign:'left', padding:'8px 12px', fontSize:'11px', fontWeight:700, color:'#64748b', textTransform:'uppercase', letterSpacing:'.04em', whiteSpace:'nowrap' },
+  td: { padding:'8px 12px', verticalAlign:'middle' },
+  input: { padding:'8px 10px', border:'1px solid #cbd5e1', borderRadius:'6px', fontSize:'13px', fontFamily:'inherit' },
+  label: { display:'block', fontSize:'12px', fontWeight:600, color:'#475569', marginBottom:'4px' },
+  card: { background:'#fff', border:'1px solid #e2e8f0', borderRadius:'12px', overflow:'hidden' },
+  btnPri: { background:'#0f172a', color:'#fff', border:'none', padding:'9px 16px', borderRadius:'8px', fontSize:'13px', fontWeight:700, cursor:'pointer' },
+  iconBtn: { background:'none', border:'none', cursor:'pointer', fontSize:'15px', color:'#94a3b8', padding:'2px 6px' },
+};
+
+const fmt = (n) => (Number(n)||0).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
+const monthStr = (d) => d ? d.slice(0,7) : '';
+const firstOfMonth = (m) => m ? m + '-01' : null; // m = 'YYYY-MM'
+
+function AmountTag({ value }) {
+  const positive = value >= 0;
+  return (
+    <span style={{ fontWeight:800, color: positive ? '#166534' : '#dc2626' }}>
+      {positive ? '' : '-'}AED {fmt(Math.abs(value))}
+    </span>
+  );
+}
+
+// Generic Employee Picker — typeable, suggests from HR employee list
+function EmployeePicker({ employees, value, name, onChange }) {
+  return (
+    <div style={{ display:'flex', gap:'8px' }}>
+      <input list="emp-list" placeholder="Employee ID (e.g. SA1005)" value={value||''}
+        onChange={e => {
+          const id = e.target.value;
+          const match = employees.find(x => x.employee_id === id);
+          onChange(id, match ? match.full_name : name||'');
+        }}
+        style={{ ...S.input, width:'150px', fontFamily:'ui-monospace,monospace', fontWeight:700 }} />
+      <datalist id="emp-list">
+        {employees.map(e => <option key={e.id} value={e.employee_id}>{e.full_name}</option>)}
+      </datalist>
+      <input placeholder="Full name" value={name||''} onChange={e => onChange(value, e.target.value)}
+        style={{ ...S.input, flex:1 }} />
+    </div>
+  );
+}
+
+// ============================================================
+// Generic CRUD table for the 4 simple cost tables
+// ============================================================
+function CostTable({ title, table, employees, fields, dateField }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await db.from(table).select('*').order(dateField, { ascending:false });
+    if (!error) setRows(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const blank = () => {
+    const d = { employee_id:'', full_name:'' };
+    fields.forEach(f => d[f.key] = f.type === 'number' ? '' : '');
+    setDraft(d);
+  };
+
+  const save = async () => {
+    if (!draft.employee_id) return alert('Employee ID required');
+    const clean = { ...draft };
+    delete clean.id;
+    fields.forEach(f => { if (f.type === 'number') clean[f.key] = Number(clean[f.key]) || 0; });
+    if (draft.id) {
+      const { error } = await db.from(table).update(clean).eq('id', draft.id);
+      if (error) return alert(error.message);
+    } else {
+      const { error } = await db.from(table).insert(clean);
+      if (error) return alert(error.message);
+    }
+    setDraft(null); load();
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Delete this entry?')) return;
+    await db.from(table).delete().eq('id', id); load();
+  };
+
+  const total = rows.reduce((s,r) => s + (Number(r.cost)||0), 0);
+
+  return (
+    <div style={S.card}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc' }}>
+        <div>
+          <div style={{ fontWeight:800, fontSize:'14px' }}>{title}</div>
+          <div style={{ fontSize:'12px', color:'#64748b' }}>{rows.length} entries · Total AED {fmt(total)}</div>
+        </div>
+        <button style={S.btnPri} className="hr-btn" onClick={blank}>+ Add</button>
+      </div>
+
+      {draft && (
+        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
+          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr', gap:'10px', marginBottom:'8px' }}>
+            <div>
+              <label style={S.label}>Employee</label>
+              <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+                onChange={(id,name) => setDraft(d => ({...d, employee_id:id, full_name:name}))} />
+            </div>
+            {fields.map(f => (
+              <div key={f.key}>
+                <label style={S.label}>{f.label}</label>
+                {f.type === 'select'
+                  ? <select value={draft[f.key]||''} onChange={e=>setDraft(d=>({...d,[f.key]:e.target.value}))} style={{...S.input, width:'100%'}}>
+                      <option value="">--</option>
+                      {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  : <input type={f.type==='number'?'number':f.type==='date'?'date':'text'} value={draft[f.key]||''}
+                      onChange={e=>setDraft(d=>({...d,[f.key]:e.target.value}))} style={{...S.input, width:'100%'}} />}
+              </div>
+            ))}
+          </div>
+          <div style={{ display:'flex', gap:'8px' }}>
+            <button style={S.btnPri} onClick={save}>Save</button>
+            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ overflowX:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+          <thead>
+            <tr>
+              <th style={S.th}>Emp ID</th><th style={S.th}>Name</th>
+              {fields.map(f => <th key={f.key} style={S.th}>{f.label}</th>)}
+              <th style={S.th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? <tr><td colSpan={fields.length+3} style={{padding:'24px', textAlign:'center', color:'#94a3b8'}}>Loading…</td></tr>
+            : rows.length===0 ? <tr><td colSpan={fields.length+3} style={{padding:'24px', textAlign:'center', color:'#94a3b8'}}>No entries yet</td></tr>
+            : rows.map(r => (
+              <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+                <td style={{...S.td, fontFamily:'ui-monospace,monospace', fontWeight:700, color:'#2563eb'}}>{r.employee_id}</td>
+                <td style={{...S.td, fontWeight:600}}>{r.full_name}</td>
+                {fields.map(f => (
+                  <td key={f.key} style={S.td}>
+                    {f.type==='number' ? 'AED '+fmt(r[f.key]) : f.type==='date' ? (r[f.key]||'—') : (r[f.key]||'—')}
+                  </td>
+                ))}
+                <td style={{...S.td, textAlign:'right', whiteSpace:'nowrap'}}>
+                  <button style={S.iconBtn} onClick={()=>setDraft(r)}>&#9998;</button>
+                  <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Monthly Costs table (salary/food/accommodation/transport/other)
+// ============================================================
+function MonthlyCostsTable({ employees }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await db.from('employee_monthly_costs').select('*').order('month', { ascending:false });
+    if (!error) setRows(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const blank = () => setDraft({ employee_id:'', full_name:'', month:'', salary:'', food:'', accommodation:'', transport:'', other:'', remarks:'' });
+
+  const save = async () => {
+    if (!draft.employee_id || !draft.month) return alert('Employee ID and month are required');
+    const clean = {
+      employee_id: draft.employee_id, full_name: draft.full_name, month: firstOfMonth(draft.month),
+      salary: Number(draft.salary)||0, food: Number(draft.food)||0, accommodation: Number(draft.accommodation)||0,
+      transport: Number(draft.transport)||0, other: Number(draft.other)||0, remarks: draft.remarks||null,
+    };
+    if (draft.id) {
+      const { error } = await db.from('employee_monthly_costs').update(clean).eq('id', draft.id);
+      if (error) return alert(error.message);
+    } else {
+      const { error } = await db.from('employee_monthly_costs').upsert(clean, { onConflict:'employee_id,month' });
+      if (error) return alert(error.message);
+    }
+    setDraft(null); load();
+  };
+
+  const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; await db.from('employee_monthly_costs').delete().eq('id', id); load(); };
+
+  return (
+    <div style={S.card}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc' }}>
+        <div>
+          <div style={{ fontWeight:800, fontSize:'14px' }}>Monthly Costs (Salary, Food, Accommodation, Transport)</div>
+          <div style={{ fontSize:'12px', color:'#64748b' }}>One row per employee per month — include idle months too</div>
+        </div>
+        <button style={S.btnPri} onClick={blank}>+ Add Month</button>
+      </div>
+
+      {draft && (
+        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
+          <div style={{ marginBottom:'8px' }}>
+            <label style={S.label}>Employee</label>
+            <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+              onChange={(id,name)=>setDraft(d=>({...d, employee_id:id, full_name:name}))} />
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(6, 1fr)', gap:'10px', marginBottom:'8px' }}>
+            <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Salary</label><input type="number" value={draft.salary} onChange={e=>setDraft(d=>({...d,salary:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Food</label><input type="number" value={draft.food} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Transport</label><input type="number" value={draft.transport} onChange={e=>setDraft(d=>({...d,transport:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Other</label><input type="number" value={draft.other} onChange={e=>setDraft(d=>({...d,other:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+          </div>
+          <div style={{ marginBottom:'8px' }}>
+            <label style={S.label}>Remarks</label>
+            <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/>
+          </div>
+          <div style={{ display:'flex', gap:'8px' }}>
+            <button style={S.btnPri} onClick={save}>Save</button>
+            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ overflowX:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+          <thead><tr>
+            {['Emp ID','Name','Month','Salary','Food','Accom.','Transport','Other','Total',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {loading ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            : rows.length===0 ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            : rows.map(r => {
+              const tot = (r.salary||0)+(r.food||0)+(r.accommodation||0)+(r.transport||0)+(r.other||0);
+              return (
+                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+                  <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                  <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+                  <td style={S.td}>{monthStr(r.month)}</td>
+                  <td style={S.td}>{fmt(r.salary)}</td>
+                  <td style={S.td}>{fmt(r.food)}</td>
+                  <td style={S.td}>{fmt(r.accommodation)}</td>
+                  <td style={S.td}>{fmt(r.transport)}</td>
+                  <td style={S.td}>{fmt(r.other)}</td>
+                  <td style={{...S.td,fontWeight:700}}>{fmt(tot)}</td>
+                  <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                    <button style={S.iconBtn} onClick={()=>setDraft({...r, month: monthStr(r.month)})}>&#9998;</button>
+                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Timesheets (hours x rate -> income)
+// ============================================================
+function TimesheetsTable({ employees }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await db.from('employee_timesheets').select('*').order('month', { ascending:false });
+    if (!error) setRows(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const blank = () => setDraft({ employee_id:'', full_name:'', month:'', client_project:'', hours:'', rate:'', remarks:'' });
+
+  const save = async () => {
+    if (!draft.employee_id || !draft.month) return alert('Employee ID and month are required');
+    const clean = {
+      employee_id: draft.employee_id, full_name: draft.full_name, month: firstOfMonth(draft.month),
+      client_project: draft.client_project||null, hours: Number(draft.hours)||0, rate: Number(draft.rate)||0,
+      remarks: draft.remarks||null,
+    };
+    if (draft.id) {
+      const { error } = await db.from('employee_timesheets').update(clean).eq('id', draft.id);
+      if (error) return alert(error.message);
+    } else {
+      const { error } = await db.from('employee_timesheets').upsert(clean, { onConflict:'employee_id,month,client_project' });
+      if (error) return alert(error.message);
+    }
+    setDraft(null); load();
+  };
+
+  const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; await db.from('employee_timesheets').delete().eq('id', id); load(); };
+
+  const totalIncome = rows.reduce((s,r)=>s+(r.hours||0)*(r.rate||0),0);
+
+  return (
+    <div style={S.card}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc' }}>
+        <div>
+          <div style={{ fontWeight:800, fontSize:'14px' }}>Timesheets — Income (Hours × Rate)</div>
+          <div style={{ fontSize:'12px', color:'#64748b' }}>{rows.length} entries · Total income AED {fmt(totalIncome)}</div>
+        </div>
+        <button style={S.btnPri} onClick={blank}>+ Add</button>
+      </div>
+
+      {draft && (
+        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
+          <div style={{ marginBottom:'8px' }}>
+            <label style={S.label}>Employee</label>
+            <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+              onChange={(id,name)=>setDraft(d=>({...d, employee_id:id, full_name:name}))} />
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:'10px', marginBottom:'8px' }}>
+            <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="ENPPI, Target..."/></div>
+            <div><label style={S.label}>Hours</label><input type="number" value={draft.hours} onChange={e=>setDraft(d=>({...d,hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Rate (AED/hr)</label><input type="number" value={draft.rate} onChange={e=>setDraft(d=>({...d,rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+          </div>
+          {draft.hours && draft.rate && (
+            <div style={{ marginBottom:'8px', fontSize:'12px', color:'#166534', fontWeight:700 }}>
+              = AED {fmt(Number(draft.hours)*Number(draft.rate))} income for this month
+            </div>
+          )}
+          <div style={{ marginBottom:'8px' }}>
+            <label style={S.label}>Remarks</label>
+            <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/>
+          </div>
+          <div style={{ display:'flex', gap:'8px' }}>
+            <button style={S.btnPri} onClick={save}>Save</button>
+            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ overflowX:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+          <thead><tr>
+            {['Emp ID','Name','Month','Client/Project','Hours','Rate','Income',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {loading ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            : rows.length===0 ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            : rows.map(r => (
+              <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+                <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+                <td style={S.td}>{monthStr(r.month)}</td>
+                <td style={S.td}>{r.client_project||'—'}</td>
+                <td style={S.td}>{r.hours}</td>
+                <td style={S.td}>{fmt(r.rate)}</td>
+                <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt((r.hours||0)*(r.rate||0))}</td>
+                <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                  <button style={S.iconBtn} onClick={()=>setDraft({...r, month: monthStr(r.month)})}>&#9998;</button>
+                  <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// P&L Dashboard — pulls from views employee_pnl_monthly / employee_pnl_summary
+// ============================================================
+function PnlDashboard() {
+  const [summary, setSummary] = useState([]);
+  const [monthly, setMonthly] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedEmp, setSelectedEmp] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    const [s, m] = await Promise.all([
+      db.from('employee_pnl_summary').select('*').order('lifetime_net', { ascending:true }),
+      db.from('employee_pnl_monthly').select('*').order('month', { ascending:true }),
+    ]);
+    if (s.data) setSummary(s.data);
+    if (m.data) setMonthly(m.data);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const empMonthly = useMemo(() => monthly.filter(r => r.employee_id === selectedEmp), [monthly, selectedEmp]);
+
+  const grandTotals = summary.reduce((a,r)=>({
+    income: a.income + (r.lifetime_income||0),
+    expense: a.expense + (r.lifetime_expense||0),
+    net: a.net + (r.lifetime_net||0),
+  }), {income:0, expense:0, net:0});
+
+  return (
+    <div>
+      {/* Top summary cards */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'12px', marginBottom:'16px' }}>
+        <div style={{...S.card, padding:'16px'}}>
+          <div style={{ fontSize:'12px', color:'#64748b', fontWeight:600 }}>Total Income (all employees)</div>
+          <div style={{ fontSize:'22px', fontWeight:800, color:'#166534', marginTop:'6px' }}>AED {fmt(grandTotals.income)}</div>
+        </div>
+        <div style={{...S.card, padding:'16px'}}>
+          <div style={{ fontSize:'12px', color:'#64748b', fontWeight:600 }}>Total Expense (all employees)</div>
+          <div style={{ fontSize:'22px', fontWeight:800, color:'#dc2626', marginTop:'6px' }}>AED {fmt(grandTotals.expense)}</div>
+        </div>
+        <div style={{...S.card, padding:'16px'}}>
+          <div style={{ fontSize:'12px', color:'#64748b', fontWeight:600 }}>Net Profit / Loss</div>
+          <div style={{ fontSize:'22px', marginTop:'6px' }}><AmountTag value={grandTotals.net} /></div>
+        </div>
+      </div>
+
+      {/* Per-employee summary table */}
+      <div style={{...S.card, marginBottom:'16px'}}>
+        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', fontWeight:800, fontSize:'14px' }}>
+          Lifetime Profitability by Employee
+        </div>
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+            <thead><tr>{['Emp ID','Name','Total Income','Total Expense','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {loading ? <tr><td colSpan={7} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+              : summary.length===0 ? <tr><td colSpan={7} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No data yet — add entries in the tabs above</td></tr>
+              : summary.map(r => (
+                <tr key={r.employee_id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', cursor:'pointer', background: selectedEmp===r.employee_id?'#eff6ff':'transparent' }}
+                  onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>
+                  <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                  <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+                  <td style={{...S.td,color:'#166534',fontWeight:700}}>{fmt(r.lifetime_income)}</td>
+                  <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(r.lifetime_expense)}</td>
+                  <td style={S.td}><AmountTag value={r.lifetime_net} /></td>
+                  <td style={S.td}>
+                    {r.idle_months>0
+                      ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{r.idle_months} idle</span>
+                      : <span style={{color:'#cbd5e1'}}>—</span>}
+                  </td>
+                  <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px'}}>{selectedEmp===r.employee_id?'▲ hide months':'▼ view months'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Per-employee monthly breakdown */}
+      {selectedEmp && (
+        <div style={S.card}>
+          <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', fontWeight:800, fontSize:'14px' }}>
+            Monthly Breakdown — {selectedEmp}
+          </div>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+              <thead><tr>{['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Total Exp.','Income','Net P/L'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {empMonthly.map(r => (
+                  <tr key={r.month} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', background: r.total_income===0 ? '#fffbeb' : 'transparent' }}>
+                    <td style={{...S.td,fontWeight:700,whiteSpace:'nowrap'}}>{monthStr(r.month)}{r.total_income===0 && <span style={{marginLeft:'6px',fontSize:'10px',background:'#fde68a',color:'#92400e',padding:'1px 6px',borderRadius:'8px'}}>idle</span>}</td>
+                    <td style={S.td}>{fmt(r.salary)}</td>
+                    <td style={S.td}>{fmt(r.food)}</td>
+                    <td style={S.td}>{fmt(r.accommodation)}</td>
+                    <td style={S.td}>{fmt(r.transport)}</td>
+                    <td style={S.td}>{fmt(r.other_cost)}</td>
+                    <td style={S.td}>{fmt(r.visa_cost)}</td>
+                    <td style={S.td}>{fmt(r.flight_cost)}</td>
+                    <td style={S.td}>{fmt(r.training_cost)}</td>
+                    <td style={{...S.td,fontWeight:700,color:'#dc2626'}}>{fmt(r.total_expense)}</td>
+                    <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(r.total_income)}</td>
+                    <td style={S.td}><AmountTag value={r.net_profit_loss} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Main App
+// ============================================================
+function App() {
+  const [tab, setTab] = useState('dashboard');
+  const [employees, setEmployees] = useState([]);
+
+  useEffect(() => {
+    hrDb.from('employees').select('employee_id, full_name').order('employee_id')
+      .then(({ data, error }) => { if (!error && data) setEmployees(data); });
+  }, []);
+
+  const tabs = [
+    ['dashboard', '📊 P&L Dashboard'],
+    ['visa', '🛂 Visa Costs'],
+    ['flights', '✈️ Flights'],
+    ['training', '🎓 Trainings'],
+    ['monthly', '💵 Monthly Costs'],
+    ['timesheets', '🕒 Timesheets / Income'],
+  ];
+
+  return (
+    <div className="container">
+      <div style={{ marginBottom:'18px' }}>
+        <h1 style={{ margin:0, fontSize:'22px', fontWeight:800 }}>SATCO — Employee Finance &amp; P&amp;L</h1>
+        <div style={{ fontSize:'13px', color:'#64748b', marginTop:'4px' }}>
+          Track visa costs, flights, trainings, monthly recurring costs, and timesheet income per employee.
+        </div>
+      </div>
+
+      <div style={{ display:'flex', gap:'8px', marginBottom:'16px', flexWrap:'wrap' }}>
+        {tabs.map(([k,l]) => (
+          <button key={k} onClick={()=>setTab(k)}
+            style={{ padding:'9px 16px', borderRadius:'8px', border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'), background: tab===k?'#0f172a':'#fff', color: tab===k?'#fff':'#475569', fontWeight:700, fontSize:'13px', cursor:'pointer' }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'dashboard' && <PnlDashboard />}
+      {tab === 'visa' && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
+        fields={[
+          { key:'visa_type', label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation'] },
+          { key:'cost_date', label:'Date', type:'date' },
+          { key:'cost', label:'Cost (AED)', type:'number' },
+          { key:'remarks', label:'Remarks', type:'text' },
+        ]} />}
+      {tab === 'flights' && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
+        fields={[
+          { key:'flight_date', label:'Date', type:'date' },
+          { key:'sector', label:'Sector', type:'text' },
+          { key:'purpose', label:'Purpose', type:'select', options:['mobilization','demobilization','annual_leave','emergency'] },
+          { key:'cost', label:'Cost (AED)', type:'number' },
+          { key:'remarks', label:'Remarks', type:'text' },
+        ]} />}
+      {tab === 'training' && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date"
+        fields={[
+          { key:'training_name', label:'Training Name', type:'text' },
+          { key:'training_date', label:'Date', type:'date' },
+          { key:'cost', label:'Cost (AED)', type:'number' },
+          { key:'remarks', label:'Remarks', type:'text' },
+        ]} />}
+      {tab === 'monthly' && <MonthlyCostsTable employees={employees} />}
+      {tab === 'timesheets' && <TimesheetsTable employees={employees} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
