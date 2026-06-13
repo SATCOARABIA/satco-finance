@@ -415,9 +415,179 @@ function TimesheetsTable({ employees }) {
 }
 
 // ============================================================
+// Onboarding & Misc Costs — security deposit, agent commission,
+// salary advance (recoverable), local transport, medical test
+// food, food/accommodation pre-site, site accommodation, etc.
+// ============================================================
+const OTHER_COST_TYPES = [
+  { value:'security_deposit',           label:'Security Deposit (refundable, before visit visa)' },
+  { value:'agent_commission',           label:'Agent / Sourcing Commission (India/Nepal)' },
+  { value:'salary_advance',             label:'Salary Advance Given on Arrival' },
+  { value:'local_transport',            label:'Local Transport (taxi/bus during visa processing)' },
+  { value:'medical_test_expense',       label:'Medical Test Day — Food/Transport' },
+  { value:'food_accommodation_presite', label:'Food & Accommodation (before mobilization)' },
+  { value:'site_accommodation',         label:'Site Accommodation (if not by client)' },
+  { value:'visit_visa_extra',           label:'Visit Visa — Other Cost' },
+  { value:'other',                      label:'Other' },
+];
+const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o => [o.value, o.label]));
+
+function OtherCostsTable({ employees }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState(null);
+  const [filterEmp, setFilterEmp] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await db.from('employee_other_costs').select('*').order('cost_date', { ascending:false });
+    if (!error) setRows(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const blank = () => setDraft({
+    employee_id:'', full_name:'', cost_type:'security_deposit', cost_date:new Date().toISOString().slice(0,10),
+    amount:'', recoverable:false, recovered_amount:'', notes:'',
+  });
+
+  const save = async () => {
+    if (!draft.employee_id) return alert('Employee is required');
+    if (!draft.cost_type) return alert('Cost type is required');
+    const clean = {
+      employee_id: draft.employee_id, full_name: draft.full_name || null,
+      cost_type: draft.cost_type, cost_date: draft.cost_date || new Date().toISOString().slice(0,10),
+      amount: Number(draft.amount)||0, recoverable: !!draft.recoverable,
+      recovered_amount: Number(draft.recovered_amount)||0, notes: draft.notes || null,
+    };
+    if (draft.id) {
+      const { error } = await db.from('employee_other_costs').update(clean).eq('id', draft.id);
+      if (error) return alert(error.message);
+    } else {
+      const { error } = await db.from('employee_other_costs').insert(clean);
+      if (error) return alert(error.message);
+    }
+    setDraft(null); load();
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Delete this entry?')) return;
+    await db.from('employee_other_costs').delete().eq('id', id); load();
+  };
+
+  const visibleRows = useMemo(() => filterEmp ? rows.filter(r => r.employee_id === filterEmp) : rows, [rows, filterEmp]);
+  const total = visibleRows.reduce((s,r) => s + (Number(r.amount)||0), 0);
+  const totalRecovered = visibleRows.reduce((s,r) => s + (Number(r.recovered_amount)||0), 0);
+  const outstanding = visibleRows.reduce((s,r) => s + (r.recoverable ? (Number(r.amount)||0) - (Number(r.recovered_amount)||0) : 0), 0);
+
+  return (
+    <div style={S.card}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', flexWrap:'wrap', gap:'10px' }}>
+        <div>
+          <div style={{ fontWeight:800, fontSize:'14px' }}>Onboarding & Misc Costs</div>
+          <div style={{ fontSize:'12px', color:'#64748b' }}>
+            {visibleRows.length} entries · Total AED {fmt(total)} · Recovered AED {fmt(totalRecovered)} · Outstanding (advances) AED {fmt(outstanding)}
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+          <input list="emp-list-other" placeholder="Filter by Employee ID" value={filterEmp}
+            onChange={e=>setFilterEmp(e.target.value)} style={{ ...S.input, width:'170px' }} />
+          <datalist id="emp-list-other">
+            {employees.map(e => <option key={e.id||e.employee_id} value={e.employee_id}>{e.full_name}</option>)}
+          </datalist>
+          <button style={S.btnPri} onClick={blank}>+ Add</button>
+        </div>
+      </div>
+
+      {draft && (
+        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
+          <div style={{ marginBottom:'10px' }}>
+            <label style={S.label}>Employee</label>
+            <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+              onChange={(id,name)=>setDraft(d=>({...d, employee_id:id, full_name:name}))} />
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+            <div>
+              <label style={S.label}>Cost Type</label>
+              <select value={draft.cost_type} onChange={e=>setDraft(d=>({...d, cost_type:e.target.value}))} style={{...S.input, width:'100%'}}>
+                {OTHER_COST_TYPES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Date</label>
+              <input type="date" value={draft.cost_date} onChange={e=>setDraft(d=>({...d, cost_date:e.target.value}))} style={{...S.input, width:'100%'}} />
+            </div>
+            <div>
+              <label style={S.label}>Amount (AED)</label>
+              <input type="number" value={draft.amount} onChange={e=>setDraft(d=>({...d, amount:e.target.value}))} style={{...S.input, width:'100%'}} />
+            </div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 2fr', gap:'10px', marginBottom:'10px', alignItems:'end' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
+              <input type="checkbox" id="recov" checked={!!draft.recoverable} onChange={e=>setDraft(d=>({...d, recoverable:e.target.checked}))} style={{ width:'16px', height:'16px' }} />
+              <label htmlFor="recov" style={{ fontSize:'12.5px', fontWeight:600, color:'#475569' }}>
+                Recoverable from salary (e.g. advance)
+              </label>
+            </div>
+            <div>
+              <label style={S.label}>Recovered so far (AED)</label>
+              <input type="number" value={draft.recovered_amount} disabled={!draft.recoverable}
+                onChange={e=>setDraft(d=>({...d, recovered_amount:e.target.value}))} style={{...S.input, width:'100%', opacity: draft.recoverable?1:0.5}} />
+            </div>
+            <div>
+              <label style={S.label}>Notes</label>
+              <input value={draft.notes||''} onChange={e=>setDraft(d=>({...d, notes:e.target.value}))} style={{...S.input, width:'100%'}}
+                placeholder="e.g. Agent: ABC Manpower, Lucknow" />
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:'8px' }}>
+            <button style={S.btnPri} onClick={save}>Save</button>
+            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ overflowX:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+          <thead>
+            <tr>
+              {['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Notes',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            : visibleRows.length===0 ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            : visibleRows.map(r => {
+              const out = r.recoverable ? (Number(r.amount)||0) - (Number(r.recovered_amount)||0) : 0;
+              return (
+                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+                  <td style={{...S.td, fontFamily:'ui-monospace,monospace', fontWeight:700, color:'#2563eb'}}>{r.employee_id}</td>
+                  <td style={{...S.td, fontWeight:600}}>{r.full_name}</td>
+                  <td style={S.td}>{OTHER_COST_LABEL[r.cost_type] || r.cost_type}</td>
+                  <td style={S.td}>{r.cost_date || '—'}</td>
+                  <td style={{...S.td, fontWeight:700}}>{fmt(r.amount)}</td>
+                  <td style={S.td}>{r.recoverable ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span> : '—'}</td>
+                  <td style={S.td}>{r.recoverable ? fmt(r.recovered_amount) : '—'}</td>
+                  <td style={{...S.td, fontWeight:700, color: out>0 ? '#dc2626' : '#94a3b8'}}>{r.recoverable ? fmt(out) : '—'}</td>
+                  <td style={{...S.td, fontSize:'11.5px', maxWidth:'220px', whiteSpace:'normal'}}>{r.notes || '—'}</td>
+                  <td style={{...S.td, textAlign:'right', whiteSpace:'nowrap'}}>
+                    <button style={S.iconBtn} onClick={()=>setDraft({...r, cost_date: r.cost_date || ''})}>&#9998;</button>
+                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // P&L Dashboard — pulls from views employee_pnl_monthly / employee_pnl_summary
 // ============================================================
-function PnlDashboard() {
+function PnlDashboard({ empMeta }) {
   const [summary, setSummary] = useState([]);
   const [monthly, setMonthly] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -468,10 +638,10 @@ function PnlDashboard() {
         </div>
         <div style={{ overflowX:'auto' }}>
           <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
-            <thead><tr>{['Emp ID','Name','Total Income','Total Expense','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Emp ID','Name','Total Income','Total Expense','Onboarding Cost','Advance Outstanding','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={7} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-              : summary.length===0 ? <tr><td colSpan={7} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No data yet — add entries in the tabs above</td></tr>
+              {loading ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+              : summary.length===0 ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No data yet — add entries in the tabs above</td></tr>
               : summary.map(r => (
                 <tr key={r.employee_id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', cursor:'pointer', background: selectedEmp===r.employee_id?'#eff6ff':'transparent' }}
                   onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>
@@ -479,6 +649,10 @@ function PnlDashboard() {
                   <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
                   <td style={{...S.td,color:'#166534',fontWeight:700}}>{fmt(r.lifetime_income)}</td>
                   <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(r.lifetime_expense)}</td>
+                  <td style={S.td}>{fmt(r.lifetime_onboarding_cost)}</td>
+                  <td style={S.td}>{(r.advance_outstanding||0)>0
+                    ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(r.advance_outstanding)}</span>
+                    : <span style={{color:'#cbd5e1'}}>—</span>}</td>
                   <td style={S.td}><AmountTag value={r.lifetime_net} /></td>
                   <td style={S.td}>
                     {r.idle_months>0
@@ -493,6 +667,23 @@ function PnlDashboard() {
         </div>
       </div>
 
+      {/* Employee HR Snapshot (from SATCO-HR) */}
+      {selectedEmp && empMeta && empMeta[selectedEmp] && (
+        <div style={{...S.card, marginBottom:'16px', padding:'14px 18px'}}>
+          <div style={{ fontWeight:800, fontSize:'14px', marginBottom:'8px' }}>HR Snapshot — {empMeta[selectedEmp].full_name}</div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px', fontSize:'12.5px' }}>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Position</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].position||'—'}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Nationality</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].nationality||'—'}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Joining Date</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].joining_date||'—'}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Status</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].status||'—'}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Hired From</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].hired_from||'—'}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Supplier / Agent</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].supplier_name||'—'}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Mobilization Date</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].mobilization_date||'—'}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>Site / Location</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].location||'—'}</div></div>
+          </div>
+        </div>
+      )}
+
       {/* Per-employee monthly breakdown */}
       {selectedEmp && (
         <div style={S.card}>
@@ -501,7 +692,7 @@ function PnlDashboard() {
           </div>
           <div style={{ overflowX:'auto' }}>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
-              <thead><tr>{['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Total Exp.','Income','Net P/L'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <thead><tr>{['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Onboarding','Total Exp.','Income','Net P/L'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
               <tbody>
                 {empMonthly.map(r => (
                   <tr key={r.month} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', background: r.total_income===0 ? '#fffbeb' : 'transparent' }}>
@@ -514,6 +705,7 @@ function PnlDashboard() {
                     <td style={S.td}>{fmt(r.visa_cost)}</td>
                     <td style={S.td}>{fmt(r.flight_cost)}</td>
                     <td style={S.td}>{fmt(r.training_cost)}</td>
+                    <td style={S.td}>{fmt(r.onboarding_cost)}</td>
                     <td style={{...S.td,fontWeight:700,color:'#dc2626'}}>{fmt(r.total_expense)}</td>
                     <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(r.total_income)}</td>
                     <td style={S.td}><AmountTag value={r.net_profit_loss} /></td>
@@ -566,6 +758,7 @@ function App() {
   const [session, setSession] = useState(undefined);
   const [tab, setTab] = useState('dashboard');
   const [employees, setEmployees] = useState([]);
+  const [empMeta, setEmpMeta] = useState({}); // employee_id -> HR context
 
   useEffect(() => {
     db.auth.getSession().then(({ data }) => setSession(data.session));
@@ -574,8 +767,22 @@ function App() {
   }, []);
 
   useEffect(() => {
-    hrDb.from('employees').select('employee_id, full_name').order('employee_id')
-      .then(({ data, error }) => { if (!error && data) setEmployees(data); });
+    hrDb.from('employees')
+      .select('employee_id, full_name, position, nationality, joining_date, hired_from, supplier_name, status, visa_trade, department')
+      .order('employee_id')
+      .then(({ data, error }) => {
+        if (error || !data) return;
+        setEmployees(data.map(e => ({ employee_id: e.employee_id, full_name: e.full_name })));
+        const meta = {};
+        data.forEach(e => { meta[e.employee_id] = { ...e }; });
+        hrDb.from('mob_demob').select('employee_id, mobilization_date, demobilization_date, location, supply')
+          .then(({ data: md, error: mdErr }) => {
+            if (!mdErr && md) {
+              md.forEach(m => { if (meta[m.employee_id]) meta[m.employee_id] = { ...meta[m.employee_id], ...m }; });
+            }
+            setEmpMeta(meta);
+          });
+      });
   }, []);
 
   const tabs = [
@@ -583,6 +790,7 @@ function App() {
     ['visa', '🛂 Visa Costs'],
     ['flights', '✈️ Flights'],
     ['training', '🎓 Trainings'],
+    ['other', '🧾 Onboarding & Misc Costs'],
     ['monthly', '💵 Monthly Costs'],
     ['timesheets', '🕒 Timesheets / Income'],
   ];
@@ -613,7 +821,7 @@ function App() {
         ))}
       </div>
 
-      {tab === 'dashboard' && <PnlDashboard />}
+      {tab === 'dashboard' && <PnlDashboard empMeta={empMeta} />}
       {tab === 'visa' && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
         fields={[
           { key:'visa_type', label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation'] },
@@ -636,6 +844,7 @@ function App() {
           { key:'cost', label:'Cost (AED)', type:'number' },
           { key:'remarks', label:'Remarks', type:'text' },
         ]} />}
+      {tab === 'other' && <OtherCostsTable employees={employees} />}
       {tab === 'monthly' && <MonthlyCostsTable employees={employees} />}
       {tab === 'timesheets' && <TimesheetsTable employees={employees} />}
     </div>
