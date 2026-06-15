@@ -12,8 +12,6 @@
   * { box-sizing: border-box; }
   body { margin:0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f1f5f9; color:#0f172a; }
   .container { max-width:1400px; margin:0 auto; padding:20px; }
-  .hr-btn { transition: background .15s; }
-  .hr-btn:hover { opacity:.9; }
   .hr-row:hover { background:#f0f9ff !important; cursor:pointer; }
   ::-webkit-scrollbar { height:8px; width:8px; }
   ::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:4px; }
@@ -42,8 +40,31 @@ const S = {
   label:  { display:'block', fontSize:'12px', fontWeight:600, color:'#475569', marginBottom:'4px' },
   card:   { background:'#fff', border:'1px solid #e2e8f0', borderRadius:'12px', overflow:'hidden' },
   btnPri: { background:'#0f172a', color:'#fff', border:'none', padding:'9px 16px', borderRadius:'8px', fontSize:'13px', fontWeight:700, cursor:'pointer' },
+  btnExp: { background:'#166534', color:'#fff', border:'none', padding:'9px 14px', borderRadius:'8px', fontSize:'12px', fontWeight:700, cursor:'pointer' },
   iconBtn:{ background:'none', border:'none', cursor:'pointer', fontSize:'15px', color:'#94a3b8', padding:'2px 6px' },
 };
+
+// ── CSV EXPORT HELPER ─────────────────────────────────────────────
+function exportCSV(rows, filename, colDefs) {
+  if (!rows || rows.length === 0) return alert('No data to export');
+  const headers = colDefs.map(c => c.label);
+  const lines   = [headers.join(',')];
+  rows.forEach(r => {
+    const vals = colDefs.map(c => {
+      const v = r[c.key] !== undefined && r[c.key] !== null ? r[c.key] : '';
+      const s = String(v).replace(/"/g, '""');
+      return /[,"\n]/.test(s) ? `"${s}"` : s;
+    });
+    lines.push(vals.join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = filename + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 // ── HELPERS ──────────────────────────────────────────────────────
 const fmt      = (n) => (Number(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -59,12 +80,8 @@ function groupByMonth(rows, dateKey) {
   });
   const out = [];
   for (const [month, mrs] of map) {
-    out.push({
-      month,
-      rows: [...mrs].sort((a,b)=>(a.employee_id||'')<(b.employee_id||'')?-1:1)
-    });
+    out.push({ month, rows: [...mrs].sort((a,b)=>(a.employee_id||'')<(b.employee_id||'')?-1:1) });
   }
-  // Most recent month on top
   out.sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0);
   return out;
 }
@@ -115,25 +132,15 @@ function FilterBar({ fields, values, onChange, onClear }) {
 function MonthGroup({ month, count, colSpan }) {
   return (
     <tr>
-      <td colSpan={colSpan} style={{
-        padding:'5px 14px', background:'#1e293b',
-        color:'#94a3b8', fontSize:'11px', fontWeight:800,
-        letterSpacing:'.07em', whiteSpace:'nowrap',
-        borderTop:'3px solid #334155',
-      }}>
+      <td colSpan={colSpan} style={{ padding:'5px 14px', background:'#1e293b', color:'#94a3b8', fontSize:'11px', fontWeight:800, letterSpacing:'.07em', whiteSpace:'nowrap', borderTop:'3px solid #334155' }}>
         📅 {month}&nbsp;&nbsp;·&nbsp;&nbsp;{count} {count===1?'entry':'entries'}
       </td>
     </tr>
   );
 }
 
-// ── SHARED ───────────────────────────────────────────────────────
 function AmountTag({ value }) {
-  return (
-    <span style={{ fontWeight:800, color: value>=0?'#166534':'#dc2626' }}>
-      {value<0?'-':''}AED {fmt(Math.abs(value))}
-    </span>
-  );
+  return <span style={{ fontWeight:800, color: value>=0?'#166534':'#dc2626' }}>{value<0?'-':''}AED {fmt(Math.abs(value))}</span>;
 }
 
 function EmployeePicker({ employees, value, name, onChange }) {
@@ -148,7 +155,6 @@ function EmployeePicker({ employees, value, name, onChange }) {
   );
 }
 
-// ── MIGRATION BANNER ─────────────────────────────────────────────
 function MigrationBanner({ onDismiss }) {
   const sql = `-- Run once in Supabase SQL Editor (Finance project)
 ALTER TABLE employee_monthly_costs
@@ -167,16 +173,14 @@ ALTER TABLE employee_timesheets
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
       <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>⚠️ One-time Database Migration Required</div>
-      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>
-        Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only):
-      </div>
+      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
       <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>✓ I've run the migration — dismiss</button>
     </div>
   );
 }
 
-// ── GENERIC COST TABLE (Visa / Flights / Training) ───────────────
+// ── GENERIC COST TABLE ────────────────────────────────────────────
 function CostTable({ title, table, employees, fields, dateField }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
@@ -194,8 +198,7 @@ function CostTable({ title, table, employees, fields, dateField }) {
   const filterFields = [
     {key:'employee_id', label:'Emp ID',  width:'100px'},
     {key:'full_name',   label:'Name',    width:'150px'},
-    ...fields
-      .filter(f=>f.type!=='number'&&f.type!=='date')
+    ...fields.filter(f=>f.type!=='number'&&f.type!=='date')
       .map(f=>({key:f.key, label:f.label, options:f.options, width:f.type==='select'?'160px':'140px'})),
   ];
 
@@ -203,12 +206,18 @@ function CostTable({ title, table, employees, fields, dateField }) {
   const grouped  = useMemo(()=>groupByMonth(filtered,dateField),[filtered,dateField]);
   const colSpan  = fields.length + 3;
 
+  // CSV columns for this tab
+  const csvCols = [
+    {key:'employee_id', label:'Emp ID'},
+    {key:'full_name',   label:'Name'},
+    ...fields.map(f=>({key:f.key, label:f.label})),
+  ];
+
   const blank = () => {
     const d = {employee_id:'',full_name:''};
     fields.forEach(f=>d[f.key]=f.type==='number'?'':'');
     setDraft(d);
   };
-
   const save = async () => {
     if (!draft.employee_id) return alert('Employee ID required');
     const clean = {...draft}; delete clean.id;
@@ -219,12 +228,10 @@ function CostTable({ title, table, employees, fields, dateField }) {
     if (error) return alert(error.message);
     setDraft(null); load();
   };
-
   const remove = async (id) => {
-    if (!window.confirm('Delete this entry?')) return;
+    if (!window.confirm('Delete?')) return;
     await db.from(table).delete().eq('id',id); load();
   };
-
   const total = rows.reduce((s,r)=>s+(Number(r.cost)||0),0);
 
   return (
@@ -234,7 +241,10 @@ function CostTable({ title, table, employees, fields, dateField }) {
           <div style={{fontWeight:800,fontSize:'14px'}}>{title}</div>
           <div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total AED {fmt(total)}</div>
         </div>
-        <button style={S.btnPri} onClick={blank}>+ Add</button>
+        <div style={{display:'flex',gap:'8px'}}>
+          <button style={S.btnExp} onClick={()=>exportCSV(filtered, table, csvCols)}>⬇ Export CSV</button>
+          <button style={S.btnPri} onClick={blank}>+ Add</button>
+        </div>
       </div>
 
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
@@ -269,42 +279,37 @@ function CostTable({ title, table, employees, fields, dateField }) {
 
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead>
-            <tr>
-              <th style={S.th}>Emp ID</th>
-              <th style={S.th}>Name</th>
-              {fields.map(f=><th key={f.key} style={S.th}>{f.label}</th>)}
-              <th style={S.th}></th>
-            </tr>
-          </thead>
+          <thead><tr>
+            <th style={S.th}>Emp ID</th>
+            <th style={S.th}>Name</th>
+            {fields.map(f=><th key={f.key} style={S.th}>{f.label}</th>)}
+            <th style={S.th}></th>
+          </tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={colSpan} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-              : rows.length===0
-                ? <tr><td colSpan={colSpan} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-                : grouped.length===0
-                  ? <tr><td colSpan={colSpan} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries match the filters</td></tr>
-                  : grouped.map(g=>(
-                      <React.Fragment key={g.month}>
-                        <MonthGroup month={g.month} count={g.rows.length} colSpan={colSpan} />
-                        {g.rows.map(r=>(
-                          <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}
-                            onDoubleClick={()=>setDraft({...r})}>
-                            <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                            <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
-                            {fields.map(f=>(
-                              <td key={f.key} style={f.key==='remarks'?S.tdWrap:S.td}>
-                                {f.type==='number' ? 'AED '+fmt(r[f.key]) : (r[f.key]||'—')}
-                              </td>
-                            ))}
-                            <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r});}}>&#9998;</button>
-                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
+              : grouped.length===0
+                ? <tr><td colSpan={colSpan} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match the filters'}</td></tr>
+                : grouped.map(g=>(
+                    <React.Fragment key={g.month}>
+                      <MonthGroup month={g.month} count={g.rows.length} colSpan={colSpan} />
+                      {g.rows.map(r=>(
+                        <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}} onDoubleClick={()=>setDraft({...r})}>
+                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                          <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                          {fields.map(f=>(
+                            <td key={f.key} style={f.key==='remarks'?S.tdWrap:S.td}>
+                              {f.type==='number' ? 'AED '+fmt(r[f.key]) : (r[f.key]||'—')}
                             </td>
-                          </tr>
-                        ))}
-                      </React.Fragment>
-                    ))
+                          ))}
+                          <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                            <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r});}}>&#9998;</button>
+                            <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))
             }
           </tbody>
         </table>
@@ -313,7 +318,7 @@ function CostTable({ title, table, employees, fields, dateField }) {
   );
 }
 
-// ── MONTHLY COSTS ────────────────────────────────────────────────
+// ── MONTHLY COSTS ─────────────────────────────────────────────────
 function MonthlyCostsTable({ employees }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
@@ -338,6 +343,16 @@ function MonthlyCostsTable({ employees }) {
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
   const COLS = 13;
+
+  const csvCols = [
+    {key:'employee_id', label:'Emp ID'}, {key:'full_name', label:'Name'},
+    {key:'month', label:'Month'}, {key:'salary_type', label:'Type'},
+    {key:'salary', label:'Salary'}, {key:'food', label:'Food'},
+    {key:'accommodation', label:'Accommodation'}, {key:'transport', label:'Transport'},
+    {key:'other', label:'Other'}, {key:'salary_deductions', label:'Deductions'},
+    {key:'hours_worked', label:'Hours'}, {key:'hourly_rate', label:'Rate'},
+    {key:'remarks', label:'Remarks'},
+  ];
 
   const blank = ()=>setDraft({employee_id:'',full_name:'',month:'',salary_type:'monthly_basic',salary:'',food:'',accommodation:'',transport:'',other:'',remarks:'',hours_worked:'',hourly_rate:'',salary_deductions:''});
 
@@ -370,9 +385,12 @@ function MonthlyCostsTable({ employees }) {
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Costs (Salary, Food, Accommodation, Transport)</div>
-          <div style={{fontSize:'12px',color:'#64748b'}}>One row per employee per month — supports monthly basic and hourly rate contracts</div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>One row per employee per month</div>
         </div>
-        <button style={S.btnPri} onClick={blank}>+ Add Month</button>
+        <div style={{display:'flex',gap:'8px'}}>
+          <button style={S.btnExp} onClick={()=>exportCSV(filtered,'monthly_costs',csvCols)}>⬇ Export CSV</button>
+          <button style={S.btnPri} onClick={blank}>+ Add Month</button>
+        </div>
       </div>
 
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
@@ -393,8 +411,7 @@ function MonthlyCostsTable({ employees }) {
                   border:'1px solid '+(draft.salary_type===val?'#0f172a':'#cbd5e1'),
                   borderRadius:'8px',padding:'8px 14px',fontWeight:700,fontSize:'12.5px'}}>
                   <input type="radio" name="salary_type" value={val} checked={draft.salary_type===val}
-                    onChange={()=>setDraft(d=>({...d,salary_type:val}))} style={{display:'none'}} />
-                  {lbl}
+                    onChange={()=>setDraft(d=>({...d,salary_type:val}))} style={{display:'none'}} />{lbl}
                 </label>
               ))}
             </div>
@@ -407,12 +424,12 @@ function MonthlyCostsTable({ employees }) {
             <>
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
                 <div><label style={S.label}>Hours Worked</label><input type="number" value={draft.hours_worked||''} onChange={e=>setDraft(d=>({...d,hours_worked:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="208"/></div>
-                <div><label style={S.label}>Hourly Rate (AED/hr)</label><input type="number" step="0.01" value={draft.hourly_rate||''} onChange={e=>setDraft(d=>({...d,hourly_rate:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="7.50"/></div>
+                <div><label style={S.label}>Hourly Rate (AED/hr)</label><input type="number" step="0.01" value={draft.hourly_rate||''} onChange={e=>setDraft(d=>({...d,hourly_rate:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
                 <div><label style={S.label}>Salary Deductions (AED)</label><input type="number" value={draft.salary_deductions||''} onChange={e=>setDraft(d=>({...d,salary_deductions:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               </div>
               {(draft.hours_worked&&draft.hourly_rate)&&(
                 <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
-                  <div>Gross: <strong>AED {fmt(hourlyGross)}</strong> · Deductions: <strong style={{color:'#dc2626'}}>AED {fmt(draft.salary_deductions||0)}</strong> · Net: <strong style={{color:netPayable>=0?'#166534':'#dc2626'}}>AED {fmt(netPayable)}</strong></div>
+                  Gross: <strong>AED {fmt(hourlyGross)}</strong> · Deductions: <strong style={{color:'#dc2626'}}>AED {fmt(draft.salary_deductions||0)}</strong> · Net: <strong style={{color:netPayable>=0?'#166534':'#dc2626'}}>AED {fmt(netPayable)}</strong>
                 </div>
               )}
               <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
@@ -450,45 +467,39 @@ function MonthlyCostsTable({ employees }) {
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-              : rows.length===0
-                ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-                : grouped.length===0
-                  ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries match the filters</td></tr>
-                  : grouped.map(g=>(
-                      <React.Fragment key={g.month}>
-                        <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
-                        {g.rows.map(r=>{
-                          const rIsH = r.salary_type==='hourly';
-                          const ded  = Number(r.salary_deductions)||0;
-                          const tot  = (r.salary||0)+(r.food||0)+(r.accommodation||0)+(r.transport||0)+(r.other||0)-ded;
-                          return (
-                            <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}
-                              onDoubleClick={()=>setDraft({...r,month:monthStr(r.month),salary_type:r.salary_type||'monthly_basic'})}>
-                              <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                              <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
-                              <td style={S.td}>{monthStr(r.month)}</td>
-                              <td style={S.td}>
-                                {rIsH
-                                  ? <span style={{background:'#e0f2fe',color:'#0369a1',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>
-                                  : <span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>📅 Monthly</span>}
-                              </td>
-                              <td style={S.td}>{rIsH?<span title={`${r.hours_worked||0}h × ${r.hourly_rate||0}`}>{fmt(r.salary)}</span>:fmt(r.salary)}</td>
-                              <td style={S.td}>{fmt(r.food)}</td>
-                              <td style={S.td}>{fmt(r.accommodation)}</td>
-                              <td style={S.td}>{fmt(r.transport)}</td>
-                              <td style={S.td}>{fmt(r.other)}</td>
-                              <td style={{...S.td,color:'#dc2626'}}>{ded>0?'-'+fmt(ded):'—'}</td>
-                              <td style={{...S.td,fontWeight:700,color:tot>=0?'#0f172a':'#dc2626'}}>{fmt(tot)}</td>
-                              <td style={S.tdWrap}>{r.remarks||'—'}</td>
-                              <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                                <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r,month:monthStr(r.month),salary_type:r.salary_type||'monthly_basic'});}}>&#9998;</button>
-                                <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </React.Fragment>
-                    ))
+              : grouped.length===0
+                ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match filters'}</td></tr>
+                : grouped.map(g=>(
+                    <React.Fragment key={g.month}>
+                      <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
+                      {g.rows.map(r=>{
+                        const rIsH=r.salary_type==='hourly';
+                        const ded=Number(r.salary_deductions)||0;
+                        const tot=(r.salary||0)+(r.food||0)+(r.accommodation||0)+(r.transport||0)+(r.other||0)-ded;
+                        return (
+                          <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}
+                            onDoubleClick={()=>setDraft({...r,month:monthStr(r.month),salary_type:r.salary_type||'monthly_basic'})}>
+                            <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                            <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                            <td style={S.td}>{monthStr(r.month)}</td>
+                            <td style={S.td}>{rIsH?<span style={{background:'#e0f2fe',color:'#0369a1',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>:<span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>📅 Monthly</span>}</td>
+                            <td style={S.td}>{fmt(r.salary)}</td>
+                            <td style={S.td}>{fmt(r.food)}</td>
+                            <td style={S.td}>{fmt(r.accommodation)}</td>
+                            <td style={S.td}>{fmt(r.transport)}</td>
+                            <td style={S.td}>{fmt(r.other)}</td>
+                            <td style={{...S.td,color:'#dc2626'}}>{ded>0?'-'+fmt(ded):'—'}</td>
+                            <td style={{...S.td,fontWeight:700}}>{fmt(tot)}</td>
+                            <td style={S.tdWrap}>{r.remarks||'—'}</td>
+                            <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r,month:monthStr(r.month),salary_type:r.salary_type||'monthly_basic'});}}>&#9998;</button>
+                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))
             }
           </tbody>
         </table>
@@ -497,7 +508,7 @@ function MonthlyCostsTable({ employees }) {
   );
 }
 
-// ── TIMESHEETS ───────────────────────────────────────────────────
+// ── TIMESHEETS ────────────────────────────────────────────────────
 function TimesheetsTable({ employees }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
@@ -524,22 +535,24 @@ function TimesheetsTable({ employees }) {
   const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
   const COLS = 10;
 
-  const blank = ()=>setDraft({employee_id:'',full_name:'',month:'',client_project:'',income_type:'hourly',hours:'',rate:'',direct_income:'',remarks:''});
+  const csvCols = [
+    {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
+    {key:'month',label:'Month'},{key:'client_project',label:'Client/Project'},
+    {key:'income_type',label:'Mode'},{key:'hours',label:'Hours'},
+    {key:'rate',label:'Rate'},{key:'remarks',label:'Remarks'},
+  ];
 
+  const blank = ()=>setDraft({employee_id:'',full_name:'',month:'',client_project:'',income_type:'hourly',hours:'',rate:'',direct_income:'',remarks:''});
   const rowIncome = (r)=>(r.hours||0)*(r.rate||0);
   const totalIncome = rows.reduce((s,r)=>s+rowIncome(r),0);
 
   const openEdit = (r) => {
-    const isDir = r.income_type==='direct';
-    setDraft({...r, month:monthStr(r.month), income_type:r.income_type||'hourly',
-      direct_income:isDir?r.rate:'', hours:isDir?'':r.hours, rate:isDir?'':r.rate});
+    const isDir=r.income_type==='direct';
+    setDraft({...r,month:monthStr(r.month),income_type:r.income_type||'hourly',direct_income:isDir?r.rate:'',hours:isDir?'':r.hours,rate:isDir?'':r.rate});
   };
-
   const save = async () => {
     if (!draft.employee_id||!draft.month) return alert('Employee ID and month are required');
-    const isDir = draft.income_type==='direct';
-    if (isDir&&!draft.direct_income) return alert('Total income amount is required');
-    if (!isDir&&(!draft.hours||!draft.rate)) return alert('Hours and rate are required');
+    const isDir=draft.income_type==='direct';
     const clean = {
       employee_id:draft.employee_id, full_name:draft.full_name, month:firstOfMonth(draft.month),
       client_project:draft.client_project||null,
@@ -547,32 +560,32 @@ function TimesheetsTable({ employees }) {
       rate:isDir?Number(draft.direct_income)||0:Number(draft.rate)||0,
       remarks:draft.remarks||null,
     };
-    const withType = {...clean, income_type:draft.income_type||'hourly'};
+    const withType={...clean,income_type:draft.income_type||'hourly'};
     let error;
     if (draft.id) {
       ({error}=await db.from('employee_timesheets').update(withType).eq('id',draft.id));
-      if (error&&(error.message||'').includes('income_type'))
-        ({error}=await db.from('employee_timesheets').update(clean).eq('id',draft.id));
+      if (error&&(error.message||'').includes('income_type')) ({error}=await db.from('employee_timesheets').update(clean).eq('id',draft.id));
     } else {
       ({error}=await db.from('employee_timesheets').upsert(withType,{onConflict:'employee_id,month,client_project'}));
-      if (error&&(error.message||'').includes('income_type'))
-        ({error}=await db.from('employee_timesheets').upsert(clean,{onConflict:'employee_id,month,client_project'}));
+      if (error&&(error.message||'').includes('income_type')) ({error}=await db.from('employee_timesheets').upsert(clean,{onConflict:'employee_id,month,client_project'}));
     }
     if (error) return alert(error.message);
     setDraft(null); load();
   };
   const remove = async (id)=>{ if(!window.confirm('Delete?'))return; await db.from('employee_timesheets').delete().eq('id',id); load(); };
-
-  const isDirect = draft&&draft.income_type==='direct';
+  const isDirect=draft&&draft.income_type==='direct';
 
   return (
     <div style={S.card}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>Timesheets — Income</div>
-          <div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total income AED {fmt(totalIncome)}</div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total AED {fmt(totalIncome)}</div>
         </div>
-        <button style={S.btnPri} onClick={blank}>+ Add</button>
+        <div style={{display:'flex',gap:'8px'}}>
+          <button style={S.btnExp} onClick={()=>exportCSV(filtered,'timesheets',csvCols)}>⬇ Export CSV</button>
+          <button style={S.btnPri} onClick={blank}>+ Add</button>
+        </div>
       </div>
 
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
@@ -602,13 +615,13 @@ function TimesheetsTable({ employees }) {
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 2fr',gap:'10px',marginBottom:'10px'}}>
               <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Total Income (AED)</label><input type="number" step="0.01" value={draft.direct_income||''} onChange={e=>setDraft(d=>({...d,direct_income:e.target.value}))} style={{...S.input,width:'100%'}} autoFocus/></div>
-              <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="ENPPI, Brunel…"/></div>
+              <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
             </div>
           ) : (
             <>
               <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'8px'}}>
                 <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-                <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="ENPPI…"/></div>
+                <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
                 <div><label style={S.label}>Hours</label><input type="number" value={draft.hours||''} onChange={e=>setDraft(d=>({...d,hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
                 <div><label style={S.label}>Rate (AED/hr)</label><input type="number" step="0.001" value={draft.rate||''} onChange={e=>setDraft(d=>({...d,rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               </div>
@@ -628,47 +641,37 @@ function TimesheetsTable({ employees }) {
 
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead><tr>
-            {['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}
-          </tr></thead>
+          <thead><tr>{['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-              : rows.length===0
-                ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-                : grouped.length===0
-                  ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries match the filters</td></tr>
-                  : grouped.map(g=>(
-                      <React.Fragment key={g.month}>
-                        <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
-                        {g.rows.map(r=>{
-                          const isDir=r.income_type==='direct';
-                          const inc=rowIncome(r);
-                          return (
-                            <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}
-                              onDoubleClick={()=>openEdit(r)}>
-                              <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                              <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
-                              <td style={S.td}>{monthStr(r.month)}</td>
-                              <td style={{...S.td,whiteSpace:'normal'}}>{r.client_project||'—'}</td>
-                              <td style={S.td}>
-                                {isDir
-                                  ? <span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>💰 Direct</span>
-                                  : <span style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>}
-                              </td>
-                              <td style={{...S.td,color:'#94a3b8'}}>{isDir?'—':r.hours}</td>
-                              <td style={{...S.td,color:'#94a3b8'}}>{isDir?'—':fmt(r.rate)}</td>
-                              <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(inc)}</td>
-                              <td style={S.tdWrap}>{r.remarks||'—'}</td>
-                              <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                                <button style={S.iconBtn} onClick={e=>{e.stopPropagation();openEdit(r);}}>&#9998;</button>
-                                <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </React.Fragment>
-                    ))
+              : grouped.length===0
+                ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match filters'}</td></tr>
+                : grouped.map(g=>(
+                    <React.Fragment key={g.month}>
+                      <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
+                      {g.rows.map(r=>{
+                        const isDir=r.income_type==='direct';
+                        return (
+                          <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}} onDoubleClick={()=>openEdit(r)}>
+                            <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                            <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                            <td style={S.td}>{monthStr(r.month)}</td>
+                            <td style={{...S.td,whiteSpace:'normal'}}>{r.client_project||'—'}</td>
+                            <td style={S.td}>{isDir?<span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>💰 Direct</span>:<span style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>}</td>
+                            <td style={{...S.td,color:'#94a3b8'}}>{isDir?'—':r.hours}</td>
+                            <td style={{...S.td,color:'#94a3b8'}}>{isDir?'—':fmt(r.rate)}</td>
+                            <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(rowIncome(r))}</td>
+                            <td style={S.tdWrap}>{r.remarks||'—'}</td>
+                            <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();openEdit(r);}}>&#9998;</button>
+                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))
             }
           </tbody>
         </table>
@@ -677,7 +680,7 @@ function TimesheetsTable({ employees }) {
   );
 }
 
-// ── ONBOARDING & MISC COSTS ──────────────────────────────────────
+// ── ONBOARDING & MISC COSTS ───────────────────────────────────────
 const OTHER_COST_TYPES = [
   {value:'security_deposit',           label:'Security Deposit (received from employee — Income)'},
   {value:'agent_commission',           label:'Agent / Sourcing Commission'},
@@ -693,11 +696,11 @@ const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o.l
 const CURRENCIES = ['INR','PKR','PHP','NPR','LKR','BDT','USD','EUR','GBP','SAR','QAR','KWD','OMR','BHD'];
 
 function OtherCostsTable({ employees }) {
-  const [rows, setRows]         = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [draft, setDraft]       = useState(null);
-  const [filters, setFilters]   = useState({});
-  const [fxStatus, setFxStatus] = useState('');
+  const [rows, setRows]           = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [draft, setDraft]         = useState(null);
+  const [filters, setFilters]     = useState({});
+  const [fxStatus, setFxStatus]   = useState('');
   const [fxLoading, setFxLoading] = useState(false);
 
   const load = async () => {
@@ -720,6 +723,15 @@ function OtherCostsTable({ employees }) {
   const grouped  = useMemo(()=>groupByMonth(filtered,'cost_date'),[filtered]);
   const COLS = 10;
 
+  const csvCols = [
+    {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
+    {key:'cost_type',label:'Cost Type'},{key:'cost_date',label:'Date'},
+    {key:'amount',label:'Amount (AED)'},{key:'original_currency',label:'Orig Currency'},
+    {key:'original_amount',label:'Orig Amount'},{key:'exchange_rate',label:'Exchange Rate'},
+    {key:'recoverable',label:'Recoverable'},{key:'recovered_amount',label:'Recovered'},
+    {key:'notes',label:'Remarks'},
+  ];
+
   const blank = ()=>{ setFxStatus(''); setDraft({employee_id:'',full_name:'',cost_type:'security_deposit',cost_date:new Date().toISOString().slice(0,10),amount:'',recoverable:false,recovered_amount:'',notes:'',original_currency:'INR',original_amount:'',exchange_rate:''}); };
 
   const fetchFxRate = async () => {
@@ -729,31 +741,24 @@ function OtherCostsTable({ employees }) {
     const directUrl=`https://api.frankfurter.app/${draft.cost_date}?from=${cur}&to=AED`;
     let json=null;
     try { const res=await fetch(directUrl,{mode:'cors'}); if(res.ok) json=await res.json(); } catch(_){}
-    if (!json) {
-      try { const res2=await fetch(`https://corsproxy.io/?${encodeURIComponent(directUrl)}`); if(res2.ok) json=await res2.json(); } catch(e2){}
-    }
+    if (!json) { try { const res2=await fetch(`https://corsproxy.io/?${encodeURIComponent(directUrl)}`); if(res2.ok) json=await res2.json(); } catch(e2){} }
     setFxLoading(false);
     if (json&&json.rates&&json.rates.AED) {
       const rate=json.rates.AED;
       const aed=(Number(draft.original_amount)*rate).toFixed(2);
       setDraft(d=>({...d,exchange_rate:rate,amount:aed,notes:`${cur} ${Number(d.original_amount).toLocaleString()} × ${rate} = AED ${aed} (date: ${json.date})`}));
       setFxStatus(`✓ 1 ${cur} = ${rate} AED  (${json.date})`);
-    } else {
-      setFxStatus('Could not fetch rate. Enter AED amount manually.');
-    }
+    } else { setFxStatus('Could not fetch rate. Enter AED amount manually.'); }
   };
 
   const save = async () => {
     if (!draft.employee_id) return alert('Employee is required');
-    if (!draft.cost_type) return alert('Cost type is required');
     const clean = {
       employee_id:draft.employee_id, full_name:draft.full_name||null,
       cost_type:draft.cost_type, cost_date:draft.cost_date||new Date().toISOString().slice(0,10),
       amount:Number(draft.amount)||0, recoverable:!!draft.recoverable,
       recovered_amount:Number(draft.recovered_amount)||0, notes:draft.notes||null,
-      original_currency:draft.original_currency||null,
-      original_amount:Number(draft.original_amount)||null,
-      exchange_rate:Number(draft.exchange_rate)||null,
+      original_currency:draft.original_currency||null, original_amount:Number(draft.original_amount)||null, exchange_rate:Number(draft.exchange_rate)||null,
     };
     const {error} = draft.id
       ? await db.from('employee_other_costs').update(clean).eq('id',draft.id)
@@ -764,10 +769,9 @@ function OtherCostsTable({ employees }) {
   const remove = async (id)=>{ if(!window.confirm('Delete?'))return; await db.from('employee_other_costs').delete().eq('id',id); load(); };
 
   const isDeposit = draft&&draft.cost_type==='security_deposit';
-  const visibleRows = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
-  const totalDeposits = visibleRows.filter(r=>r.cost_type==='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
-  const totalExpense  = visibleRows.filter(r=>r.cost_type!=='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
-  const outstanding   = visibleRows.reduce((s,r)=>s+(r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0),0);
+  const totalDeposits = filtered.filter(r=>r.cost_type==='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const totalExpense  = filtered.filter(r=>r.cost_type!=='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const outstanding   = filtered.reduce((s,r)=>s+(r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0),0);
 
   return (
     <div style={S.card}>
@@ -775,12 +779,15 @@ function OtherCostsTable({ employees }) {
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>Onboarding & Misc Costs</div>
           <div style={{fontSize:'12px',color:'#64748b'}}>
-            {visibleRows.length} entries · Expense AED {fmt(totalExpense)}
+            {filtered.length} entries · Expense AED {fmt(totalExpense)}
             {totalDeposits>0&&<span style={{color:'#166534',fontWeight:700}}> · 💰 Deposits: AED {fmt(totalDeposits)}</span>}
             {' · '}Outstanding AED {fmt(outstanding)}
           </div>
         </div>
-        <button style={S.btnPri} onClick={blank}>+ Add</button>
+        <div style={{display:'flex',gap:'8px'}}>
+          <button style={S.btnExp} onClick={()=>exportCSV(filtered,'onboarding_misc',csvCols)}>⬇ Export CSV</button>
+          <button style={S.btnPri} onClick={blank}>+ Add</button>
+        </div>
       </div>
 
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
@@ -793,16 +800,12 @@ function OtherCostsTable({ employees }) {
               onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))} />
           </div>
           <div style={{display:'grid',gridTemplateColumns:'2fr 1fr',gap:'10px',marginBottom:'10px'}}>
-            <div>
-              <label style={S.label}>Cost Type</label>
+            <div><label style={S.label}>Cost Type</label>
               <select value={draft.cost_type} onChange={e=>setDraft(d=>({...d,cost_type:e.target.value}))} style={{...S.input,width:'100%'}}>
                 {OTHER_COST_TYPES.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
-            <div>
-              <label style={S.label}>Date</label>
-              <input type="date" value={draft.cost_date} onChange={e=>setDraft(d=>({...d,cost_date:e.target.value}))} style={{...S.input,width:'100%'}} />
-            </div>
+            <div><label style={S.label}>Date</label><input type="date" value={draft.cost_date} onChange={e=>setDraft(d=>({...d,cost_date:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
           </div>
           {isDeposit && (
             <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'12px 14px',marginBottom:'10px'}}>
@@ -820,26 +823,14 @@ function OtherCostsTable({ employees }) {
               {fxStatus&&<div style={{marginTop:'8px',fontSize:'11.5px',color:fxStatus.startsWith('✓')?'#166534':'#dc2626',fontWeight:600}}>{fxStatus}</div>}
             </div>
           )}
-          {!isDeposit&&(
-            <div style={{marginBottom:'10px'}}>
-              <label style={S.label}>Amount (AED)</label>
-              <input type="number" value={draft.amount||''} onChange={e=>setDraft(d=>({...d,amount:e.target.value}))} style={{...S.input,width:'200px'}} />
-            </div>
-          )}
+          {!isDeposit&&(<div style={{marginBottom:'10px'}}><label style={S.label}>Amount (AED)</label><input type="number" value={draft.amount||''} onChange={e=>setDraft(d=>({...d,amount:e.target.value}))} style={{...S.input,width:'200px'}} /></div>)}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 2fr',gap:'10px',marginBottom:'10px',alignItems:'end'}}>
             <div style={{display:'flex',alignItems:'center',gap:'8px',paddingTop:'18px'}}>
               <input type="checkbox" id="recov" checked={!!draft.recoverable} onChange={e=>setDraft(d=>({...d,recoverable:e.target.checked}))} style={{width:'16px',height:'16px'}} />
               <label htmlFor="recov" style={{fontSize:'12.5px',fontWeight:600,color:'#475569'}}>Recoverable from salary</label>
             </div>
-            <div>
-              <label style={S.label}>Recovered so far (AED)</label>
-              <input type="number" value={draft.recovered_amount||''} disabled={!draft.recoverable}
-                onChange={e=>setDraft(d=>({...d,recovered_amount:e.target.value}))} style={{...S.input,width:'100%',opacity:draft.recoverable?1:0.5}} />
-            </div>
-            <div>
-              <label style={S.label}>Remarks</label>
-              <input value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="Notes / agent / details" />
-            </div>
+            <div><label style={S.label}>Recovered so far (AED)</label><input type="number" value={draft.recovered_amount||''} disabled={!draft.recoverable} onChange={e=>setDraft(d=>({...d,recovered_amount:e.target.value}))} style={{...S.input,width:'100%',opacity:draft.recoverable?1:0.5}} /></div>
+            <div><label style={S.label}>Remarks</label><input value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
           </div>
           <div style={{display:'flex',gap:'8px'}}>
             <button style={S.btnPri} onClick={save}>Save</button>
@@ -850,50 +841,39 @@ function OtherCostsTable({ employees }) {
 
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead>
-            <tr>{['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr>
-          </thead>
+          <thead><tr>{['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-              : rows.length===0
-                ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-                : grouped.length===0
-                  ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries match the filters</td></tr>
-                  : grouped.map(g=>(
-                      <React.Fragment key={g.month}>
-                        <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
-                        {g.rows.map(r=>{
-                          const out=r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0;
-                          const isDep=r.cost_type==='security_deposit';
-                          return (
-                            <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:isDep?'#f0fdf4':'transparent'}}
-                              onDoubleClick={()=>{setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>
-                              <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                              <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
-                              <td style={{...S.td,whiteSpace:'normal',maxWidth:'220px',fontSize:'11.5px'}}>
-                                {isDep
-                                  ? <span>💰 <span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>Income</span> {OTHER_COST_LABEL[r.cost_type]||r.cost_type}</span>
-                                  : (OTHER_COST_LABEL[r.cost_type]||r.cost_type)}
-                              </td>
-                              <td style={S.td}>{r.cost_date||'—'}</td>
-                              <td style={{...S.td,fontWeight:700,color:isDep?'#166534':'#0f172a'}}>
-                                {isDep?'+':''}{fmt(r.amount)}
-                                {r.original_currency&&r.original_amount&&<div style={{fontSize:'10px',color:'#94a3b8'}}>{r.original_currency} {Number(r.original_amount).toLocaleString()}</div>}
-                              </td>
-                              <td style={S.td}>{!isDep&&r.recoverable?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span>:'—'}</td>
-                              <td style={S.td}>{!isDep&&r.recoverable?fmt(r.recovered_amount):'—'}</td>
-                              <td style={{...S.td,fontWeight:700,color:out>0?'#dc2626':'#94a3b8'}}>{!isDep&&r.recoverable?fmt(out):'—'}</td>
-                              <td style={S.tdWrap}>{r.notes||'—'}</td>
-                              <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                                <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>&#9998;</button>
-                                <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </React.Fragment>
-                    ))
+              : grouped.length===0
+                ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match filters'}</td></tr>
+                : grouped.map(g=>(
+                    <React.Fragment key={g.month}>
+                      <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
+                      {g.rows.map(r=>{
+                        const out=r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0;
+                        const isDep=r.cost_type==='security_deposit';
+                        return (
+                          <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:isDep?'#f0fdf4':'transparent'}}
+                            onDoubleClick={()=>{setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>
+                            <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                            <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                            <td style={{...S.td,whiteSpace:'normal',maxWidth:'220px',fontSize:'11.5px'}}>{isDep?<span>💰 <span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>Income</span> {OTHER_COST_LABEL[r.cost_type]||r.cost_type}</span>:(OTHER_COST_LABEL[r.cost_type]||r.cost_type)}</td>
+                            <td style={S.td}>{r.cost_date||'—'}</td>
+                            <td style={{...S.td,fontWeight:700,color:isDep?'#166534':'#0f172a'}}>{isDep?'+':''}{fmt(r.amount)}{r.original_currency&&r.original_amount&&<div style={{fontSize:'10px',color:'#94a3b8'}}>{r.original_currency} {Number(r.original_amount).toLocaleString()}</div>}</td>
+                            <td style={S.td}>{!isDep&&r.recoverable?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span>:'—'}</td>
+                            <td style={S.td}>{!isDep&&r.recoverable?fmt(r.recovered_amount):'—'}</td>
+                            <td style={{...S.td,fontWeight:700,color:out>0?'#dc2626':'#94a3b8'}}>{!isDep&&r.recoverable?fmt(out):'—'}</td>
+                            <td style={S.tdWrap}>{r.notes||'—'}</td>
+                            <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>&#9998;</button>
+                              <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))
             }
           </tbody>
         </table>
@@ -902,16 +882,15 @@ function OtherCostsTable({ employees }) {
   );
 }
 
-// ── P&L DASHBOARD ────────────────────────────────────────────────
+// ── P&L DASHBOARD ─────────────────────────────────────────────────
 function PnlDashboard({ empMeta }) {
-  const [summary,    setSummary]    = useState([]);
-  const [monthly,    setMonthly]    = useState([]);
-  const [deposits,   setDeposits]   = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [selectedEmp, setSelectedEmp] = useState(null);
-  const [filters,    setFilters]    = useState({});
-  // Per-employee notes: month (YYYY-MM) → { remarks, deposit, recoveries[] }
-  const [empNotes,   setEmpNotes]   = useState({});
+  const [summary,      setSummary]      = useState([]);
+  const [monthly,      setMonthly]      = useState([]);
+  const [deposits,     setDeposits]     = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [selectedEmp,  setSelectedEmp]  = useState(null);
+  const [filters,      setFilters]      = useState({});
+  const [empNotes,     setEmpNotes]     = useState({});
   const [notesLoading, setNotesLoading] = useState(false);
 
   const load = async () => {
@@ -928,45 +907,31 @@ function PnlDashboard({ empMeta }) {
   };
   useEffect(()=>{load();},[]);
 
-  // When employee is selected, fetch their monthly remarks + other costs for notes column
   useEffect(()=>{
     if (!selectedEmp) { setEmpNotes({}); return; }
     setNotesLoading(true);
     Promise.all([
-      db.from('employee_monthly_costs')
-        .select('month,remarks')
-        .eq('employee_id', selectedEmp),
-      db.from('employee_other_costs')
-        .select('cost_date,cost_type,amount,recoverable,recovered_amount,notes')
-        .eq('employee_id', selectedEmp),
-    ]).then(([mc, oc]) => {
-      const map = {};
-      // Salary remarks
-      if (mc.data) mc.data.forEach(r => {
-        const m = String(r.month||'').slice(0,7);
-        if (!map[m]) map[m] = { remarks: null, deposit: 0, recoveries: [] };
-        if (r.remarks) map[m].remarks = r.remarks;
+      db.from('employee_monthly_costs').select('month,remarks').eq('employee_id',selectedEmp),
+      db.from('employee_other_costs').select('cost_date,cost_type,amount,recoverable,recovered_amount,notes').eq('employee_id',selectedEmp),
+    ]).then(([mc,oc])=>{
+      const map={};
+      if (mc.data) mc.data.forEach(r=>{
+        const m=String(r.month||'').slice(0,7);
+        if (!map[m]) map[m]={remarks:null,deposit:0,recoveries:[]};
+        if (r.remarks) map[m].remarks=r.remarks;
       });
-      // Other costs: deposits + recoverable items
-      if (oc.data) oc.data.forEach(r => {
-        const m = String(r.cost_date||'').slice(0,7);
-        if (!map[m]) map[m] = { remarks: null, deposit: 0, recoveries: [] };
-        if (r.cost_type === 'security_deposit') {
-          map[m].deposit = (map[m].deposit||0) + (Number(r.amount)||0);
+      if (oc.data) oc.data.forEach(r=>{
+        const m=String(r.cost_date||'').slice(0,7);
+        if (!map[m]) map[m]={remarks:null,deposit:0,recoveries:[]};
+        if (r.cost_type==='security_deposit') {
+          map[m].deposit=(map[m].deposit||0)+(Number(r.amount)||0);
         } else if (r.recoverable) {
-          const outstanding = (Number(r.amount)||0) - (Number(r.recovered_amount)||0);
-          map[m].recoveries.push({
-            notes: r.notes,
-            amount: Number(r.amount)||0,
-            recovered: Number(r.recovered_amount)||0,
-            outstanding,
-          });
+          map[m].recoveries.push({notes:r.notes,amount:Number(r.amount)||0,recovered:Number(r.recovered_amount)||0,outstanding:(Number(r.amount)||0)-(Number(r.recovered_amount)||0)});
         }
       });
-      setEmpNotes(map);
-      setNotesLoading(false);
+      setEmpNotes(map); setNotesLoading(false);
     });
-  }, [selectedEmp]);
+  },[selectedEmp]);
 
   const depositMap = useMemo(()=>{
     const m={};
@@ -974,84 +939,52 @@ function PnlDashboard({ empMeta }) {
     return m;
   },[deposits]);
 
-  const filterFields = [
-    {key:'employee_id', label:'Emp ID', width:'100px'},
-    {key:'full_name',   label:'Name',   width:'180px'},
-  ];
+  const filterFields = [{key:'employee_id',label:'Emp ID',width:'100px'},{key:'full_name',label:'Name',width:'180px'}];
   const filteredSummary = useMemo(()=>applyFilters(summary,filters),[summary,filters]);
 
   const empMonthly = useMemo(()=>
-    [...monthly.filter(r=>r.employee_id===selectedEmp)]
-      .sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0),
+    [...monthly.filter(r=>r.employee_id===selectedEmp)].sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0),
     [monthly,selectedEmp]);
 
   const G = summary.reduce((a,r)=>{
     const dep=depositMap[r.employee_id]||0;
-    return {income:a.income+(r.lifetime_income||0)+dep, expense:a.expense+Math.max(0,(r.lifetime_expense||0)-dep), net:a.net+(r.lifetime_net||0)+2*dep};
+    return {income:a.income+(r.lifetime_income||0)+dep,expense:a.expense+Math.max(0,(r.lifetime_expense||0)-dep),net:a.net+(r.lifetime_net||0)+2*dep};
   },{income:0,expense:0,net:0});
-  const totalDeposits = Object.values(depositMap).reduce((s,v)=>s+v,0);
+  const totalDeposits=Object.values(depositMap).reduce((s,v)=>s+v,0);
 
-  // Render the notes/recovery cell for a given month row
-  const renderNotesCell = (monthKey) => {
-    const n = empNotes[monthKey];
+  // Export P&L summary
+  const pnlCsvCols = [
+    {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
+    {key:'lifetime_income',label:'Total Income (AED)'},{key:'lifetime_expense',label:'Total Expense (AED)'},
+    {key:'lifetime_net',label:'Net P/L (AED)'},{key:'lifetime_onboarding_cost',label:'Onboarding Cost'},
+    {key:'advance_outstanding',label:'Advance Outstanding'},{key:'idle_months',label:'Idle Months'},
+  ];
+
+  const renderNotesCell=(monthKey)=>{
+    const n=empNotes[monthKey];
     if (!n) return <td style={S.tdWrap}>—</td>;
-    const parts = [];
-    if (n.remarks) parts.push(
-      <div key="rem" style={{marginBottom:n.deposit||n.recoveries.length?'4px':0, color:'#475569', fontSize:'11.5px'}}>
-        📝 {n.remarks}
-      </div>
-    );
-    if (n.deposit > 0) parts.push(
-      <div key="dep" style={{marginBottom:n.recoveries.length?'4px':0}}>
-        <span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>
-          💰 Deposit rcvd: AED {fmt(n.deposit)}
-        </span>
-      </div>
-    );
-    if (n.recoveries.length > 0) n.recoveries.forEach((rec, i) => {
-      const isPending = rec.outstanding > 0;
-      parts.push(
-        <div key={'rec'+i} style={{marginBottom: i<n.recoveries.length-1?'3px':0}}>
-          <span style={{
-            background: isPending?'#fef3c7':'#f0fdf4',
-            color: isPending?'#92400e':'#166534',
-            fontSize:'10.5px', fontWeight:700,
-            padding:'2px 7px', borderRadius:'10px', whiteSpace:'nowrap',
-          }}>
-            {isPending ? '⚠️ Recover' : '✓ Recovered'}: AED {fmt(rec.outstanding > 0 ? rec.outstanding : rec.amount)}
-            {rec.notes ? ` — ${rec.notes}` : ''}
-          </span>
-        </div>
-      );
+    const parts=[];
+    if (n.remarks) parts.push(<div key="rem" style={{marginBottom:'3px',color:'#475569',fontSize:'11.5px'}}>📝 {n.remarks}</div>);
+    if (n.deposit>0) parts.push(<div key="dep" style={{marginBottom:'3px'}}><span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>💰 Deposit rcvd: AED {fmt(n.deposit)}</span></div>);
+    n.recoveries.forEach((rec,i)=>{
+      const isPending=rec.outstanding>0;
+      parts.push(<div key={'rec'+i} style={{marginBottom:'2px'}}><span style={{background:isPending?'#fef3c7':'#f0fdf4',color:isPending?'#92400e':'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>{isPending?'⚠️ Recover':'✓ Recovered'}: AED {fmt(isPending?rec.outstanding:rec.amount)}{rec.notes?` — ${rec.notes}`:''}</span></div>);
     });
-    return (
-      <td style={{...S.tdWrap, minWidth:'180px', maxWidth:'260px'}}>
-        {parts.length ? parts : '—'}
-      </td>
-    );
+    return <td style={{...S.tdWrap,minWidth:'180px',maxWidth:'260px'}}>{parts.length?parts:'—'}</td>;
   };
 
   return (
     <div>
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'16px'}}>
-        <div style={{...S.card,padding:'16px'}}>
-          <div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div>
-          <div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>
-          {totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>incl. 💰 AED {fmt(totalDeposits)} deposits received</div>}
-        </div>
-        <div style={{...S.card,padding:'16px'}}>
-          <div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div>
-          <div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div>
-        </div>
-        <div style={{...S.card,padding:'16px'}}>
-          <div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Net Profit / Loss</div>
-          <div style={{fontSize:'22px',marginTop:'6px'}}><AmountTag value={G.net} /></div>
-        </div>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>{totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>incl. 💰 AED {fmt(totalDeposits)} deposits received</div>}</div>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div></div>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Net Profit / Loss</div><div style={{fontSize:'22px',marginTop:'6px'}}><AmountTag value={G.net} /></div></div>
       </div>
 
       <div style={{...S.card,marginBottom:'16px'}}>
-        <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:800,fontSize:'14px'}}>
-          Lifetime Profitability by Employee
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+          <div style={{fontWeight:800,fontSize:'14px'}}>Lifetime Profitability by Employee</div>
+          <button style={S.btnExp} onClick={()=>exportCSV(filteredSummary,'pnl_summary',pnlCsvCols)}>⬇ Export CSV</button>
         </div>
         <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
         <div style={{overflowX:'auto'}}>
@@ -1061,7 +994,7 @@ function PnlDashboard({ empMeta }) {
               {loading
                 ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : filteredSummary.length===0
-                  ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match the filters'}</td></tr>
+                  ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : filteredSummary.map(r=>{
                       const dep=depositMap[r.employee_id]||0;
                       const adjIncome=(r.lifetime_income||0)+dep;
@@ -1101,27 +1034,28 @@ function PnlDashboard({ empMeta }) {
 
       {selectedEmp&&(
         <div style={S.card}>
-          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <div style={{fontWeight:800,fontSize:'14px'}}>
-              Monthly Breakdown — {selectedEmp}
-              <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8',marginLeft:'8px'}}>(most recent first)</span>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+            <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Breakdown — {selectedEmp} <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8'}}>(most recent first)</span></div>
+            <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+              {notesLoading&&<span style={{fontSize:'12px',color:'#94a3b8'}}>Loading notes…</span>}
+              <button style={S.btnExp} onClick={()=>exportCSV(empMonthly,'monthly_breakdown_'+selectedEmp,[
+                {key:'month',label:'Month'},{key:'salary',label:'Salary'},{key:'food',label:'Food'},
+                {key:'accommodation',label:'Accom.'},{key:'transport',label:'Transport'},{key:'other_cost',label:'Other'},
+                {key:'visa_cost',label:'Visa'},{key:'flight_cost',label:'Flights'},{key:'training_cost',label:'Training'},
+                {key:'onboarding_cost',label:'Onboarding'},{key:'total_expense',label:'Total Exp.'},
+                {key:'total_income',label:'Income'},{key:'net_profit_loss',label:'Net P/L'},
+              ])}>⬇ Export CSV</button>
             </div>
-            {notesLoading&&<span style={{fontSize:'12px',color:'#94a3b8'}}>Loading notes…</span>}
           </div>
           <div style={{overflowX:'auto'}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-              <thead><tr>
-                {['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Onboarding','Total Exp.','Income','Net P/L','Remarks / Recovery'].map(h=><th key={h} style={S.th}>{h}</th>)}
-              </tr></thead>
+              <thead><tr>{['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Onboarding','Total Exp.','Income','Net P/L','Remarks / Recovery'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
               <tbody>
                 {empMonthly.map(r=>{
-                  const mk = monthStr(r.month);
+                  const mk=monthStr(r.month);
                   return (
                     <tr key={r.month} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:r.total_income===0?'#fffbeb':'transparent'}}>
-                      <td style={{...S.td,fontWeight:700}}>
-                        {mk}
-                        {r.total_income===0&&<span style={{marginLeft:'6px',fontSize:'10px',background:'#fde68a',color:'#92400e',padding:'1px 6px',borderRadius:'8px'}}>idle</span>}
-                      </td>
+                      <td style={{...S.td,fontWeight:700}}>{mk}{r.total_income===0&&<span style={{marginLeft:'6px',fontSize:'10px',background:'#fde68a',color:'#92400e',padding:'1px 6px',borderRadius:'8px'}}>idle</span>}</td>
                       <td style={S.td}>{fmt(r.salary)}</td>
                       <td style={S.td}>{fmt(r.food)}</td>
                       <td style={S.td}>{fmt(r.accommodation)}</td>
@@ -1147,13 +1081,12 @@ function PnlDashboard({ empMeta }) {
   );
 }
 
-// ── LOGIN ────────────────────────────────────────────────────────
+// ── LOGIN ─────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
-
   const submit = async (e) => {
     e.preventDefault(); setError(''); setLoading(true);
     const {data,error} = await db.auth.signInWithPassword({email,password});
@@ -1161,7 +1094,6 @@ function LoginScreen({ onLogin }) {
     if (error) { setError(error.message); return; }
     onLogin(data.session);
   };
-
   return (
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#f1f5f9'}}>
       <form onSubmit={submit} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'12px',padding:'32px',width:'320px'}}>
@@ -1178,13 +1110,13 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ── APP ──────────────────────────────────────────────────────────
+// ── APP ───────────────────────────────────────────────────────────
 function App() {
-  const [session,  setSession]  = useState(undefined);
-  const [tab,      setTab]      = useState('dashboard');
-  const [employees,setEmployees]= useState([]);
-  const [empMeta,  setEmpMeta]  = useState({});
-  const [showMig,  setShowMig]  = useState(()=>localStorage.getItem('satco_migration_v2')!=='done');
+  const [session,   setSession]   = useState(undefined);
+  const [tab,       setTab]       = useState('dashboard');
+  const [employees, setEmployees] = useState([]);
+  const [empMeta,   setEmpMeta]   = useState({});
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v2')!=='done');
 
   useEffect(()=>{
     db.auth.getSession().then(({data})=>setSession(data.session));
@@ -1193,9 +1125,7 @@ function App() {
   },[]);
 
   useEffect(()=>{
-    hrDb.from('employees')
-      .select('employee_id,full_name,position,nationality,joining_date,hired_from,supplier_name,status,visa_trade,department')
-      .order('employee_id')
+    hrDb.from('employees').select('employee_id,full_name,position,nationality,joining_date,hired_from,supplier_name,status,visa_trade,department').order('employee_id')
       .then(({data,error})=>{
         if (error||!data) return;
         setEmployees(data.map(e=>({employee_id:e.employee_id,full_name:e.full_name})));
@@ -1209,15 +1139,7 @@ function App() {
       });
   },[]);
 
-  const tabs = [
-    ['dashboard','📊 P&L Dashboard'],
-    ['visa','🛂 Visa Costs'],
-    ['flights','✈️ Flights'],
-    ['training','🎓 Trainings'],
-    ['other','🧾 Onboarding & Misc Costs'],
-    ['monthly','💵 Monthly Costs'],
-    ['timesheets','🕒 Timesheets / Income'],
-  ];
+  const tabs=[['dashboard','📊 P&L Dashboard'],['visa','🛂 Visa Costs'],['flights','✈️ Flights'],['training','🎓 Trainings'],['other','🧾 Onboarding & Misc'],['monthly','💵 Monthly Costs'],['timesheets','🕒 Timesheets / Income']];
 
   if (session===undefined) return null;
   if (!session) return <LoginScreen onLogin={setSession} />;
@@ -1245,27 +1167,11 @@ function App() {
 
       {tab==='dashboard' && <PnlDashboard empMeta={empMeta} />}
       {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
-        fields={[
-          {key:'visa_type', label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},
-          {key:'cost_date', label:'Date',      type:'date'},
-          {key:'cost',      label:'Cost (AED)',type:'number'},
-          {key:'remarks',   label:'Remarks',   type:'text'},
-        ]} />}
+        fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
       {tab==='flights'   && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
-        fields={[
-          {key:'flight_date',label:'Date',      type:'date'},
-          {key:'sector',     label:'Sector',    type:'text'},
-          {key:'purpose',    label:'Purpose',   type:'select', options:['mobilization','demobilization','annual_leave','emergency']},
-          {key:'cost',       label:'Cost (AED)',type:'number'},
-          {key:'remarks',    label:'Remarks',   type:'text'},
-        ]} />}
+        fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
       {tab==='training'  && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date"
-        fields={[
-          {key:'training_name', label:'Training Name',type:'text'},
-          {key:'training_date', label:'Date',         type:'date'},
-          {key:'cost',          label:'Cost (AED)',   type:'number'},
-          {key:'remarks',       label:'Remarks',      type:'text'},
-        ]} />}
+        fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
       {tab==='other'     && <OtherCostsTable employees={employees} />}
       {tab==='monthly'   && <MonthlyCostsTable employees={employees} />}
       {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
