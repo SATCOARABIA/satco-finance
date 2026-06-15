@@ -50,7 +50,11 @@ const fmt      = (n) => (Number(n)||0).toLocaleString(undefined,{minimumFraction
 const monthStr = (d) => d ? d.slice(0,7) : '';
 const firstOfMonth = (m) => m ? m + '-01' : null;
 
-/** Group pre-sorted rows by YYYY-MM of dateKey, sort within group by employee_id */
+/**
+ * Group rows by YYYY-MM of dateKey.
+ * Months are sorted DESCENDING (most recent first).
+ * Within each month, rows are sorted by employee_id ASCENDING.
+ */
 function groupByMonth(rows, dateKey) {
   const map = new Map();
   rows.forEach(r => {
@@ -60,9 +64,13 @@ function groupByMonth(rows, dateKey) {
   });
   const out = [];
   for (const [month, mrs] of map) {
-    out.push({ month, rows: [...mrs].sort((a,b)=>(a.employee_id||'')<(b.employee_id||'')?-1:1) });
+    out.push({
+      month,
+      rows: [...mrs].sort((a,b)=>(a.employee_id||'')<(b.employee_id||'')?-1:1)
+    });
   }
-  out.sort((a,b)=>a.month<b.month?-1:a.month>b.month?1:0);
+  // Most recent month on top
+  out.sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0);
   return out;
 }
 
@@ -184,13 +192,12 @@ function CostTable({ title, table, employees, fields, dateField }) {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await db.from(table).select('*').order(dateField,{ascending:true});
+    const { data, error } = await db.from(table).select('*').order(dateField,{ascending:false});
     if (!error) setRows(data||[]);
     setLoading(false);
   };
   useEffect(()=>{load();},[]);
 
-  // Filter fields: emp_id + full_name + any non-number/non-date field
   const filterFields = [
     {key:'employee_id', label:'Emp ID',  width:'100px'},
     {key:'full_name',   label:'Name',    width:'150px'},
@@ -229,7 +236,6 @@ function CostTable({ title, table, employees, fields, dateField }) {
 
   return (
     <div style={S.card}>
-      {/* Header */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>{title}</div>
@@ -238,10 +244,8 @@ function CostTable({ title, table, employees, fields, dateField }) {
         <button style={S.btnPri} onClick={blank}>+ Add</button>
       </div>
 
-      {/* Filter bar */}
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
 
-      {/* Edit form */}
       {draft && (
         <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
           <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 2fr',gap:'10px',marginBottom:'8px'}}>
@@ -270,7 +274,6 @@ function CostTable({ title, table, employees, fields, dateField }) {
         </div>
       )}
 
-      {/* Table */}
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
           <thead>
@@ -298,9 +301,7 @@ function CostTable({ title, table, employees, fields, dateField }) {
                             <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
                             {fields.map(f=>(
                               <td key={f.key} style={f.key==='remarks'?S.tdWrap:S.td}>
-                                {f.type==='number'
-                                  ? 'AED '+fmt(r[f.key])
-                                  : (r[f.key]||'—')}
+                                {f.type==='number' ? 'AED '+fmt(r[f.key]) : (r[f.key]||'—')}
                               </td>
                             ))}
                             <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
@@ -328,7 +329,7 @@ function MonthlyCostsTable({ employees }) {
 
   const load = async () => {
     setLoading(true);
-    const {data,error} = await db.from('employee_monthly_costs').select('*').order('month',{ascending:true});
+    const {data,error} = await db.from('employee_monthly_costs').select('*').order('month',{ascending:false});
     if (!error) setRows(data||[]);
     setLoading(false);
   };
@@ -337,7 +338,7 @@ function MonthlyCostsTable({ employees }) {
   const filterFields = [
     {key:'employee_id', label:'Emp ID',  width:'100px'},
     {key:'full_name',   label:'Name',    width:'150px'},
-    {key:'salary_type', label:'Type',    width:'140px', options:[{value:'monthly_basic',label:'Monthly Basic'},{value:'hourly',label:'Hourly'}]},
+    {key:'salary_type', label:'Type',    width:'150px', options:[{value:'monthly_basic',label:'Monthly Basic'},{value:'hourly',label:'Hourly'}]},
     {key:'remarks',     label:'Remarks', width:'160px'},
   ];
 
@@ -512,18 +513,18 @@ function TimesheetsTable({ employees }) {
 
   const load = async () => {
     setLoading(true);
-    const {data,error} = await db.from('employee_timesheets').select('*').order('month',{ascending:true});
+    const {data,error} = await db.from('employee_timesheets').select('*').order('month',{ascending:false});
     if (!error) setRows(data||[]);
     setLoading(false);
   };
   useEffect(()=>{load();},[]);
 
   const filterFields = [
-    {key:'employee_id',    label:'Emp ID',         width:'100px'},
-    {key:'full_name',      label:'Name',            width:'150px'},
-    {key:'client_project', label:'Client / Project',width:'150px'},
-    {key:'income_type',    label:'Mode',            width:'120px', options:[{value:'hourly',label:'Hourly'},{value:'direct',label:'Direct'}]},
-    {key:'remarks',        label:'Remarks',         width:'150px'},
+    {key:'employee_id',    label:'Emp ID',          width:'100px'},
+    {key:'full_name',      label:'Name',             width:'150px'},
+    {key:'client_project', label:'Client / Project', width:'150px'},
+    {key:'income_type',    label:'Mode',             width:'120px', options:[{value:'hourly',label:'Hourly'},{value:'direct',label:'Direct'}]},
+    {key:'remarks',        label:'Remarks',          width:'150px'},
   ];
 
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
@@ -699,16 +700,16 @@ const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o.l
 const CURRENCIES = ['INR','PKR','PHP','NPR','LKR','BDT','USD','EUR','GBP','SAR','QAR','KWD','OMR','BHD'];
 
 function OtherCostsTable({ employees }) {
-  const [rows, setRows]       = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [draft, setDraft]     = useState(null);
-  const [filters, setFilters] = useState({});
+  const [rows, setRows]         = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [draft, setDraft]       = useState(null);
+  const [filters, setFilters]   = useState({});
   const [fxStatus, setFxStatus] = useState('');
   const [fxLoading, setFxLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
-    const {data,error} = await db.from('employee_other_costs').select('*').order('cost_date',{ascending:true});
+    const {data,error} = await db.from('employee_other_costs').select('*').order('cost_date',{ascending:false});
     if (!error) setRows(data||[]);
     setLoading(false);
   };
@@ -921,7 +922,7 @@ function PnlDashboard({ empMeta }) {
     setLoading(true);
     const [s,m,d] = await Promise.all([
       db.from('employee_pnl_summary').select('*').order('employee_id',{ascending:true}),
-      db.from('employee_pnl_monthly').select('*').order('month',{ascending:true}),
+      db.from('employee_pnl_monthly').select('*').order('month',{ascending:false}),
       db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
     ]);
     if (s.data) setSummary(s.data);
@@ -943,7 +944,11 @@ function PnlDashboard({ empMeta }) {
   ];
   const filteredSummary = useMemo(()=>applyFilters(summary,filters),[summary,filters]);
 
-  const empMonthly = useMemo(()=>monthly.filter(r=>r.employee_id===selectedEmp),[monthly,selectedEmp]);
+  // Monthly breakdown: recent month first
+  const empMonthly = useMemo(()=>
+    [...monthly.filter(r=>r.employee_id===selectedEmp)]
+      .sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0),
+    [monthly,selectedEmp]);
 
   const G = summary.reduce((a,r)=>{
     const dep=depositMap[r.employee_id]||0;
@@ -953,7 +958,6 @@ function PnlDashboard({ empMeta }) {
 
   return (
     <div>
-      {/* KPI cards */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'16px'}}>
         <div style={{...S.card,padding:'16px'}}>
           <div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div>
@@ -970,7 +974,6 @@ function PnlDashboard({ empMeta }) {
         </div>
       </div>
 
-      {/* Summary table */}
       <div style={{...S.card,marginBottom:'16px'}}>
         <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:800,fontSize:'14px'}}>
           Lifetime Profitability by Employee
@@ -1010,7 +1013,6 @@ function PnlDashboard({ empMeta }) {
         </div>
       </div>
 
-      {/* HR Snapshot */}
       {selectedEmp&&empMeta&&empMeta[selectedEmp]&&(
         <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
           <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot — {empMeta[selectedEmp].full_name}</div>
@@ -1022,11 +1024,10 @@ function PnlDashboard({ empMeta }) {
         </div>
       )}
 
-      {/* Monthly breakdown */}
       {selectedEmp&&(
         <div style={S.card}>
           <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:800,fontSize:'14px'}}>
-            Monthly Breakdown — {selectedEmp}
+            Monthly Breakdown — {selectedEmp} <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8'}}>(most recent first)</span>
           </div>
           <div style={{overflowX:'auto'}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
@@ -1157,10 +1158,10 @@ function App() {
       {tab==='dashboard' && <PnlDashboard empMeta={empMeta} />}
       {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
         fields={[
-          {key:'visa_type',  label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},
-          {key:'cost_date',  label:'Date',      type:'date'},
-          {key:'cost',       label:'Cost (AED)',type:'number'},
-          {key:'remarks',    label:'Remarks',   type:'text'},
+          {key:'visa_type', label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},
+          {key:'cost_date', label:'Date',      type:'date'},
+          {key:'cost',      label:'Cost (AED)',type:'number'},
+          {key:'remarks',   label:'Remarks',   type:'text'},
         ]} />}
       {tab==='flights'   && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
         fields={[
