@@ -14,7 +14,7 @@
   .container { max-width:1280px; margin:0 auto; padding:20px; }
   .hr-btn { transition: background .15s; }
   .hr-btn:hover { opacity:.9; }
-  .hr-row:hover { background:#f8fafc; }
+  .hr-row:hover { background:#f0f9ff !important; cursor:pointer; }
   ::-webkit-scrollbar { height:8px; width:8px; }
   ::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:4px; }
 </style>
@@ -48,6 +48,14 @@ const S = {
 const fmt = (n) => (Number(n)||0).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
 const monthStr = (d) => d ? d.slice(0,7) : '';
 const firstOfMonth = (m) => m ? m + '-01' : null;
+
+// Sort helper: by date/month ASC, then employee_id ASC
+const sortByDateThenEmp = (rows, dateKey) => [...rows].sort((a, b) => {
+  const da = (a[dateKey] || ''), db2 = (b[dateKey] || '');
+  if (da !== db2) return da < db2 ? -1 : 1;
+  const ea = (a.employee_id || ''), eb = (b.employee_id || '');
+  return ea < eb ? -1 : ea > eb ? 1 : 0;
+});
 
 function AmountTag({ value }) {
   const positive = value >= 0;
@@ -123,11 +131,14 @@ function CostTable({ title, table, employees, fields, dateField }) {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await db.from(table).select('*').order(dateField, { ascending:false });
+    const { data, error } = await db.from(table).select('*').order(dateField, { ascending:true });
     if (!error) setRows(data || []);
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Sort: date ASC, then employee_id ASC within each date
+  const sortedRows = useMemo(() => sortByDateThenEmp(rows, dateField), [rows, dateField]);
 
   const blank = () => {
     const d = { employee_id:'', full_name:'' };
@@ -206,9 +217,10 @@ function CostTable({ title, table, employees, fields, dateField }) {
           </thead>
           <tbody>
             {loading ? <tr><td colSpan={fields.length+3} style={{padding:'24px', textAlign:'center', color:'#94a3b8'}}>Loading…</td></tr>
-            : rows.length===0 ? <tr><td colSpan={fields.length+3} style={{padding:'24px', textAlign:'center', color:'#94a3b8'}}>No entries yet</td></tr>
-            : rows.map(r => (
-              <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+            : sortedRows.length===0 ? <tr><td colSpan={fields.length+3} style={{padding:'24px', textAlign:'center', color:'#94a3b8'}}>No entries yet</td></tr>
+            : sortedRows.map(r => (
+              <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}
+                onDoubleClick={() => setDraft({...r})}>
                 <td style={{...S.td, fontFamily:'ui-monospace,monospace', fontWeight:700, color:'#2563eb'}}>{r.employee_id}</td>
                 <td style={{...S.td, fontWeight:600}}>{r.full_name}</td>
                 {fields.map(f => (
@@ -217,8 +229,8 @@ function CostTable({ title, table, employees, fields, dateField }) {
                   </td>
                 ))}
                 <td style={{...S.td, textAlign:'right', whiteSpace:'nowrap'}}>
-                  <button style={S.iconBtn} onClick={()=>setDraft(r)}>&#9998;</button>
-                  <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                  <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r});}}>&#9998;</button>
+                  <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
                 </td>
               </tr>
             ))}
@@ -239,11 +251,14 @@ function MonthlyCostsTable({ employees }) {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await db.from('employee_monthly_costs').select('*').order('month', { ascending:false });
+    const { data, error } = await db.from('employee_monthly_costs').select('*').order('month', { ascending:true });
     if (!error) setRows(data || []);
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Sort: month ASC, then employee_id ASC within each month
+  const sortedRows = useMemo(() => sortByDateThenEmp(rows, 'month'), [rows]);
 
   const blank = () => setDraft({
     employee_id:'', full_name:'', month:'',
@@ -386,17 +401,18 @@ function MonthlyCostsTable({ employees }) {
       <div style={{ overflowX:'auto' }}>
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
           <thead><tr>
-            {['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+            {['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}
           </tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-            : rows.length===0 ? <tr><td colSpan={12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-            : rows.map(r => {
+            {loading ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            : sortedRows.length===0 ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            : sortedRows.map(r => {
               const isH = r.salary_type === 'hourly';
               const deductions = Number(r.salary_deductions)||0;
               const tot = (r.salary||0)+(r.food||0)+(r.accommodation||0)+(r.transport||0)+(r.other||0) - deductions;
               return (
-                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}
+                  onDoubleClick={() => setDraft({...r, month:monthStr(r.month), salary_type:r.salary_type||'monthly_basic'})}>
                   <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
                   <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
                   <td style={S.td}>{monthStr(r.month)}</td>
@@ -416,9 +432,10 @@ function MonthlyCostsTable({ employees }) {
                   <td style={S.td}>{fmt(r.other)}</td>
                   <td style={{...S.td,color:'#dc2626'}}>{deductions>0?'-'+fmt(deductions):'—'}</td>
                   <td style={{...S.td,fontWeight:700,color:tot>=0?'#0f172a':'#dc2626'}}>{fmt(tot)}</td>
+                  <td style={{...S.td,fontSize:'11.5px',color:'#64748b',maxWidth:'180px',whiteSpace:'normal'}}>{r.remarks||'—'}</td>
                   <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                    <button style={S.iconBtn} onClick={()=>setDraft({...r, month:monthStr(r.month), salary_type:r.salary_type||'monthly_basic'})}>&#9998;</button>
-                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                    <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r, month:monthStr(r.month), salary_type:r.salary_type||'monthly_basic'});}}>&#9998;</button>
+                    <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
                   </td>
                 </tr>
               );
@@ -440,11 +457,14 @@ function TimesheetsTable({ employees }) {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await db.from('employee_timesheets').select('*').order('month', { ascending:false });
+    const { data, error } = await db.from('employee_timesheets').select('*').order('month', { ascending:true });
     if (!error) setRows(data || []);
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Sort: month ASC, then employee_id ASC within each month
+  const sortedRows = useMemo(() => sortByDateThenEmp(rows, 'month'), [rows]);
 
   const blank = () => setDraft({
     employee_id:'', full_name:'', month:'', client_project:'',
@@ -457,7 +477,6 @@ function TimesheetsTable({ employees }) {
     if (isDirect && !draft.direct_income) return alert('Total income amount is required');
     if (!isDirect && (!draft.hours || !draft.rate)) return alert('Hours and rate are required for hourly income');
 
-    // For direct entries: store hours=1, rate=income_amount so DB view (hours×rate) stays correct
     const clean = {
       employee_id: draft.employee_id, full_name: draft.full_name, month: firstOfMonth(draft.month),
       client_project: draft.client_project || null,
@@ -466,7 +485,6 @@ function TimesheetsTable({ employees }) {
       remarks: draft.remarks || null,
     };
 
-    // Try saving with income_type column; fall back without it if column not yet migrated
     const withType = { ...clean, income_type: draft.income_type || 'hourly' };
     let error;
     if (draft.id) {
@@ -486,17 +504,15 @@ function TimesheetsTable({ employees }) {
 
   const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; await db.from('employee_timesheets').delete().eq('id', id); load(); };
 
-  const rowIncome = (r) => (r.hours||0) * (r.rate||0); // works for both modes (direct: hours=1, rate=income)
+  const rowIncome = (r) => (r.hours||0) * (r.rate||0);
   const totalIncome = rows.reduce((s,r) => s + rowIncome(r), 0);
 
-  // When editing an existing row, detect its mode
   const openEdit = (r) => {
     const isDirect = r.income_type === 'direct';
     setDraft({
       ...r,
       month: monthStr(r.month),
       income_type: r.income_type || 'hourly',
-      // For direct rows, put the stored rate back in direct_income
       direct_income: isDirect ? r.rate : '',
       hours: isDirect ? '' : r.hours,
       rate: isDirect ? '' : r.rate,
@@ -545,7 +561,6 @@ function TimesheetsTable({ employees }) {
           </div>
 
           {isDirect ? (
-            /* Direct Amount mode */
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 2fr', gap:'10px', marginBottom:'10px' }}>
               <div>
                 <label style={S.label}>Month</label>
@@ -563,7 +578,6 @@ function TimesheetsTable({ employees }) {
               </div>
             </div>
           ) : (
-            /* Hourly mode */
             <>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px', marginBottom:'8px' }}>
                 <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
@@ -593,16 +607,17 @@ function TimesheetsTable({ employees }) {
       <div style={{ overflowX:'auto' }}>
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
           <thead><tr>
-            {['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+            {['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}
           </tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-            : rows.length===0 ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-            : rows.map(r => {
+            {loading ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            : sortedRows.length===0 ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            : sortedRows.map(r => {
               const isDir = r.income_type === 'direct';
               const income = rowIncome(r);
               return (
-                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}
+                  onDoubleClick={() => openEdit(r)}>
                   <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
                   <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
                   <td style={S.td}>{monthStr(r.month)}</td>
@@ -615,9 +630,10 @@ function TimesheetsTable({ employees }) {
                   <td style={{...S.td,color:'#94a3b8'}}>{isDir ? '—' : r.hours}</td>
                   <td style={{...S.td,color:'#94a3b8'}}>{isDir ? '—' : fmt(r.rate)}</td>
                   <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(income)}</td>
+                  <td style={{...S.td,fontSize:'11.5px',color:'#64748b',maxWidth:'180px',whiteSpace:'normal'}}>{r.remarks||'—'}</td>
                   <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                    <button style={S.iconBtn} onClick={()=>openEdit(r)}>&#9998;</button>
-                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                    <button style={S.iconBtn} onClick={e=>{e.stopPropagation();openEdit(r);}}>&#9998;</button>
+                    <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
                   </td>
                 </tr>
               );
@@ -656,7 +672,7 @@ function OtherCostsTable({ employees }) {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await db.from('employee_other_costs').select('*').order('cost_date', { ascending:false });
+    const { data, error } = await db.from('employee_other_costs').select('*').order('cost_date', { ascending:true });
     if (!error) setRows(data || []);
     setLoading(false);
   };
@@ -682,7 +698,7 @@ function OtherCostsTable({ employees }) {
     try {
       const res = await fetch(directUrl, { mode:'cors' });
       if (res.ok) json = await res.json();
-    } catch (_) { /* CORS blocked from file:// — expected */ }
+    } catch (_) { }
     if (!json) {
       try {
         const res2 = await fetch(proxyUrl);
@@ -733,7 +749,12 @@ function OtherCostsTable({ employees }) {
 
   const isDeposit = draft && draft.cost_type === 'security_deposit';
 
-  const visibleRows = useMemo(() => filterEmp ? rows.filter(r => r.employee_id === filterEmp) : rows, [rows, filterEmp]);
+  // Filter then sort: date ASC, employee_id ASC
+  const visibleRows = useMemo(() => {
+    const filtered = filterEmp ? rows.filter(r => r.employee_id === filterEmp) : rows;
+    return sortByDateThenEmp(filtered, 'cost_date');
+  }, [rows, filterEmp]);
+
   const depositRows = visibleRows.filter(r => r.cost_type === 'security_deposit');
   const expenseRows = visibleRows.filter(r => r.cost_type !== 'security_deposit');
   const totalDeposits = depositRows.reduce((s,r) => s + (Number(r.amount)||0), 0);
@@ -836,7 +857,7 @@ function OtherCostsTable({ employees }) {
                 onChange={e=>setDraft(d=>({...d, recovered_amount:e.target.value}))} style={{...S.input, width:'100%', opacity: draft.recoverable?1:0.5}} />
             </div>
             <div>
-              <label style={S.label}>Notes</label>
+              <label style={S.label}>Remarks</label>
               <input value={draft.notes||''} onChange={e=>setDraft(d=>({...d, notes:e.target.value}))} style={{...S.input, width:'100%'}}
                 placeholder="e.g. Agent: ABC Manpower, Lucknow" />
             </div>
@@ -852,7 +873,7 @@ function OtherCostsTable({ employees }) {
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
           <thead>
             <tr>
-              {['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Notes',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+              {['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -862,7 +883,8 @@ function OtherCostsTable({ employees }) {
               const out = r.recoverable ? (Number(r.amount)||0) - (Number(r.recovered_amount)||0) : 0;
               const isDep = r.cost_type === 'security_deposit';
               return (
-                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', background: isDep ? '#f0fdf4' : 'transparent' }}>
+                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', background: isDep ? '#f0fdf4' : 'transparent' }}
+                  onDoubleClick={() => { setFxStatus(''); setDraft({...r, cost_date: r.cost_date || '', original_currency:r.original_currency||'INR'}); }}>
                   <td style={{...S.td, fontFamily:'ui-monospace,monospace', fontWeight:700, color:'#2563eb'}}>{r.employee_id}</td>
                   <td style={{...S.td, fontWeight:600}}>{r.full_name}</td>
                   <td style={S.td}>
@@ -878,10 +900,10 @@ function OtherCostsTable({ employees }) {
                   <td style={S.td}>{!isDep && r.recoverable ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span> : '—'}</td>
                   <td style={S.td}>{!isDep && r.recoverable ? fmt(r.recovered_amount) : '—'}</td>
                   <td style={{...S.td, fontWeight:700, color: out>0 ? '#dc2626' : '#94a3b8'}}>{!isDep && r.recoverable ? fmt(out) : '—'}</td>
-                  <td style={{...S.td, fontSize:'11.5px', maxWidth:'220px', whiteSpace:'normal'}}>{r.notes || '—'}</td>
+                  <td style={{...S.td, fontSize:'11.5px', color:'#64748b', maxWidth:'220px', whiteSpace:'normal'}}>{r.notes || '—'}</td>
                   <td style={{...S.td, textAlign:'right', whiteSpace:'nowrap'}}>
-                    <button style={S.iconBtn} onClick={()=>{setFxStatus('');setDraft({...r, cost_date: r.cost_date || '', original_currency:r.original_currency||'INR'});}}>&#9998;</button>
-                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                    <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setFxStatus('');setDraft({...r, cost_date: r.cost_date || '', original_currency:r.original_currency||'INR'});}}>&#9998;</button>
+                    <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
                   </td>
                 </tr>
               );
@@ -906,7 +928,7 @@ function PnlDashboard({ empMeta }) {
   const load = async () => {
     setLoading(true);
     const [s, m, d] = await Promise.all([
-      db.from('employee_pnl_summary').select('*').order('lifetime_net', { ascending:true }),
+      db.from('employee_pnl_summary').select('*').order('employee_id', { ascending:true }),
       db.from('employee_pnl_monthly').select('*').order('month', { ascending:true }),
       db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
     ]);
@@ -917,7 +939,6 @@ function PnlDashboard({ empMeta }) {
   };
   useEffect(() => { load(); }, []);
 
-  // Map of employee_id -> total security deposits received
   const depositMap = useMemo(() => {
     const m = {};
     deposits.forEach(d => { m[d.employee_id] = (m[d.employee_id]||0) + (Number(d.amount)||0); });
@@ -926,7 +947,6 @@ function PnlDashboard({ empMeta }) {
 
   const empMonthly = useMemo(() => monthly.filter(r => r.employee_id === selectedEmp), [monthly, selectedEmp]);
 
-  // Grand totals — corrected for security deposits (deposits are income, not expense)
   const G = summary.reduce((a, r) => {
     const dep = depositMap[r.employee_id] || 0;
     return {
