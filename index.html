@@ -91,7 +91,10 @@ ALTER TABLE employee_monthly_costs
 ALTER TABLE employee_other_costs
   ADD COLUMN IF NOT EXISTS original_currency text,
   ADD COLUMN IF NOT EXISTS original_amount   numeric,
-  ADD COLUMN IF NOT EXISTS exchange_rate     numeric;`;
+  ADD COLUMN IF NOT EXISTS exchange_rate     numeric;
+
+ALTER TABLE employee_timesheets
+  ADD COLUMN IF NOT EXISTS income_type text DEFAULT 'hourly';`;
 
   return (
     <div style={{ background:'#fffbeb', border:'1px solid #f59e0b', borderRadius:'10px', padding:'14px 18px', marginBottom:'16px', position:'relative' }}>
@@ -99,7 +102,7 @@ ALTER TABLE employee_other_costs
         ⚠️ One-time Database Migration Required
       </div>
       <div style={{ fontSize:'12px', color:'#78350f', marginBottom:'10px' }}>
-        New features (hourly salary & currency converter) need extra columns. Open your{' '}
+        New features (hourly salary, currency converter & direct income entry) need extra columns. Open your{' '}
         <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only):
       </div>
       <pre style={{ background:'#1e293b', color:'#f8fafc', padding:'12px 14px', borderRadius:'8px', fontSize:'11.5px', overflowX:'auto', margin:'0 0 10px', whiteSpace:'pre' }}>{sql}</pre>
@@ -443,34 +446,70 @@ function TimesheetsTable({ employees }) {
   };
   useEffect(() => { load(); }, []);
 
-  const blank = () => setDraft({ employee_id:'', full_name:'', month:'', client_project:'', hours:'', rate:'', remarks:'' });
+  const blank = () => setDraft({
+    employee_id:'', full_name:'', month:'', client_project:'',
+    income_type: 'hourly', hours:'', rate:'', direct_income:'', remarks:'',
+  });
 
   const save = async () => {
     if (!draft.employee_id || !draft.month) return alert('Employee ID and month are required');
+    const isDirect = draft.income_type === 'direct';
+    if (isDirect && !draft.direct_income) return alert('Total income amount is required');
+    if (!isDirect && (!draft.hours || !draft.rate)) return alert('Hours and rate are required for hourly income');
+
+    // For direct entries: store hours=1, rate=income_amount so DB view (hours×rate) stays correct
     const clean = {
       employee_id: draft.employee_id, full_name: draft.full_name, month: firstOfMonth(draft.month),
-      client_project: draft.client_project||null, hours: Number(draft.hours)||0, rate: Number(draft.rate)||0,
-      remarks: draft.remarks||null,
+      client_project: draft.client_project || null,
+      hours: isDirect ? 1 : Number(draft.hours)||0,
+      rate: isDirect ? Number(draft.direct_income)||0 : Number(draft.rate)||0,
+      remarks: draft.remarks || null,
     };
+
+    // Try saving with income_type column; fall back without it if column not yet migrated
+    const withType = { ...clean, income_type: draft.income_type || 'hourly' };
+    let error;
     if (draft.id) {
-      const { error } = await db.from('employee_timesheets').update(clean).eq('id', draft.id);
-      if (error) return alert(error.message);
+      ({ error } = await db.from('employee_timesheets').update(withType).eq('id', draft.id));
+      if (error && (error.message||'').includes('income_type')) {
+        ({ error } = await db.from('employee_timesheets').update(clean).eq('id', draft.id));
+      }
     } else {
-      const { error } = await db.from('employee_timesheets').upsert(clean, { onConflict:'employee_id,month,client_project' });
-      if (error) return alert(error.message);
+      ({ error } = await db.from('employee_timesheets').upsert(withType, { onConflict:'employee_id,month,client_project' }));
+      if (error && (error.message||'').includes('income_type')) {
+        ({ error } = await db.from('employee_timesheets').upsert(clean, { onConflict:'employee_id,month,client_project' }));
+      }
     }
+    if (error) return alert(error.message);
     setDraft(null); load();
   };
 
   const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; await db.from('employee_timesheets').delete().eq('id', id); load(); };
 
-  const totalIncome = rows.reduce((s,r)=>s+(r.hours||0)*(r.rate||0),0);
+  const rowIncome = (r) => (r.hours||0) * (r.rate||0); // works for both modes (direct: hours=1, rate=income)
+  const totalIncome = rows.reduce((s,r) => s + rowIncome(r), 0);
+
+  // When editing an existing row, detect its mode
+  const openEdit = (r) => {
+    const isDirect = r.income_type === 'direct';
+    setDraft({
+      ...r,
+      month: monthStr(r.month),
+      income_type: r.income_type || 'hourly',
+      // For direct rows, put the stored rate back in direct_income
+      direct_income: isDirect ? r.rate : '',
+      hours: isDirect ? '' : r.hours,
+      rate: isDirect ? '' : r.rate,
+    });
+  };
+
+  const isDirect = draft && draft.income_type === 'direct';
 
   return (
     <div style={S.card}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc' }}>
         <div>
-          <div style={{ fontWeight:800, fontSize:'14px' }}>Timesheets — Income (Hours × Rate)</div>
+          <div style={{ fontWeight:800, fontSize:'14px' }}>Timesheets — Income</div>
           <div style={{ fontSize:'12px', color:'#64748b' }}>{rows.length} entries · Total income AED {fmt(totalIncome)}</div>
         </div>
         <button style={S.btnPri} onClick={blank}>+ Add</button>
@@ -478,23 +517,69 @@ function TimesheetsTable({ employees }) {
 
       {draft && (
         <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
-          <div style={{ marginBottom:'8px' }}>
+          {/* Employee */}
+          <div style={{ marginBottom:'10px' }}>
             <label style={S.label}>Employee</label>
             <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
               onChange={(id,name)=>setDraft(d=>({...d, employee_id:id, full_name:name}))} />
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:'10px', marginBottom:'8px' }}>
-            <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="ENPPI, Target..."/></div>
-            <div><label style={S.label}>Hours</label><input type="number" value={draft.hours||''} onChange={e=>setDraft(d=>({...d,hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <div><label style={S.label}>Rate (AED/hr)</label><input type="number" value={draft.rate||''} onChange={e=>setDraft(d=>({...d,rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-          </div>
-          {draft.hours && draft.rate && (
-            <div style={{ marginBottom:'8px', fontSize:'12px', color:'#166534', fontWeight:700 }}>
-              = AED {fmt(Number(draft.hours)*Number(draft.rate))} income for this month
+
+          {/* Income Type Toggle */}
+          <div style={{ marginBottom:'12px' }}>
+            <label style={S.label}>Income Entry Mode</label>
+            <div style={{ display:'flex', gap:'10px' }}>
+              {[['hourly','⏱️ Hours × Rate'],['direct','💰 Direct Amount']].map(([val,lbl])=>(
+                <label key={val} style={{ display:'flex', alignItems:'center', gap:'6px', cursor:'pointer',
+                  background: draft.income_type===val ? '#0f172a' : '#f1f5f9',
+                  color: draft.income_type===val ? '#fff' : '#475569',
+                  border:'1px solid '+(draft.income_type===val?'#0f172a':'#cbd5e1'),
+                  borderRadius:'8px', padding:'8px 14px', fontWeight:700, fontSize:'12.5px' }}>
+                  <input type="radio" name="income_type" value={val}
+                    checked={draft.income_type===val}
+                    onChange={()=>setDraft(d=>({...d, income_type:val}))}
+                    style={{ display:'none' }} />
+                  {lbl}
+                </label>
+              ))}
             </div>
+          </div>
+
+          {isDirect ? (
+            /* Direct Amount mode */
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 2fr', gap:'10px', marginBottom:'10px' }}>
+              <div>
+                <label style={S.label}>Month</label>
+                <input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Total Income (AED)</label>
+                <input type="number" step="0.01" value={draft.direct_income||''} onChange={e=>setDraft(d=>({...d,direct_income:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="e.g. 40378.11" autoFocus/>
+              </div>
+              <div>
+                <label style={S.label}>Client / Project</label>
+                <input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="ENPPI, Target, Brunel…"/>
+              </div>
+            </div>
+          ) : (
+            /* Hourly mode */
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px', marginBottom:'8px' }}>
+                <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="ENPPI, Target…"/></div>
+                <div><label style={S.label}>Hours</label><input type="number" value={draft.hours||''} onChange={e=>setDraft(d=>({...d,hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                <div><label style={S.label}>Rate (AED/hr)</label><input type="number" step="0.001" value={draft.rate||''} onChange={e=>setDraft(d=>({...d,rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              </div>
+              {draft.hours && draft.rate && (
+                <div style={{ marginBottom:'8px', fontSize:'12px', color:'#166534', fontWeight:700 }}>
+                  = AED {fmt(Number(draft.hours)*Number(draft.rate))} income for this month
+                </div>
+              )}
+            </>
           )}
-          <div style={{ marginBottom:'8px' }}>
+
+          <div style={{ marginBottom:'10px' }}>
             <label style={S.label}>Remarks</label>
             <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/>
           </div>
@@ -508,26 +593,35 @@ function TimesheetsTable({ employees }) {
       <div style={{ overflowX:'auto' }}>
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
           <thead><tr>
-            {['Emp ID','Name','Month','Client/Project','Hours','Rate','Income',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+            {['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income',''].map(h=><th key={h} style={S.th}>{h}</th>)}
           </tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-            : rows.length===0 ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-            : rows.map(r => (
-              <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
-                <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
-                <td style={S.td}>{monthStr(r.month)}</td>
-                <td style={S.td}>{r.client_project||'—'}</td>
-                <td style={S.td}>{r.hours}</td>
-                <td style={S.td}>{fmt(r.rate)}</td>
-                <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt((r.hours||0)*(r.rate||0))}</td>
-                <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                  <button style={S.iconBtn} onClick={()=>setDraft({...r, month: monthStr(r.month)})}>&#9998;</button>
-                  <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
-                </td>
-              </tr>
-            ))}
+            {loading ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            : rows.length===0 ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            : rows.map(r => {
+              const isDir = r.income_type === 'direct';
+              const income = rowIncome(r);
+              return (
+                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
+                  <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                  <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+                  <td style={S.td}>{monthStr(r.month)}</td>
+                  <td style={S.td}>{r.client_project||'—'}</td>
+                  <td style={S.td}>
+                    {isDir
+                      ? <span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>💰 Direct</span>
+                      : <span style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>}
+                  </td>
+                  <td style={{...S.td,color:'#94a3b8'}}>{isDir ? '—' : r.hours}</td>
+                  <td style={{...S.td,color:'#94a3b8'}}>{isDir ? '—' : fmt(r.rate)}</td>
+                  <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(income)}</td>
+                  <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                    <button style={S.iconBtn} onClick={()=>openEdit(r)}>&#9998;</button>
+                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1005,107 +1099,8 @@ function App() {
   const [tab, setTab] = useState('dashboard');
   const [employees, setEmployees] = useState([]);
   const [empMeta, setEmpMeta] = useState({});
-  const [showMigration, setShowMigration] = useState(() => localStorage.getItem('satco_migration_v1') !== 'done');
+  const [showMigration, setShowMigration] = useState(() => localStorage.getItem('satco_migration_v2') !== 'done');
 
   useEffect(() => {
     db.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = db.auth.onAuthStateChange((_event, sess) => setSession(sess));
-    return () => listener.subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    hrDb.from('employees')
-      .select('employee_id, full_name, position, nationality, joining_date, hired_from, supplier_name, status, visa_trade, department')
-      .order('employee_id')
-      .then(({ data, error }) => {
-        if (error || !data) return;
-        setEmployees(data.map(e => ({ employee_id: e.employee_id, full_name: e.full_name })));
-        const meta = {};
-        data.forEach(e => { meta[e.employee_id] = { ...e }; });
-        hrDb.from('mob_demob').select('employee_id, mobilization_date, demobilization_date, location, supply')
-          .then(({ data: md, error: mdErr }) => {
-            if (!mdErr && md) {
-              md.forEach(m => { if (meta[m.employee_id]) meta[m.employee_id] = { ...meta[m.employee_id], ...m }; });
-            }
-            setEmpMeta(meta);
-          });
-      });
-  }, []);
-
-  const tabs = [
-    ['dashboard', '📊 P&L Dashboard'],
-    ['visa', '🛂 Visa Costs'],
-    ['flights', '✈️ Flights'],
-    ['training', '🎓 Trainings'],
-    ['other', '🧾 Onboarding & Misc Costs'],
-    ['monthly', '💵 Monthly Costs'],
-    ['timesheets', '🕒 Timesheets / Income'],
-  ];
-
-  if (session === undefined) return null;
-  if (!session) return <LoginScreen onLogin={setSession} />;
-
-  return (
-    <div className="container">
-      <div style={{ marginBottom:'18px', display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-        <div>
-          <h1 style={{ margin:0, fontSize:'22px', fontWeight:800 }}>SATCO — Employee Finance &amp; P&amp;L</h1>
-          <div style={{ fontSize:'13px', color:'#64748b', marginTop:'4px' }}>
-            Track visa costs, flights, trainings, monthly recurring costs, and timesheet income per employee.
-          </div>
-        </div>
-        <button onClick={()=>db.auth.signOut()} style={{ padding:'8px 14px', borderRadius:'8px', border:'1px solid #e2e8f0', background:'#fff', color:'#475569', fontWeight:700, fontSize:'12px', cursor:'pointer' }}>
-          Sign Out
-        </button>
-      </div>
-
-      {showMigration && (
-        <MigrationBanner onDismiss={() => {
-          localStorage.setItem('satco_migration_v1', 'done');
-          setShowMigration(false);
-        }} />
-      )}
-
-      <div style={{ display:'flex', gap:'8px', marginBottom:'16px', flexWrap:'wrap' }}>
-        {tabs.map(([k,l]) => (
-          <button key={k} onClick={()=>setTab(k)}
-            style={{ padding:'9px 16px', borderRadius:'8px', border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'), background: tab===k?'#0f172a':'#fff', color: tab===k?'#fff':'#475569', fontWeight:700, fontSize:'13px', cursor:'pointer' }}>
-            {l}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'dashboard' && <PnlDashboard empMeta={empMeta} />}
-      {tab === 'visa' && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
-        fields={[
-          { key:'visa_type', label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation'] },
-          { key:'cost_date', label:'Date', type:'date' },
-          { key:'cost', label:'Cost (AED)', type:'number' },
-          { key:'remarks', label:'Remarks', type:'text' },
-        ]} />}
-      {tab === 'flights' && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
-        fields={[
-          { key:'flight_date', label:'Date', type:'date' },
-          { key:'sector', label:'Sector', type:'text' },
-          { key:'purpose', label:'Purpose', type:'select', options:['mobilization','demobilization','annual_leave','emergency'] },
-          { key:'cost', label:'Cost (AED)', type:'number' },
-          { key:'remarks', label:'Remarks', type:'text' },
-        ]} />}
-      {tab === 'training' && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date"
-        fields={[
-          { key:'training_name', label:'Training Name', type:'text' },
-          { key:'training_date', label:'Date', type:'date' },
-          { key:'cost', label:'Cost (AED)', type:'number' },
-          { key:'remarks', label:'Remarks', type:'text' },
-        ]} />}
-      {tab === 'other' && <OtherCostsTable employees={employees} />}
-      {tab === 'monthly' && <MonthlyCostsTable employees={employees} />}
-      {tab === 'timesheets' && <TimesheetsTable employees={employees} />}
-    </div>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-</script>
-</body>
-</html>
+    const { data: listener } = db.auth.
