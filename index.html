@@ -50,11 +50,6 @@ const fmt      = (n) => (Number(n)||0).toLocaleString(undefined,{minimumFraction
 const monthStr = (d) => d ? d.slice(0,7) : '';
 const firstOfMonth = (m) => m ? m + '-01' : null;
 
-/**
- * Group rows by YYYY-MM of dateKey.
- * Months are sorted DESCENDING (most recent first).
- * Within each month, rows are sorted by employee_id ASCENDING.
- */
 function groupByMonth(rows, dateKey) {
   const map = new Map();
   rows.forEach(r => {
@@ -74,7 +69,6 @@ function groupByMonth(rows, dateKey) {
   return out;
 }
 
-/** Apply filter map to rows (case-insensitive substring) */
 function applyFilters(rows, filters) {
   return rows.filter(row =>
     Object.entries(filters).every(([key, val]) => {
@@ -118,7 +112,6 @@ function FilterBar({ fields, values, onChange, onClear }) {
   );
 }
 
-/** Dark month-separator row */
 function MonthGroup({ month, count, colSpan }) {
   return (
     <tr>
@@ -911,12 +904,15 @@ function OtherCostsTable({ employees }) {
 
 // ── P&L DASHBOARD ────────────────────────────────────────────────
 function PnlDashboard({ empMeta }) {
-  const [summary,  setSummary]  = useState([]);
-  const [monthly,  setMonthly]  = useState([]);
-  const [deposits, setDeposits] = useState([]);
-  const [loading,  setLoading]  = useState(true);
+  const [summary,    setSummary]    = useState([]);
+  const [monthly,    setMonthly]    = useState([]);
+  const [deposits,   setDeposits]   = useState([]);
+  const [loading,    setLoading]    = useState(true);
   const [selectedEmp, setSelectedEmp] = useState(null);
-  const [filters, setFilters]   = useState({});
+  const [filters,    setFilters]    = useState({});
+  // Per-employee notes: month (YYYY-MM) → { remarks, deposit, recoveries[] }
+  const [empNotes,   setEmpNotes]   = useState({});
+  const [notesLoading, setNotesLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -932,6 +928,46 @@ function PnlDashboard({ empMeta }) {
   };
   useEffect(()=>{load();},[]);
 
+  // When employee is selected, fetch their monthly remarks + other costs for notes column
+  useEffect(()=>{
+    if (!selectedEmp) { setEmpNotes({}); return; }
+    setNotesLoading(true);
+    Promise.all([
+      db.from('employee_monthly_costs')
+        .select('month,remarks')
+        .eq('employee_id', selectedEmp),
+      db.from('employee_other_costs')
+        .select('cost_date,cost_type,amount,recoverable,recovered_amount,notes')
+        .eq('employee_id', selectedEmp),
+    ]).then(([mc, oc]) => {
+      const map = {};
+      // Salary remarks
+      if (mc.data) mc.data.forEach(r => {
+        const m = String(r.month||'').slice(0,7);
+        if (!map[m]) map[m] = { remarks: null, deposit: 0, recoveries: [] };
+        if (r.remarks) map[m].remarks = r.remarks;
+      });
+      // Other costs: deposits + recoverable items
+      if (oc.data) oc.data.forEach(r => {
+        const m = String(r.cost_date||'').slice(0,7);
+        if (!map[m]) map[m] = { remarks: null, deposit: 0, recoveries: [] };
+        if (r.cost_type === 'security_deposit') {
+          map[m].deposit = (map[m].deposit||0) + (Number(r.amount)||0);
+        } else if (r.recoverable) {
+          const outstanding = (Number(r.amount)||0) - (Number(r.recovered_amount)||0);
+          map[m].recoveries.push({
+            notes: r.notes,
+            amount: Number(r.amount)||0,
+            recovered: Number(r.recovered_amount)||0,
+            outstanding,
+          });
+        }
+      });
+      setEmpNotes(map);
+      setNotesLoading(false);
+    });
+  }, [selectedEmp]);
+
   const depositMap = useMemo(()=>{
     const m={};
     deposits.forEach(d=>{m[d.employee_id]=(m[d.employee_id]||0)+(Number(d.amount)||0);});
@@ -944,7 +980,6 @@ function PnlDashboard({ empMeta }) {
   ];
   const filteredSummary = useMemo(()=>applyFilters(summary,filters),[summary,filters]);
 
-  // Monthly breakdown: recent month first
   const empMonthly = useMemo(()=>
     [...monthly.filter(r=>r.employee_id===selectedEmp)]
       .sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0),
@@ -955,6 +990,46 @@ function PnlDashboard({ empMeta }) {
     return {income:a.income+(r.lifetime_income||0)+dep, expense:a.expense+Math.max(0,(r.lifetime_expense||0)-dep), net:a.net+(r.lifetime_net||0)+2*dep};
   },{income:0,expense:0,net:0});
   const totalDeposits = Object.values(depositMap).reduce((s,v)=>s+v,0);
+
+  // Render the notes/recovery cell for a given month row
+  const renderNotesCell = (monthKey) => {
+    const n = empNotes[monthKey];
+    if (!n) return <td style={S.tdWrap}>—</td>;
+    const parts = [];
+    if (n.remarks) parts.push(
+      <div key="rem" style={{marginBottom:n.deposit||n.recoveries.length?'4px':0, color:'#475569', fontSize:'11.5px'}}>
+        📝 {n.remarks}
+      </div>
+    );
+    if (n.deposit > 0) parts.push(
+      <div key="dep" style={{marginBottom:n.recoveries.length?'4px':0}}>
+        <span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>
+          💰 Deposit rcvd: AED {fmt(n.deposit)}
+        </span>
+      </div>
+    );
+    if (n.recoveries.length > 0) n.recoveries.forEach((rec, i) => {
+      const isPending = rec.outstanding > 0;
+      parts.push(
+        <div key={'rec'+i} style={{marginBottom: i<n.recoveries.length-1?'3px':0}}>
+          <span style={{
+            background: isPending?'#fef3c7':'#f0fdf4',
+            color: isPending?'#92400e':'#166534',
+            fontSize:'10.5px', fontWeight:700,
+            padding:'2px 7px', borderRadius:'10px', whiteSpace:'nowrap',
+          }}>
+            {isPending ? '⚠️ Recover' : '✓ Recovered'}: AED {fmt(rec.outstanding > 0 ? rec.outstanding : rec.amount)}
+            {rec.notes ? ` — ${rec.notes}` : ''}
+          </span>
+        </div>
+      );
+    });
+    return (
+      <td style={{...S.tdWrap, minWidth:'180px', maxWidth:'260px'}}>
+        {parts.length ? parts : '—'}
+      </td>
+    );
+  };
 
   return (
     <div>
@@ -1026,30 +1101,43 @@ function PnlDashboard({ empMeta }) {
 
       {selectedEmp&&(
         <div style={S.card}>
-          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:800,fontSize:'14px'}}>
-            Monthly Breakdown — {selectedEmp} <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8'}}>(most recent first)</span>
+          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{fontWeight:800,fontSize:'14px'}}>
+              Monthly Breakdown — {selectedEmp}
+              <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8',marginLeft:'8px'}}>(most recent first)</span>
+            </div>
+            {notesLoading&&<span style={{fontSize:'12px',color:'#94a3b8'}}>Loading notes…</span>}
           </div>
           <div style={{overflowX:'auto'}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-              <thead><tr>{['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Onboarding','Total Exp.','Income','Net P/L'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <thead><tr>
+                {['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Onboarding','Total Exp.','Income','Net P/L','Remarks / Recovery'].map(h=><th key={h} style={S.th}>{h}</th>)}
+              </tr></thead>
               <tbody>
-                {empMonthly.map(r=>(
-                  <tr key={r.month} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:r.total_income===0?'#fffbeb':'transparent'}}>
-                    <td style={{...S.td,fontWeight:700}}>{monthStr(r.month)}{r.total_income===0&&<span style={{marginLeft:'6px',fontSize:'10px',background:'#fde68a',color:'#92400e',padding:'1px 6px',borderRadius:'8px'}}>idle</span>}</td>
-                    <td style={S.td}>{fmt(r.salary)}</td>
-                    <td style={S.td}>{fmt(r.food)}</td>
-                    <td style={S.td}>{fmt(r.accommodation)}</td>
-                    <td style={S.td}>{fmt(r.transport)}</td>
-                    <td style={S.td}>{fmt(r.other_cost)}</td>
-                    <td style={S.td}>{fmt(r.visa_cost)}</td>
-                    <td style={S.td}>{fmt(r.flight_cost)}</td>
-                    <td style={S.td}>{fmt(r.training_cost)}</td>
-                    <td style={S.td}>{fmt(r.onboarding_cost)}</td>
-                    <td style={{...S.td,fontWeight:700,color:'#dc2626'}}>{fmt(r.total_expense)}</td>
-                    <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(r.total_income)}</td>
-                    <td style={S.td}><AmountTag value={r.net_profit_loss} /></td>
-                  </tr>
-                ))}
+                {empMonthly.map(r=>{
+                  const mk = monthStr(r.month);
+                  return (
+                    <tr key={r.month} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:r.total_income===0?'#fffbeb':'transparent'}}>
+                      <td style={{...S.td,fontWeight:700}}>
+                        {mk}
+                        {r.total_income===0&&<span style={{marginLeft:'6px',fontSize:'10px',background:'#fde68a',color:'#92400e',padding:'1px 6px',borderRadius:'8px'}}>idle</span>}
+                      </td>
+                      <td style={S.td}>{fmt(r.salary)}</td>
+                      <td style={S.td}>{fmt(r.food)}</td>
+                      <td style={S.td}>{fmt(r.accommodation)}</td>
+                      <td style={S.td}>{fmt(r.transport)}</td>
+                      <td style={S.td}>{fmt(r.other_cost)}</td>
+                      <td style={S.td}>{fmt(r.visa_cost)}</td>
+                      <td style={S.td}>{fmt(r.flight_cost)}</td>
+                      <td style={S.td}>{fmt(r.training_cost)}</td>
+                      <td style={S.td}>{fmt(r.onboarding_cost)}</td>
+                      <td style={{...S.td,fontWeight:700,color:'#dc2626'}}>{fmt(r.total_expense)}</td>
+                      <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(r.total_income)}</td>
+                      <td style={S.td}><AmountTag value={r.net_profit_loss} /></td>
+                      {renderNotesCell(mk)}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
