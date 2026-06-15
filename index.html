@@ -1103,4 +1103,103 @@ function App() {
 
   useEffect(() => {
     db.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = db.auth.
+    const { data: listener } = db.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    hrDb.from('employees')
+      .select('employee_id, full_name, position, nationality, joining_date, hired_from, supplier_name, status, visa_trade, department')
+      .order('employee_id')
+      .then(({ data, error }) => {
+        if (error || !data) return;
+        setEmployees(data.map(e => ({ employee_id: e.employee_id, full_name: e.full_name })));
+        const meta = {};
+        data.forEach(e => { meta[e.employee_id] = { ...e }; });
+        hrDb.from('mob_demob').select('employee_id, mobilization_date, demobilization_date, location, supply')
+          .then(({ data: md, error: mdErr }) => {
+            if (!mdErr && md) {
+              md.forEach(m => { if (meta[m.employee_id]) meta[m.employee_id] = { ...meta[m.employee_id], ...m }; });
+            }
+            setEmpMeta(meta);
+          });
+      });
+  }, []);
+
+  const tabs = [
+    ['dashboard', '📊 P&L Dashboard'],
+    ['visa', '🛂 Visa Costs'],
+    ['flights', '✈️ Flights'],
+    ['training', '🎓 Trainings'],
+    ['other', '🧾 Onboarding & Misc Costs'],
+    ['monthly', '💵 Monthly Costs'],
+    ['timesheets', '🕒 Timesheets / Income'],
+  ];
+
+  if (session === undefined) return null;
+  if (!session) return <LoginScreen onLogin={setSession} />;
+
+  return (
+    <div className="container">
+      <div style={{ marginBottom:'18px', display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+        <div>
+          <h1 style={{ margin:0, fontSize:'22px', fontWeight:800 }}>SATCO — Employee Finance &amp; P&amp;L</h1>
+          <div style={{ fontSize:'13px', color:'#64748b', marginTop:'4px' }}>
+            Track visa costs, flights, trainings, monthly recurring costs, and timesheet income per employee.
+          </div>
+        </div>
+        <button onClick={()=>db.auth.signOut()} style={{ padding:'8px 14px', borderRadius:'8px', border:'1px solid #e2e8f0', background:'#fff', color:'#475569', fontWeight:700, fontSize:'12px', cursor:'pointer' }}>
+          Sign Out
+        </button>
+      </div>
+
+      {showMigration && (
+        <MigrationBanner onDismiss={() => {
+          localStorage.setItem('satco_migration_v2', 'done');
+          setShowMigration(false);
+        }} />
+      )}
+
+      <div style={{ display:'flex', gap:'8px', marginBottom:'16px', flexWrap:'wrap' }}>
+        {tabs.map(([k,l]) => (
+          <button key={k} onClick={()=>setTab(k)}
+            style={{ padding:'9px 16px', borderRadius:'8px', border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'), background: tab===k?'#0f172a':'#fff', color: tab===k?'#fff':'#475569', fontWeight:700, fontSize:'13px', cursor:'pointer' }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'dashboard' && <PnlDashboard empMeta={empMeta} />}
+      {tab === 'visa' && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
+        fields={[
+          { key:'visa_type', label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation'] },
+          { key:'cost_date', label:'Date', type:'date' },
+          { key:'cost', label:'Cost (AED)', type:'number' },
+          { key:'remarks', label:'Remarks', type:'text' },
+        ]} />}
+      {tab === 'flights' && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
+        fields={[
+          { key:'flight_date', label:'Date', type:'date' },
+          { key:'sector', label:'Sector', type:'text' },
+          { key:'purpose', label:'Purpose', type:'select', options:['mobilization','demobilization','annual_leave','emergency'] },
+          { key:'cost', label:'Cost (AED)', type:'number' },
+          { key:'remarks', label:'Remarks', type:'text' },
+        ]} />}
+      {tab === 'training' && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date"
+        fields={[
+          { key:'training_name', label:'Training Name', type:'text' },
+          { key:'training_date', label:'Date', type:'date' },
+          { key:'cost', label:'Cost (AED)', type:'number' },
+          { key:'remarks', label:'Remarks', type:'text' },
+        ]} />}
+      {tab === 'other' && <OtherCostsTable employees={employees} />}
+      {tab === 'monthly' && <MonthlyCostsTable employees={employees} />}
+      {tab === 'timesheets' && <TimesheetsTable employees={employees} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
