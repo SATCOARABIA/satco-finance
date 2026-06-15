@@ -24,20 +24,28 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo } = React;
 
-// ============================================================
-// CONFIG — fill in your SATCO Accounts Supabase project here.
-// (Separate project from SATCO-HR to keep things light.)
-// ============================================================
 const SUPABASE_URL = 'https://mbwsfwebbrzurpozyxks.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1id3Nmd2ViYnJ6dXJwb3p5eGtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyODA0MzMsImV4cCI6MjA5Njg1NjQzM30.K2GhBkRnCCjwSv0n42fL-92k1HwXvmDnMszpFo4C8aY';
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Optional: read-only lookup of employees from SATCO-HR project,
-// just for the dropdown (Employee ID / Name). Leave as-is — these
-// are the same anon credentials already used in SATCO-HR.
 const HR_URL = 'https://oaerqjrkdpuhiproppaz.supabase.co';
 const HR_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hZXJxanJrZHB1aGlwcm9wcGF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTQ0NjksImV4cCI6MjA5NTUzMDQ2OX0.qBtb3OV1aFGX8e1QUg19qZmOwIIjipF6IZwBOLXY3YI';
 const hrDb = supabase.createClient(HR_URL, HR_KEY);
+
+// ── DB MIGRATION SQL (run once in Supabase → SQL Editor) ─────
+const MIGRATION_SQL =
+`-- Run ONCE in Supabase → SQL Editor:
+
+ALTER TABLE employee_monthly_costs
+  ADD COLUMN IF NOT EXISTS salary_type text DEFAULT 'monthly_basic',
+  ADD COLUMN IF NOT EXISTS hours_worked numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS hourly_rate  numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS salary_deductions numeric DEFAULT 0;
+
+ALTER TABLE employee_other_costs
+  ADD COLUMN IF NOT EXISTS original_currency text,
+  ADD COLUMN IF NOT EXISTS original_amount   numeric,
+  ADD COLUMN IF NOT EXISTS exchange_rate     numeric;`;
 
 const S = {
   th: { textAlign:'left', padding:'8px 12px', fontSize:'11px', fontWeight:700, color:'#64748b', textTransform:'uppercase', letterSpacing:'.04em', whiteSpace:'nowrap' },
@@ -49,148 +57,88 @@ const S = {
   iconBtn: { background:'none', border:'none', cursor:'pointer', fontSize:'15px', color:'#94a3b8', padding:'2px 6px' },
 };
 
-const fmt = (n) => (Number(n)||0).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
-const monthStr = (d) => d ? d.slice(0,7) : '';
-const firstOfMonth = (m) => m ? m + '-01' : null; // m = 'YYYY-MM'
+const fmt        = (n) => (Number(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const monthStr   = (d) => d ? d.slice(0,7) : '';
+const firstOfMonth = (m) => m ? m+'-01' : null;
 
+function Badge({ color, bg, children }) {
+  return <span style={{background:bg||'#e2e8f0',color:color||'#475569',fontSize:'10px',fontWeight:700,padding:'2px 8px',borderRadius:'10px',whiteSpace:'nowrap'}}>{children}</span>;
+}
 function AmountTag({ value }) {
-  const positive = value >= 0;
-  return (
-    <span style={{ fontWeight:800, color: positive ? '#166534' : '#dc2626' }}>
-      {positive ? '' : '-'}AED {fmt(Math.abs(value))}
-    </span>
-  );
+  const pos = value >= 0;
+  return <span style={{fontWeight:800,color:pos?'#166534':'#dc2626'}}>{pos?'':'-'}AED {fmt(Math.abs(value))}</span>;
 }
 
-// Generic Employee Picker — typeable, suggests from HR employee list
-function EmployeePicker({ employees, value, name, onChange }) {
+// ── Migration Banner ─────────────────────────────────────────
+function MigrationBanner({ onDismiss }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { navigator.clipboard.writeText(MIGRATION_SQL).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false),2000); }); };
   return (
-    <div style={{ display:'flex', gap:'8px' }}>
-      <input list="emp-list" placeholder="Employee ID (e.g. SA1005)" value={value||''}
-        onChange={e => {
-          const id = e.target.value;
-          const match = employees.find(x => x.employee_id === id);
-          onChange(id, match ? match.full_name : name||'');
-        }}
-        style={{ ...S.input, width:'150px', fontFamily:'ui-monospace,monospace', fontWeight:700 }} />
-      <datalist id="emp-list">
-        {employees.map(e => <option key={e.id} value={e.employee_id}>{e.full_name}</option>)}
-      </datalist>
-      <input placeholder="Full name" value={name||''} onChange={e => onChange(value, e.target.value)}
-        style={{ ...S.input, flex:1 }} />
+    <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+        <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>⚠️ One-time Database Migration Required</div>
+        <button onClick={onDismiss} style={{background:'none',border:'none',color:'#94a3b8',fontSize:'16px',cursor:'pointer',padding:'0 4px'}}>✕</button>
+      </div>
+      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'8px'}}>
+        New <strong>Hourly Salary</strong> and <strong>Currency Converter</strong> features need extra DB columns.
+        Copy the SQL below and run it once in <strong>Supabase → SQL Editor</strong>, then dismiss this banner.
+      </div>
+      <pre style={{background:'#fff',border:'1px solid #fde68a',borderRadius:'6px',padding:'10px',fontSize:'11.5px',margin:'0 0 8px',overflowX:'auto',whiteSpace:'pre'}}>{MIGRATION_SQL}</pre>
+      <button onClick={copy} style={{...S.btnPri,background:'#d97706',fontSize:'12px',padding:'6px 14px'}}>{copied?'✓ Copied!':'📋 Copy SQL'}</button>
     </div>
   );
 }
 
-// ============================================================
-// Generic CRUD table for the 4 simple cost tables
-// ============================================================
-function CostTable({ title, table, employees, fields, dateField }) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState(null);
-
-  const load = async () => {
-    setLoading(true);
-    const { data, error } = await db.from(table).select('*').order(dateField, { ascending:false });
-    if (!error) setRows(data || []);
-    setLoading(false);
-  };
-  useEffect(() => { load(); }, []);
-
-  const blank = () => {
-    const d = { employee_id:'', full_name:'' };
-    fields.forEach(f => d[f.key] = f.type === 'number' ? '' : '');
-    setDraft(d);
-  };
-
-  const save = async () => {
-    if (!draft.employee_id) return alert('Employee ID required');
-    const clean = { ...draft };
-    delete clean.id;
-    fields.forEach(f => { if (f.type === 'number') clean[f.key] = Number(clean[f.key]) || 0; });
-    if (draft.id) {
-      const { error } = await db.from(table).update(clean).eq('id', draft.id);
-      if (error) return alert(error.message);
-    } else {
-      const { error } = await db.from(table).insert(clean);
-      if (error) return alert(error.message);
-    }
-    setDraft(null); load();
-  };
-
-  const remove = async (id) => {
-    if (!window.confirm('Delete this entry?')) return;
-    await db.from(table).delete().eq('id', id); load();
-  };
-
-  const total = rows.reduce((s,r) => s + (Number(r.cost)||0), 0);
-
+// ── Employee Picker ──────────────────────────────────────────
+function EmployeePicker({ employees, value, name, onChange }) {
   return (
+    <div style={{display:'flex',gap:'8px'}}>
+      <input list="emp-list" placeholder="Employee ID (e.g. SA1005)" value={value||''}
+        onChange={e=>{const id=e.target.value;const match=employees.find(x=>x.employee_id===id);onChange(id,match?match.full_name:name||'');}}
+        style={{...S.input,width:'150px',fontFamily:'ui-monospace,monospace',fontWeight:700}}/>
+      <datalist id="emp-list">{employees.map(e=><option key={e.id} value={e.employee_id}>{e.full_name}</option>)}</datalist>
+      <input placeholder="Full name" value={name||''} onChange={e=>onChange(value,e.target.value)} style={{...S.input,flex:1}}/>
+    </div>
+  );
+}
+
+// ── Generic CRUD table (Visa / Flights / Training) ───────────
+function CostTable({ title, table, employees, fields, dateField }) {
+  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [draft,setDraft]=useState(null);
+  const load=async()=>{setLoading(true);const{data,error}=await db.from(table).select('*').order(dateField,{ascending:false});if(!error)setRows(data||[]);setLoading(false);};
+  useEffect(()=>{load();},[]);
+  const blank=()=>{const d={employee_id:'',full_name:''};fields.forEach(f=>d[f.key]=f.type==='number'?'':'');setDraft(d);};
+  const save=async()=>{if(!draft.employee_id)return alert('Employee ID required');const clean={...draft};delete clean.id;fields.forEach(f=>{if(f.type==='number')clean[f.key]=Number(clean[f.key])||0;});if(draft.id){const{error}=await db.from(table).update(clean).eq('id',draft.id);if(error)return alert(error.message);}else{const{error}=await db.from(table).insert(clean);if(error)return alert(error.message);}setDraft(null);load();};
+  const remove=async(id)=>{if(!window.confirm('Delete this entry?'))return;await db.from(table).delete().eq('id',id);load();};
+  const total=rows.reduce((s,r)=>s+(Number(r.cost)||0),0);
+  return(
     <div style={S.card}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc' }}>
-        <div>
-          <div style={{ fontWeight:800, fontSize:'14px' }}>{title}</div>
-          <div style={{ fontSize:'12px', color:'#64748b' }}>{rows.length} entries · Total AED {fmt(total)}</div>
-        </div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+        <div><div style={{fontWeight:800,fontSize:'14px'}}>{title}</div><div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total AED {fmt(total)}</div></div>
         <button style={S.btnPri} className="hr-btn" onClick={blank}>+ Add</button>
       </div>
-
-      {draft && (
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
-          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr', gap:'10px', marginBottom:'8px' }}>
-            <div>
-              <label style={S.label}>Employee</label>
-              <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
-                onChange={(id,name) => setDraft(d => ({...d, employee_id:id, full_name:name}))} />
-            </div>
-            {fields.map(f => (
-              <div key={f.key}>
-                <label style={S.label}>{f.label}</label>
-                {f.type === 'select'
-                  ? <select value={draft[f.key]||''} onChange={e=>setDraft(d=>({...d,[f.key]:e.target.value}))} style={{...S.input, width:'100%'}}>
-                      <option value="">--</option>
-                      {f.options.map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  : <input type={f.type==='number'?'number':f.type==='date'?'date':'text'} value={draft[f.key]||''}
-                      onChange={e=>setDraft(d=>({...d,[f.key]:e.target.value}))} style={{...S.input, width:'100%'}} />}
-              </div>
-            ))}
-          </div>
-          <div style={{ display:'flex', gap:'8px' }}>
-            <button style={S.btnPri} onClick={save}>Save</button>
-            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
-          </div>
+      {draft&&(<div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+        <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 2fr',gap:'10px',marginBottom:'8px'}}>
+          <div><label style={S.label}>Employee</label><EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name} onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))}/></div>
+          {fields.map(f=>(<div key={f.key}><label style={S.label}>{f.label}</label>
+            {f.type==='select'?<select value={draft[f.key]||''} onChange={e=>setDraft(d=>({...d,[f.key]:e.target.value}))} style={{...S.input,width:'100%'}}><option value="">--</option>{f.options.map(o=><option key={o} value={o}>{o}</option>)}</select>
+            :<input type={f.type==='number'?'number':f.type==='date'?'date':'text'} value={draft[f.key]||''} onChange={e=>setDraft(d=>({...d,[f.key]:e.target.value}))} style={{...S.input,width:'100%'}}/>}
+          </div>))}
         </div>
-      )}
-
-      <div style={{ overflowX:'auto' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
-          <thead>
-            <tr>
-              <th style={S.th}>Emp ID</th><th style={S.th}>Name</th>
-              {fields.map(f => <th key={f.key} style={S.th}>{f.label}</th>)}
-              <th style={S.th}></th>
-            </tr>
-          </thead>
+        <div style={{display:'flex',gap:'8px'}}><button style={S.btnPri} onClick={save}>Save</button><button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button></div>
+      </div>)}
+      <div style={{overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+          <thead><tr><th style={S.th}>Emp ID</th><th style={S.th}>Name</th>{fields.map(f=><th key={f.key} style={S.th}>{f.label}</th>)}<th style={S.th}></th></tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={fields.length+3} style={{padding:'24px', textAlign:'center', color:'#94a3b8'}}>Loading…</td></tr>
-            : rows.length===0 ? <tr><td colSpan={fields.length+3} style={{padding:'24px', textAlign:'center', color:'#94a3b8'}}>No entries yet</td></tr>
-            : rows.map(r => (
-              <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
-                <td style={{...S.td, fontFamily:'ui-monospace,monospace', fontWeight:700, color:'#2563eb'}}>{r.employee_id}</td>
-                <td style={{...S.td, fontWeight:600}}>{r.full_name}</td>
-                {fields.map(f => (
-                  <td key={f.key} style={S.td}>
-                    {f.type==='number' ? 'AED '+fmt(r[f.key]) : f.type==='date' ? (r[f.key]||'—') : (r[f.key]||'—')}
-                  </td>
-                ))}
-                <td style={{...S.td, textAlign:'right', whiteSpace:'nowrap'}}>
-                  <button style={S.iconBtn} onClick={()=>setDraft(r)}>&#9998;</button>
-                  <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
-                </td>
-              </tr>
-            ))}
+            {loading?<tr><td colSpan={fields.length+3} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            :rows.length===0?<tr><td colSpan={fields.length+3} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            :rows.map(r=>(<tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}>
+              <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+              <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+              {fields.map(f=><td key={f.key} style={S.td}>{f.type==='number'?'AED '+fmt(r[f.key]):f.type==='date'?(r[f.key]||'—'):(r[f.key]||'—')}</td>)}
+              <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}><button style={S.iconBtn} onClick={()=>setDraft(r)}>&#9998;</button><button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button></td>
+            </tr>))}
           </tbody>
         </table>
       </div>
@@ -198,106 +146,100 @@ function CostTable({ title, table, employees, fields, dateField }) {
   );
 }
 
-// ============================================================
-// Monthly Costs table (salary/food/accommodation/transport/other)
-// ============================================================
+// ── Monthly Costs (Monthly vs Hourly bifurcation) ────────────
 function MonthlyCostsTable({ employees }) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState(null);
-
-  const load = async () => {
-    setLoading(true);
-    const { data, error } = await db.from('employee_monthly_costs').select('*').order('month', { ascending:false });
-    if (!error) setRows(data || []);
-    setLoading(false);
+  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [draft,setDraft]=useState(null);
+  const load=async()=>{setLoading(true);const{data,error}=await db.from('employee_monthly_costs').select('*').order('month',{ascending:false});if(!error)setRows(data||[]);setLoading(false);};
+  useEffect(()=>{load();},[]);
+  const blank=()=>setDraft({employee_id:'',full_name:'',month:'',salary_type:'monthly_basic',salary:'',hours_worked:'',hourly_rate:'',salary_deductions:'0',food:'',accommodation:'',transport:'',other:'',remarks:''});
+  const save=async()=>{
+    if(!draft.employee_id||!draft.month)return alert('Employee ID and month are required');
+    const isHourly=draft.salary_type==='hourly';
+    const effectiveSalary=isHourly?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):Number(draft.salary)||0;
+    const clean={employee_id:draft.employee_id,full_name:draft.full_name,month:firstOfMonth(draft.month),salary_type:draft.salary_type||'monthly_basic',salary:effectiveSalary,hours_worked:Number(draft.hours_worked)||0,hourly_rate:Number(draft.hourly_rate)||0,salary_deductions:Number(draft.salary_deductions)||0,food:Number(draft.food)||0,accommodation:Number(draft.accommodation)||0,transport:Number(draft.transport)||0,other:Number(draft.other)||0,remarks:draft.remarks||null};
+    if(draft.id){const{error}=await db.from('employee_monthly_costs').update(clean).eq('id',draft.id);if(error)return alert('Save failed: '+error.message+'\n\nHave you run the DB migration SQL?');}
+    else{const{error}=await db.from('employee_monthly_costs').upsert(clean,{onConflict:'employee_id,month'});if(error)return alert('Save failed: '+error.message+'\n\nHave you run the DB migration SQL?');}
+    setDraft(null);load();
   };
-  useEffect(() => { load(); }, []);
-
-  const blank = () => setDraft({ employee_id:'', full_name:'', month:'', salary:'', food:'', accommodation:'', transport:'', other:'', remarks:'' });
-
-  const save = async () => {
-    if (!draft.employee_id || !draft.month) return alert('Employee ID and month are required');
-    const clean = {
-      employee_id: draft.employee_id, full_name: draft.full_name, month: firstOfMonth(draft.month),
-      salary: Number(draft.salary)||0, food: Number(draft.food)||0, accommodation: Number(draft.accommodation)||0,
-      transport: Number(draft.transport)||0, other: Number(draft.other)||0, remarks: draft.remarks||null,
-    };
-    if (draft.id) {
-      const { error } = await db.from('employee_monthly_costs').update(clean).eq('id', draft.id);
-      if (error) return alert(error.message);
-    } else {
-      const { error } = await db.from('employee_monthly_costs').upsert(clean, { onConflict:'employee_id,month' });
-      if (error) return alert(error.message);
-    }
-    setDraft(null); load();
-  };
-
-  const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; await db.from('employee_monthly_costs').delete().eq('id', id); load(); };
-
-  return (
+  const remove=async(id)=>{if(!window.confirm('Delete?'))return;await db.from('employee_monthly_costs').delete().eq('id',id);load();};
+  const isHourlyDraft=draft&&draft.salary_type==='hourly';
+  const draftGross=isHourlyDraft?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):0;
+  const draftNet=isHourlyDraft?draftGross-(Number(draft.salary_deductions)||0):0;
+  return(
     <div style={S.card}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc' }}>
-        <div>
-          <div style={{ fontWeight:800, fontSize:'14px' }}>Monthly Costs (Salary, Food, Accommodation, Transport)</div>
-          <div style={{ fontSize:'12px', color:'#64748b' }}>One row per employee per month — include idle months too</div>
-        </div>
+      <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div><div style={{fontWeight:800,fontSize:'14px'}}>Monthly Costs — Salary, Food, Accommodation, Transport</div><div style={{fontSize:'12px',color:'#64748b'}}>One row per employee per month</div></div>
         <button style={S.btnPri} onClick={blank}>+ Add Month</button>
       </div>
-
-      {draft && (
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
-          <div style={{ marginBottom:'8px' }}>
-            <label style={S.label}>Employee</label>
-            <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
-              onChange={(id,name)=>setDraft(d=>({...d, employee_id:id, full_name:name}))} />
+      {draft&&(<div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+        <div style={{marginBottom:'10px'}}><label style={S.label}>Employee</label><EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name} onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))}/></div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 2fr',gap:'10px',marginBottom:'10px'}}>
+          <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+          <div><label style={S.label}>Salary Type</label>
+            <div style={{display:'flex',gap:'10px',marginTop:'4px'}}>
+              {[['monthly_basic','📅 Monthly (Basic + Allowance)'],['hourly','⏱ Hourly Rate']].map(([val,lbl])=>(
+                <label key={val} style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',fontWeight:600,cursor:'pointer',padding:'7px 14px',border:'2px solid '+(draft.salary_type===val?'#0f172a':'#cbd5e1'),borderRadius:'8px',background:draft.salary_type===val?'#0f172a':'#fff',color:draft.salary_type===val?'#fff':'#475569'}}>
+                  <input type="radio" name="salary_type" value={val} checked={draft.salary_type===val} onChange={()=>setDraft(d=>({...d,salary_type:val}))} style={{display:'none'}}/>{lbl}
+                </label>
+              ))}
+            </div>
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(6, 1fr)', gap:'10px', marginBottom:'8px' }}>
-            <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <div><label style={S.label}>Salary</label><input type="number" value={draft.salary} onChange={e=>setDraft(d=>({...d,salary:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+        </div>
+        {draft.salary_type==='monthly_basic'?(
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'10px',marginBottom:'10px'}}>
+            <div><label style={S.label}>Basic + Allowance (AED)</label><input type="number" value={draft.salary} onChange={e=>setDraft(d=>({...d,salary:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Food</label><input type="number" value={draft.food} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Transport</label><input type="number" value={draft.transport} onChange={e=>setDraft(d=>({...d,transport:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Other</label><input type="number" value={draft.other} onChange={e=>setDraft(d=>({...d,other:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
           </div>
-          <div style={{ marginBottom:'8px' }}>
-            <label style={S.label}>Remarks</label>
-            <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/>
+        ):(
+          <div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:'10px',padding:'12px',marginBottom:'10px'}}>
+            <div style={{fontSize:'11px',fontWeight:700,color:'#0369a1',marginBottom:'10px'}}>⏱ HOURLY — Gross = Hours × Rate · Visa/ticket/advance deducted from salary</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+              <div><label style={S.label}>Hours Worked this Month</label><input type="number" value={draft.hours_worked} onChange={e=>setDraft(d=>({...d,hours_worked:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="e.g. 208"/></div>
+              <div><label style={S.label}>Hourly Rate (AED/hr)</label><input type="number" step="0.01" value={draft.hourly_rate} onChange={e=>setDraft(d=>({...d,hourly_rate:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="e.g. 7.50"/></div>
+              <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end',paddingBottom:'2px'}}><label style={S.label}>Gross Salary (auto)</label><div style={{padding:'8px 10px',background:'#fff',border:'1px solid #bae6fd',borderRadius:'6px',fontSize:'14px',fontWeight:800,color:'#0369a1'}}>AED {fmt(draftGross)}</div></div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:'10px',marginBottom:'8px'}}>
+              <div><label style={S.label}>Deductions (visa+ticket+advance)</label><input type="number" value={draft.salary_deductions} onChange={e=>setDraft(d=>({...d,salary_deductions:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Food (on-site only)</label><input type="number" value={draft.food} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Accommodation (on-site)</label><input type="number" value={draft.accommodation} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end',paddingBottom:'2px'}}><label style={S.label}>Net Payable to Employee</label><div style={{padding:'8px 10px',background:'#fff',border:'2px solid '+(draftNet<0?'#dc2626':'#166534'),borderRadius:'6px',fontSize:'14px',fontWeight:800,color:draftNet<0?'#dc2626':'#166534'}}>AED {fmt(draftNet)}</div></div>
+            </div>
+            <div style={{fontSize:'11px',color:'#0369a1',background:'#e0f2fe',padding:'6px 10px',borderRadius:'6px'}}>ℹ️ Per contract: FAT only when on-site. Annual leave, return ticket &amp; gratuity <strong>not applicable</strong>.</div>
           </div>
-          <div style={{ display:'flex', gap:'8px' }}>
-            <button style={S.btnPri} onClick={save}>Save</button>
-            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      <div style={{ overflowX:'auto' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
-          <thead><tr>
-            {['Emp ID','Name','Month','Salary','Food','Accom.','Transport','Other','Total',''].map(h=><th key={h} style={S.th}>{h}</th>)}
-          </tr></thead>
+        )}
+        <div style={{marginBottom:'10px'}}><label style={S.label}>Remarks</label><input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+        <div style={{display:'flex',gap:'8px'}}><button style={S.btnPri} onClick={save}>Save</button><button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button></div>
+      </div>)}
+      <div style={{overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+          <thead><tr>{['Emp ID','Name','Month','Type','Gross Salary','Hours','Rate','Deductions','Net Pay','Food','Accom.','Transport','Other','Total Exp.',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-            : rows.length===0 ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-            : rows.map(r => {
-              const tot = (r.salary||0)+(r.food||0)+(r.accommodation||0)+(r.transport||0)+(r.other||0);
-              return (
-                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
-                  <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                  <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
-                  <td style={S.td}>{monthStr(r.month)}</td>
-                  <td style={S.td}>{fmt(r.salary)}</td>
-                  <td style={S.td}>{fmt(r.food)}</td>
-                  <td style={S.td}>{fmt(r.accommodation)}</td>
-                  <td style={S.td}>{fmt(r.transport)}</td>
-                  <td style={S.td}>{fmt(r.other)}</td>
-                  <td style={{...S.td,fontWeight:700}}>{fmt(tot)}</td>
-                  <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                    <button style={S.iconBtn} onClick={()=>setDraft({...r, month: monthStr(r.month)})}>&#9998;</button>
-                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
-                  </td>
-                </tr>
-              );
+            {loading?<tr><td colSpan={15} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            :rows.length===0?<tr><td colSpan={15} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            :rows.map(r=>{
+              const isH=r.salary_type==='hourly';
+              const netPay=isH?(r.salary||0)-(r.salary_deductions||0):(r.salary||0);
+              const tot=netPay+(r.food||0)+(r.accommodation||0)+(r.transport||0)+(r.other||0);
+              return(<tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}>
+                <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+                <td style={S.td}>{monthStr(r.month)}</td>
+                <td style={S.td}>{isH?<Badge bg="#dbeafe" color="#1d4ed8">⏱ Hourly</Badge>:<Badge bg="#f0fdf4" color="#166534">📅 Monthly</Badge>}</td>
+                <td style={{...S.td,fontWeight:700}}>{fmt(r.salary)}</td>
+                <td style={S.td}>{isH?(r.hours_worked||'—'):'—'}</td>
+                <td style={S.td}>{isH?fmt(r.hourly_rate):'—'}</td>
+                <td style={{...S.td,color:'#dc2626'}}>{isH?fmt(r.salary_deductions):'—'}</td>
+                <td style={{...S.td,fontWeight:700,color:isH&&netPay<0?'#dc2626':'#166534'}}>{isH?fmt(netPay):'—'}</td>
+                <td style={S.td}>{fmt(r.food)}</td><td style={S.td}>{fmt(r.accommodation)}</td><td style={S.td}>{fmt(r.transport)}</td><td style={S.td}>{fmt(r.other)}</td>
+                <td style={{...S.td,fontWeight:700}}>{fmt(tot)}</td>
+                <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                  <button style={S.iconBtn} onClick={()=>setDraft({...r,month:monthStr(r.month),salary_type:r.salary_type||'monthly_basic',salary_deductions:r.salary_deductions||0,hours_worked:r.hours_worked||'',hourly_rate:r.hourly_rate||''})}>&#9998;</button>
+                  <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
+                </td>
+              </tr>);
             })}
           </tbody>
         </table>
@@ -306,107 +248,49 @@ function MonthlyCostsTable({ employees }) {
   );
 }
 
-// ============================================================
-// Timesheets (hours x rate -> income)
-// ============================================================
+// ── Timesheets ───────────────────────────────────────────────
 function TimesheetsTable({ employees }) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState(null);
-
-  const load = async () => {
-    setLoading(true);
-    const { data, error } = await db.from('employee_timesheets').select('*').order('month', { ascending:false });
-    if (!error) setRows(data || []);
-    setLoading(false);
-  };
-  useEffect(() => { load(); }, []);
-
-  const blank = () => setDraft({ employee_id:'', full_name:'', month:'', client_project:'', hours:'', rate:'', remarks:'' });
-
-  const save = async () => {
-    if (!draft.employee_id || !draft.month) return alert('Employee ID and month are required');
-    const clean = {
-      employee_id: draft.employee_id, full_name: draft.full_name, month: firstOfMonth(draft.month),
-      client_project: draft.client_project||null, hours: Number(draft.hours)||0, rate: Number(draft.rate)||0,
-      remarks: draft.remarks||null,
-    };
-    if (draft.id) {
-      const { error } = await db.from('employee_timesheets').update(clean).eq('id', draft.id);
-      if (error) return alert(error.message);
-    } else {
-      const { error } = await db.from('employee_timesheets').upsert(clean, { onConflict:'employee_id,month,client_project' });
-      if (error) return alert(error.message);
-    }
-    setDraft(null); load();
-  };
-
-  const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; await db.from('employee_timesheets').delete().eq('id', id); load(); };
-
-  const totalIncome = rows.reduce((s,r)=>s+(r.hours||0)*(r.rate||0),0);
-
-  return (
+  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [draft,setDraft]=useState(null);
+  const load=async()=>{setLoading(true);const{data,error}=await db.from('employee_timesheets').select('*').order('month',{ascending:false});if(!error)setRows(data||[]);setLoading(false);};
+  useEffect(()=>{load();},[]);
+  const blank=()=>setDraft({employee_id:'',full_name:'',month:'',client_project:'',hours:'',rate:'',remarks:''});
+  const save=async()=>{if(!draft.employee_id||!draft.month)return alert('Employee ID and month required');const clean={employee_id:draft.employee_id,full_name:draft.full_name,month:firstOfMonth(draft.month),client_project:draft.client_project||null,hours:Number(draft.hours)||0,rate:Number(draft.rate)||0,remarks:draft.remarks||null};if(draft.id){const{error}=await db.from('employee_timesheets').update(clean).eq('id',draft.id);if(error)return alert(error.message);}else{const{error}=await db.from('employee_timesheets').upsert(clean,{onConflict:'employee_id,month,client_project'});if(error)return alert(error.message);}setDraft(null);load();};
+  const remove=async(id)=>{if(!window.confirm('Delete?'))return;await db.from('employee_timesheets').delete().eq('id',id);load();};
+  const totalIncome=rows.reduce((s,r)=>s+(r.hours||0)*(r.rate||0),0);
+  return(
     <div style={S.card}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc' }}>
-        <div>
-          <div style={{ fontWeight:800, fontSize:'14px' }}>Timesheets — Income (Hours × Rate)</div>
-          <div style={{ fontSize:'12px', color:'#64748b' }}>{rows.length} entries · Total income AED {fmt(totalIncome)}</div>
-        </div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+        <div><div style={{fontWeight:800,fontSize:'14px'}}>Timesheets — Income (Hours × Rate)</div><div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total income AED {fmt(totalIncome)}</div></div>
         <button style={S.btnPri} onClick={blank}>+ Add</button>
       </div>
-
-      {draft && (
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
-          <div style={{ marginBottom:'8px' }}>
-            <label style={S.label}>Employee</label>
-            <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
-              onChange={(id,name)=>setDraft(d=>({...d, employee_id:id, full_name:name}))} />
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:'10px', marginBottom:'8px' }}>
-            <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="ENPPI, Target..."/></div>
-            <div><label style={S.label}>Hours</label><input type="number" value={draft.hours} onChange={e=>setDraft(d=>({...d,hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <div><label style={S.label}>Rate (AED/hr)</label><input type="number" value={draft.rate} onChange={e=>setDraft(d=>({...d,rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-          </div>
-          {draft.hours && draft.rate && (
-            <div style={{ marginBottom:'8px', fontSize:'12px', color:'#166534', fontWeight:700 }}>
-              = AED {fmt(Number(draft.hours)*Number(draft.rate))} income for this month
-            </div>
-          )}
-          <div style={{ marginBottom:'8px' }}>
-            <label style={S.label}>Remarks</label>
-            <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/>
-          </div>
-          <div style={{ display:'flex', gap:'8px' }}>
-            <button style={S.btnPri} onClick={save}>Save</button>
-            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
-          </div>
+      {draft&&(<div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+        <div style={{marginBottom:'8px'}}><label style={S.label}>Employee</label><EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name} onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))}/></div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'8px'}}>
+          <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+          <div><label style={S.label}>Client / Project</label><input value={draft.client_project||''} onChange={e=>setDraft(d=>({...d,client_project:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="ENPPI, Target..."/></div>
+          <div><label style={S.label}>Hours</label><input type="number" value={draft.hours} onChange={e=>setDraft(d=>({...d,hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+          <div><label style={S.label}>Rate (AED/hr)</label><input type="number" value={draft.rate} onChange={e=>setDraft(d=>({...d,rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
         </div>
-      )}
-
-      <div style={{ overflowX:'auto' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
-          <thead><tr>
-            {['Emp ID','Name','Month','Client/Project','Hours','Rate','Income',''].map(h=><th key={h} style={S.th}>{h}</th>)}
-          </tr></thead>
+        {draft.hours&&draft.rate&&<div style={{marginBottom:'8px',fontSize:'12px',color:'#166534',fontWeight:700}}>= AED {fmt(Number(draft.hours)*Number(draft.rate))} income</div>}
+        <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+        <div style={{display:'flex',gap:'8px'}}><button style={S.btnPri} onClick={save}>Save</button><button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button></div>
+      </div>)}
+      <div style={{overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+          <thead><tr>{['Emp ID','Name','Month','Client/Project','Hours','Rate','Income',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-            : rows.length===0 ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-            : rows.map(r => (
-              <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
-                <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
-                <td style={S.td}>{monthStr(r.month)}</td>
-                <td style={S.td}>{r.client_project||'—'}</td>
-                <td style={S.td}>{r.hours}</td>
-                <td style={S.td}>{fmt(r.rate)}</td>
-                <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt((r.hours||0)*(r.rate||0))}</td>
-                <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                  <button style={S.iconBtn} onClick={()=>setDraft({...r, month: monthStr(r.month)})}>&#9998;</button>
-                  <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
-                </td>
-              </tr>
-            ))}
+            {loading?<tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            :rows.length===0?<tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            :rows.map(r=>(<tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}>
+              <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+              <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+              <td style={S.td}>{monthStr(r.month)}</td>
+              <td style={S.td}>{r.client_project||'—'}</td>
+              <td style={S.td}>{r.hours}</td>
+              <td style={S.td}>{fmt(r.rate)}</td>
+              <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt((r.hours||0)*(r.rate||0))}</td>
+              <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}><button style={S.iconBtn} onClick={()=>setDraft({...r,month:monthStr(r.month)})}>&#9998;</button><button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button></td>
+            </tr>))}
           </tbody>
         </table>
       </div>
@@ -414,13 +298,13 @@ function TimesheetsTable({ employees }) {
   );
 }
 
-// ============================================================
-// Onboarding & Misc Costs — security deposit, agent commission,
-// salary advance (recoverable), local transport, medical test
-// food, food/accommodation pre-site, site accommodation, etc.
-// ============================================================
+// ── Onboarding & Misc Costs ───────────────────────────────────
+// Security Deposit = income from employee (green)
+// Currency converter via Frankfurter API with automatic CORS-proxy fallback
+// (file:// pages are blocked by Chrome from calling external APIs directly;
+//  the app silently retries through corsproxy.io when the direct call fails)
 const OTHER_COST_TYPES = [
-  { value:'security_deposit',           label:'Security Deposit (refundable, before visit visa)' },
+  { value:'security_deposit',           label:'Security Deposit (received from employee — refundable)', income:true },
   { value:'agent_commission',           label:'Agent / Sourcing Commission (India/Nepal)' },
   { value:'salary_advance',             label:'Salary Advance Given on Arrival' },
   { value:'local_transport',            label:'Local Transport (taxi/bus during visa processing)' },
@@ -430,152 +314,191 @@ const OTHER_COST_TYPES = [
   { value:'visit_visa_extra',           label:'Visit Visa — Other Cost' },
   { value:'other',                      label:'Other' },
 ];
-const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o => [o.value, o.label]));
+const OTHER_COST_MAP = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o]));
+const FX_CURRENCIES  = ['INR','NPR','PKR','PHP','BDT','LKR','USD','EUR','GBP','SAR'];
 
 function OtherCostsTable({ employees }) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState(null);
-  const [filterEmp, setFilterEmp] = useState('');
+  const [rows,setRows]=useState([]);const [loading,setLoading]=useState(true);const [draft,setDraft]=useState(null);
+  const [filterEmp,setFilterEmp]=useState('');const [fxLoading,setFxLoading]=useState(false);const [fxStatus,setFxStatus]=useState('');
 
-  const load = async () => {
-    setLoading(true);
-    const { data, error } = await db.from('employee_other_costs').select('*').order('cost_date', { ascending:false });
-    if (!error) setRows(data || []);
-    setLoading(false);
-  };
-  useEffect(() => { load(); }, []);
+  const load=async()=>{setLoading(true);const{data,error}=await db.from('employee_other_costs').select('*').order('cost_date',{ascending:false});if(!error)setRows(data||[]);setLoading(false);};
+  useEffect(()=>{load();},[]);
 
-  const blank = () => setDraft({
-    employee_id:'', full_name:'', cost_type:'security_deposit', cost_date:new Date().toISOString().slice(0,10),
-    amount:'', recoverable:false, recovered_amount:'', notes:'',
-  });
+  const blank=()=>{ setFxStatus(''); setDraft({employee_id:'',full_name:'',cost_type:'security_deposit',cost_date:new Date().toISOString().slice(0,10),amount:'',recoverable:false,recovered_amount:'',notes:'',original_currency:'INR',original_amount:'',exchange_rate:null}); };
 
-  const save = async () => {
-    if (!draft.employee_id) return alert('Employee is required');
-    if (!draft.cost_type) return alert('Cost type is required');
-    const clean = {
-      employee_id: draft.employee_id, full_name: draft.full_name || null,
-      cost_type: draft.cost_type, cost_date: draft.cost_date || new Date().toISOString().slice(0,10),
-      amount: Number(draft.amount)||0, recoverable: !!draft.recoverable,
-      recovered_amount: Number(draft.recovered_amount)||0, notes: draft.notes || null,
-    };
-    if (draft.id) {
-      const { error } = await db.from('employee_other_costs').update(clean).eq('id', draft.id);
-      if (error) return alert(error.message);
-    } else {
-      const { error } = await db.from('employee_other_costs').insert(clean);
-      if (error) return alert(error.message);
+  // ── Currency converter ──────────────────────────────────────
+  // Step 1: try direct Frankfurter API
+  // Step 2: if Chrome blocks it (CORS from file://), retry via corsproxy.io
+  // Step 3: if both fail, show manual-entry message
+  const fetchFxRate = async () => {
+    if (!draft.cost_date || !draft.original_amount || Number(draft.original_amount) <= 0) {
+      return alert('Please enter the date and the original amount first.');
     }
-    setDraft(null); load();
+    setFxLoading(true);
+    setFxStatus('Fetching rate…');
+    const cur        = draft.original_currency || 'INR';
+    const directUrl  = `https://api.frankfurter.app/${draft.cost_date}?from=${cur}&to=AED`;
+    const proxyUrl   = `https://corsproxy.io/?${encodeURIComponent(directUrl)}`;
+
+    let json = null;
+    // Try 1 — direct (works when app is hosted on a server or CORS is allowed)
+    try {
+      const res = await fetch(directUrl, { mode:'cors' });
+      if (res.ok) json = await res.json();
+    } catch (_) { /* CORS blocked from file:// — expected, fall through */ }
+
+    // Try 2 — CORS proxy (works when app is opened as a local file)
+    if (!json) {
+      try {
+        setFxStatus('Direct blocked — retrying via proxy…');
+        const res2 = await fetch(proxyUrl);
+        if (res2.ok) json = await res2.json();
+      } catch (e2) { /* proxy also failed */ }
+    }
+
+    if (json && json.rates && json.rates.AED) {
+      const rate = json.rates.AED;
+      const aed  = (Number(draft.original_amount) * rate).toFixed(2);
+      setDraft(d => ({
+        ...d,
+        exchange_rate: rate,
+        amount: aed,
+        notes: `${cur} ${Number(d.original_amount).toLocaleString()} × ${rate} = AED ${aed} (rate date: ${json.date})`,
+      }));
+      setFxStatus(`✓ 1 ${cur} = ${rate} AED  (${json.date})`);
+    } else {
+      setFxStatus('');
+      alert('Could not fetch rate automatically.\nEnter the AED amount manually in the Amount (AED) field above.\n\nTip: check https://www.frankfurter.app for the rate on ' + draft.cost_date);
+    }
+    setFxLoading(false);
   };
 
-  const remove = async (id) => {
-    if (!window.confirm('Delete this entry?')) return;
-    await db.from('employee_other_costs').delete().eq('id', id); load();
+  const save=async()=>{
+    if(!draft.employee_id)return alert('Employee is required');
+    if(!draft.cost_type)return alert('Cost type is required');
+    const clean={employee_id:draft.employee_id,full_name:draft.full_name||null,cost_type:draft.cost_type,cost_date:draft.cost_date||new Date().toISOString().slice(0,10),amount:Number(draft.amount)||0,recoverable:!!draft.recoverable,recovered_amount:Number(draft.recovered_amount)||0,notes:draft.notes||null,original_currency:draft.original_currency||null,original_amount:Number(draft.original_amount)||null,exchange_rate:draft.exchange_rate||null};
+    if(draft.id){const{error}=await db.from('employee_other_costs').update(clean).eq('id',draft.id);if(error)return alert('Save failed: '+error.message+'\n\nHave you run the DB migration SQL?');}
+    else{const{error}=await db.from('employee_other_costs').insert(clean);if(error)return alert('Save failed: '+error.message+'\n\nHave you run the DB migration SQL?');}
+    setFxStatus('');setDraft(null);load();
   };
+  const remove=async(id)=>{if(!window.confirm('Delete?'))return;await db.from('employee_other_costs').delete().eq('id',id);load();};
 
-  const visibleRows = useMemo(() => filterEmp ? rows.filter(r => r.employee_id === filterEmp) : rows, [rows, filterEmp]);
-  const total = visibleRows.reduce((s,r) => s + (Number(r.amount)||0), 0);
-  const totalRecovered = visibleRows.reduce((s,r) => s + (Number(r.recovered_amount)||0), 0);
-  const outstanding = visibleRows.reduce((s,r) => s + (r.recoverable ? (Number(r.amount)||0) - (Number(r.recovered_amount)||0) : 0), 0);
+  const visibleRows    = useMemo(()=>filterEmp?rows.filter(r=>r.employee_id===filterEmp):rows,[rows,filterEmp]);
+  const deposits       = visibleRows.filter(r=>r.cost_type==='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const totalExpense   = visibleRows.filter(r=>r.cost_type!=='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const totalRecovered = visibleRows.reduce((s,r)=>s+(Number(r.recovered_amount)||0),0);
+  const outstanding    = visibleRows.reduce((s,r)=>s+(r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0),0);
+  const isDepositDraft = draft && draft.cost_type==='security_deposit';
 
-  return (
+  return(
     <div style={S.card}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', flexWrap:'wrap', gap:'10px' }}>
+      {/* Header */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
         <div>
-          <div style={{ fontWeight:800, fontSize:'14px' }}>Onboarding & Misc Costs</div>
-          <div style={{ fontSize:'12px', color:'#64748b' }}>
-            {visibleRows.length} entries · Total AED {fmt(total)} · Recovered AED {fmt(totalRecovered)} · Outstanding (advances) AED {fmt(outstanding)}
+          <div style={{fontWeight:800,fontSize:'14px'}}>Onboarding & Misc Costs</div>
+          <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px',display:'flex',gap:'16px',flexWrap:'wrap'}}>
+            <span>Expense: <strong>AED {fmt(totalExpense)}</strong></span>
+            <span style={{color:'#166534'}}>💰 Deposits received: <strong>AED {fmt(deposits)}</strong></span>
+            <span>Recovered: <strong>AED {fmt(totalRecovered)}</strong></span>
+            {outstanding>0&&<span style={{color:'#dc2626'}}>Outstanding: <strong>AED {fmt(outstanding)}</strong></span>}
           </div>
         </div>
-        <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
-          <input list="emp-list-other" placeholder="Filter by Employee ID" value={filterEmp}
-            onChange={e=>setFilterEmp(e.target.value)} style={{ ...S.input, width:'170px' }} />
-          <datalist id="emp-list-other">
-            {employees.map(e => <option key={e.id||e.employee_id} value={e.employee_id}>{e.full_name}</option>)}
-          </datalist>
+        <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+          <input list="emp-list-other" placeholder="Filter by Employee ID" value={filterEmp} onChange={e=>setFilterEmp(e.target.value)} style={{...S.input,width:'170px'}}/>
+          <datalist id="emp-list-other">{employees.map(e=><option key={e.id||e.employee_id} value={e.employee_id}>{e.full_name}</option>)}</datalist>
           <button style={S.btnPri} onClick={blank}>+ Add</button>
         </div>
       </div>
 
-      {draft && (
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#fffbeb' }}>
-          <div style={{ marginBottom:'10px' }}>
-            <label style={S.label}>Employee</label>
-            <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
-              onChange={(id,name)=>setDraft(d=>({...d, employee_id:id, full_name:name}))} />
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
-            <div>
-              <label style={S.label}>Cost Type</label>
-              <select value={draft.cost_type} onChange={e=>setDraft(d=>({...d, cost_type:e.target.value}))} style={{...S.input, width:'100%'}}>
-                {OTHER_COST_TYPES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={S.label}>Date</label>
-              <input type="date" value={draft.cost_date} onChange={e=>setDraft(d=>({...d, cost_date:e.target.value}))} style={{...S.input, width:'100%'}} />
-            </div>
-            <div>
-              <label style={S.label}>Amount (AED)</label>
-              <input type="number" value={draft.amount} onChange={e=>setDraft(d=>({...d, amount:e.target.value}))} style={{...S.input, width:'100%'}} />
-            </div>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 2fr', gap:'10px', marginBottom:'10px', alignItems:'end' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:'18px' }}>
-              <input type="checkbox" id="recov" checked={!!draft.recoverable} onChange={e=>setDraft(d=>({...d, recoverable:e.target.checked}))} style={{ width:'16px', height:'16px' }} />
-              <label htmlFor="recov" style={{ fontSize:'12.5px', fontWeight:600, color:'#475569' }}>
-                Recoverable from salary (e.g. advance)
-              </label>
-            </div>
-            <div>
-              <label style={S.label}>Recovered so far (AED)</label>
-              <input type="number" value={draft.recovered_amount} disabled={!draft.recoverable}
-                onChange={e=>setDraft(d=>({...d, recovered_amount:e.target.value}))} style={{...S.input, width:'100%', opacity: draft.recoverable?1:0.5}} />
-            </div>
-            <div>
-              <label style={S.label}>Notes</label>
-              <input value={draft.notes||''} onChange={e=>setDraft(d=>({...d, notes:e.target.value}))} style={{...S.input, width:'100%'}}
-                placeholder="e.g. Agent: ABC Manpower, Lucknow" />
-            </div>
-          </div>
-          <div style={{ display:'flex', gap:'8px' }}>
-            <button style={S.btnPri} onClick={save}>Save</button>
-            <button style={{...S.btnPri, background:'#fff', color:'#475569', border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
-          </div>
-        </div>
-      )}
+      {/* Form */}
+      {draft&&(<div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:isDepositDraft?'#f0fdf4':'#fffbeb'}}>
+        <div style={{marginBottom:'10px'}}><label style={S.label}>Employee</label><EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name} onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))}/></div>
 
-      <div style={{ overflowX:'auto' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
-          <thead>
-            <tr>
-              {['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Notes',''].map(h=><th key={h} style={S.th}>{h}</th>)}
-            </tr>
-          </thead>
+        <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+          <div><label style={S.label}>Cost Type</label>
+            <select value={draft.cost_type} onChange={e=>{setFxStatus('');setDraft(d=>({...d,cost_type:e.target.value}));}} style={{...S.input,width:'100%'}}>
+              {OTHER_COST_TYPES.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div><label style={S.label}>Date</label><input type="date" value={draft.cost_date} onChange={e=>setDraft(d=>({...d,cost_date:e.target.value,exchange_rate:null}))} style={{...S.input,width:'100%'}}/></div>
+          <div><label style={S.label}>Amount (AED)</label><input type="number" step="0.01" value={draft.amount} onChange={e=>setDraft(d=>({...d,amount:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+        </div>
+
+        {/* ── Currency Converter (security deposit only) ── */}
+        {isDepositDraft&&(
+          <div style={{background:'#dcfce7',border:'1px solid #86efac',borderRadius:'10px',padding:'12px',marginBottom:'10px'}}>
+            <div style={{fontSize:'11.5px',fontWeight:700,color:'#166534',marginBottom:'8px'}}>
+              💱 Currency Converter — employee deposited in home country
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'auto 1fr auto',gap:'8px',alignItems:'flex-end'}}>
+              <div>
+                <label style={S.label}>Currency</label>
+                <select value={draft.original_currency||'INR'} onChange={e=>setDraft(d=>({...d,original_currency:e.target.value,exchange_rate:null}))} style={S.input}>
+                  {FX_CURRENCIES.map(c=><option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={S.label}>Amount in {draft.original_currency||'INR'} (what employee deposited)</label>
+                <input type="number" value={draft.original_amount||''} onChange={e=>setDraft(d=>({...d,original_amount:e.target.value,exchange_rate:null}))} style={{...S.input,width:'100%'}} placeholder="e.g. 20000"/>
+              </div>
+              <button onClick={fetchFxRate} disabled={fxLoading||!draft.original_amount||!draft.cost_date}
+                style={{...S.btnPri,background:'#166534',whiteSpace:'nowrap',opacity:(fxLoading||!draft.original_amount||!draft.cost_date)?0.6:1}}>
+                {fxLoading ? '⏳ Fetching…' : '⟳ Convert to AED'}
+              </button>
+            </div>
+            {fxStatus&&(
+              <div style={{marginTop:'8px',fontSize:'12px',fontWeight:700,color: fxStatus.startsWith('✓')?'#166534':'#0369a1'}}>
+                {fxStatus}
+              </div>
+            )}
+            {!fxStatus&&(
+              <div style={{marginTop:'6px',fontSize:'11px',color:'#15803d'}}>
+                Enter the date + original amount above, then click <strong>⟳ Convert to AED</strong>.
+                The AED amount field will be filled automatically. You can still edit it manually.
+              </div>
+            )}
+            <div style={{marginTop:'8px',fontSize:'11px',color:'#166534',background:'#f0fdf4',padding:'6px 8px',borderRadius:'6px'}}>
+              ✅ Security deposits are <strong>income received from the employee</strong> — they offset future visa, ticket &amp; advance costs.
+            </div>
+          </div>
+        )}
+
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 2fr',gap:'10px',marginBottom:'10px',alignItems:'end'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'8px',paddingTop:'18px'}}>
+            <input type="checkbox" id="recov" checked={!!draft.recoverable} onChange={e=>setDraft(d=>({...d,recoverable:e.target.checked}))} style={{width:'16px',height:'16px'}}/>
+            <label htmlFor="recov" style={{fontSize:'12.5px',fontWeight:600,color:'#475569'}}>Recoverable from salary</label>
+          </div>
+          <div><label style={S.label}>Recovered so far (AED)</label><input type="number" value={draft.recovered_amount} disabled={!draft.recoverable} onChange={e=>setDraft(d=>({...d,recovered_amount:e.target.value}))} style={{...S.input,width:'100%',opacity:draft.recoverable?1:0.5}}/></div>
+          <div><label style={S.label}>Notes</label><input value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))} style={{...S.input,width:'100%'}} placeholder={isDepositDraft?'e.g. Rs 20000 via ICICI bank 5443':'e.g. Agent: ABC Manpower'}/></div>
+        </div>
+        <div style={{display:'flex',gap:'8px'}}><button style={{...S.btnPri,background:isDepositDraft?'#166534':'#0f172a'}} onClick={save}>Save</button><button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>{setFxStatus('');setDraft(null);}}>Cancel</button></div>
+      </div>)}
+
+      {/* Table */}
+      <div style={{overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+          <thead><tr>{['Emp ID','Name','Cost Type','Date','Currency','Orig. Amt','Rate','Amount (AED)','Recoverable','Recovered','Outstanding','Notes',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-            : visibleRows.length===0 ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
-            : visibleRows.map(r => {
-              const out = r.recoverable ? (Number(r.amount)||0) - (Number(r.recovered_amount)||0) : 0;
-              return (
-                <tr key={r.id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9' }}>
-                  <td style={{...S.td, fontFamily:'ui-monospace,monospace', fontWeight:700, color:'#2563eb'}}>{r.employee_id}</td>
-                  <td style={{...S.td, fontWeight:600}}>{r.full_name}</td>
-                  <td style={S.td}>{OTHER_COST_LABEL[r.cost_type] || r.cost_type}</td>
-                  <td style={S.td}>{r.cost_date || '—'}</td>
-                  <td style={{...S.td, fontWeight:700}}>{fmt(r.amount)}</td>
-                  <td style={S.td}>{r.recoverable ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span> : '—'}</td>
-                  <td style={S.td}>{r.recoverable ? fmt(r.recovered_amount) : '—'}</td>
-                  <td style={{...S.td, fontWeight:700, color: out>0 ? '#dc2626' : '#94a3b8'}}>{r.recoverable ? fmt(out) : '—'}</td>
-                  <td style={{...S.td, fontSize:'11.5px', maxWidth:'220px', whiteSpace:'normal'}}>{r.notes || '—'}</td>
-                  <td style={{...S.td, textAlign:'right', whiteSpace:'nowrap'}}>
-                    <button style={S.iconBtn} onClick={()=>setDraft({...r, cost_date: r.cost_date || ''})}>&#9998;</button>
-                    <button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button>
-                  </td>
-                </tr>
-              );
+            {loading?<tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+            :visibleRows.length===0?<tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No entries yet</td></tr>
+            :visibleRows.map(r=>{
+              const isD=r.cost_type==='security_deposit';
+              const out=r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0;
+              return(<tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:isD?'#f0fdf4':'transparent'}}>
+                <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+                <td style={S.td}>{isD?<span style={{display:'inline-flex',alignItems:'center',gap:'4px'}}><Badge bg="#dcfce7" color="#166534">💰 Income</Badge><span style={{fontSize:'11.5px',marginLeft:'2px'}}>Security Deposit</span></span>:(OTHER_COST_MAP[r.cost_type]?.label||r.cost_type)}</td>
+                <td style={S.td}>{r.cost_date||'—'}</td>
+                <td style={S.td}>{r.original_currency||'—'}</td>
+                <td style={S.td}>{r.original_amount?Number(r.original_amount).toLocaleString():'—'}</td>
+                <td style={S.td}>{r.exchange_rate||'—'}</td>
+                <td style={{...S.td,fontWeight:700,color:isD?'#166534':'#0f172a'}}>{isD?'+ ':''}AED {fmt(r.amount)}</td>
+                <td style={S.td}>{r.recoverable?<Badge bg="#fef3c7" color="#92400e">Yes</Badge>:'—'}</td>
+                <td style={S.td}>{r.recoverable?fmt(r.recovered_amount):'—'}</td>
+                <td style={{...S.td,fontWeight:700,color:out>0?'#dc2626':'#94a3b8'}}>{r.recoverable?fmt(out):'—'}</td>
+                <td style={{...S.td,fontSize:'11.5px',maxWidth:'200px',whiteSpace:'normal'}}>{r.notes||'—'}</td>
+                <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}><button style={S.iconBtn} onClick={()=>{setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR',original_amount:r.original_amount||'',exchange_rate:r.exchange_rate||null});}}>&#9998;</button><button style={S.iconBtn} onClick={()=>remove(r.id)}>&#128465;</button></td>
+              </tr>);
             })}
           </tbody>
         </table>
@@ -584,133 +507,112 @@ function OtherCostsTable({ employees }) {
   );
 }
 
-// ============================================================
-// P&L Dashboard — pulls from views employee_pnl_monthly / employee_pnl_summary
-// ============================================================
+// ── P&L Dashboard ─────────────────────────────────────────────
 function PnlDashboard({ empMeta }) {
-  const [summary, setSummary] = useState([]);
-  const [monthly, setMonthly] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedEmp, setSelectedEmp] = useState(null);
-
-  const load = async () => {
+  const [summary,setSummary]=useState([]);const [monthly,setMonthly]=useState([]);const [deposits,setDeposits]=useState([]);const [loading,setLoading]=useState(true);const [selectedEmp,setSelectedEmp]=useState(null);
+  const load=async()=>{
     setLoading(true);
-    const [s, m] = await Promise.all([
-      db.from('employee_pnl_summary').select('*').order('lifetime_net', { ascending:true }),
-      db.from('employee_pnl_monthly').select('*').order('month', { ascending:true }),
+    const[s,m,dep]=await Promise.all([
+      db.from('employee_pnl_summary').select('*').order('lifetime_net',{ascending:true}),
+      db.from('employee_pnl_monthly').select('*').order('month',{ascending:true}),
+      // Fetch security deposits separately — the DB view counts them as expense but they are income
+      db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
     ]);
-    if (s.data) setSummary(s.data);
-    if (m.data) setMonthly(m.data);
+    if(s.data)setSummary(s.data);
+    if(m.data)setMonthly(m.data);
+    if(dep.data)setDeposits(dep.data);
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(()=>{load();},[]);
+  const empMonthly=useMemo(()=>monthly.filter(r=>r.employee_id===selectedEmp),[monthly,selectedEmp]);
 
-  const empMonthly = useMemo(() => monthly.filter(r => r.employee_id === selectedEmp), [monthly, selectedEmp]);
+  // Security deposits were saved in employee_other_costs and the DB view incorrectly
+  // counts them as expenses. We correct this here: deposits move from Expense → Income.
+  const depositMap=useMemo(()=>{
+    const m={};
+    deposits.forEach(d=>{m[d.employee_id]=(m[d.employee_id]||0)+(Number(d.amount)||0);});
+    return m;
+  },[deposits]);
 
-  const grandTotals = summary.reduce((a,r)=>({
-    income: a.income + (r.lifetime_income||0),
-    expense: a.expense + (r.lifetime_expense||0),
-    net: a.net + (r.lifetime_net||0),
-  }), {income:0, expense:0, net:0});
-
-  return (
+  // Grand totals with deposit correction
+  const G=summary.reduce((a,r)=>{
+    const dep=depositMap[r.employee_id]||0;
+    return {
+      income:  a.income  + (r.lifetime_income||0)  + dep,
+      expense: a.expense + Math.max(0,(r.lifetime_expense||0) - dep),
+      net:     a.net     + (r.lifetime_net||0) + 2*dep,
+    };
+  },{income:0,expense:0,net:0});
+  return(
     <div>
-      {/* Top summary cards */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'12px', marginBottom:'16px' }}>
-        <div style={{...S.card, padding:'16px'}}>
-          <div style={{ fontSize:'12px', color:'#64748b', fontWeight:600 }}>Total Income (all employees)</div>
-          <div style={{ fontSize:'22px', fontWeight:800, color:'#166534', marginTop:'6px' }}>AED {fmt(grandTotals.income)}</div>
-        </div>
-        <div style={{...S.card, padding:'16px'}}>
-          <div style={{ fontSize:'12px', color:'#64748b', fontWeight:600 }}>Total Expense (all employees)</div>
-          <div style={{ fontSize:'22px', fontWeight:800, color:'#dc2626', marginTop:'6px' }}>AED {fmt(grandTotals.expense)}</div>
-        </div>
-        <div style={{...S.card, padding:'16px'}}>
-          <div style={{ fontSize:'12px', color:'#64748b', fontWeight:600 }}>Net Profit / Loss</div>
-          <div style={{ fontSize:'22px', marginTop:'6px' }}><AmountTag value={grandTotals.net} /></div>
-        </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'16px'}}>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div></div>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div></div>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Net Profit / Loss</div><div style={{fontSize:'22px',marginTop:'6px'}}><AmountTag value={G.net}/></div></div>
       </div>
-
-      {/* Per-employee summary table */}
-      <div style={{...S.card, marginBottom:'16px'}}>
-        <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', fontWeight:800, fontSize:'14px' }}>
-          Lifetime Profitability by Employee
-        </div>
-        <div style={{ overflowX:'auto' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+      <div style={{...S.card,marginBottom:'16px'}}>
+        <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:800,fontSize:'14px'}}>Lifetime Profitability by Employee</div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
             <thead><tr>{['Emp ID','Name','Total Income','Total Expense','Onboarding Cost','Advance Outstanding','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-              : summary.length===0 ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No data yet — add entries in the tabs above</td></tr>
-              : summary.map(r => (
-                <tr key={r.employee_id} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', cursor:'pointer', background: selectedEmp===r.employee_id?'#eff6ff':'transparent' }}
-                  onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>
+              {loading?<tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+              :summary.length===0?<tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No data yet</td></tr>
+              :summary.map(r=>{
+                // Apply deposit correction per employee
+                const dep       = depositMap[r.employee_id]||0;
+                const adjIncome = (r.lifetime_income||0) + dep;
+                const adjExpense= Math.max(0,(r.lifetime_expense||0) - dep);
+                const adjNet    = (r.lifetime_net||0) + 2*dep;
+                // Onboarding cost: exclude security deposits (they are income, not cost)
+                const adjOnboarding = Math.max(0,(r.lifetime_onboarding_cost||0) - dep);
+                return (
+                <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',cursor:'pointer',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>
                   <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
                   <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
-                  <td style={{...S.td,color:'#166534',fontWeight:700}}>{fmt(r.lifetime_income)}</td>
-                  <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(r.lifetime_expense)}</td>
-                  <td style={S.td}>{fmt(r.lifetime_onboarding_cost)}</td>
-                  <td style={S.td}>{(r.advance_outstanding||0)>0
-                    ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(r.advance_outstanding)}</span>
-                    : <span style={{color:'#cbd5e1'}}>—</span>}</td>
-                  <td style={S.td}><AmountTag value={r.lifetime_net} /></td>
-                  <td style={S.td}>
-                    {r.idle_months>0
-                      ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{r.idle_months} idle</span>
-                      : <span style={{color:'#cbd5e1'}}>—</span>}
+                  <td style={{...S.td,color:'#166534',fontWeight:700}}>
+                    {fmt(adjIncome)}
+                    {dep>0&&<span style={{fontSize:'10px',color:'#166534',marginLeft:'4px'}} title={`Includes AED ${fmt(dep)} security deposit`}>💰</span>}
                   </td>
+                  <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(adjExpense)}</td>
+                  <td style={S.td}>{fmt(adjOnboarding)}</td>
+                  <td style={S.td}>{(r.advance_outstanding||0)>0?<Badge bg="#fef3c7" color="#92400e">{fmt(r.advance_outstanding)}</Badge>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                  <td style={S.td}><AmountTag value={adjNet}/></td>
+                  <td style={S.td}>{r.idle_months>0?<Badge bg="#fef3c7" color="#92400e">{r.idle_months} idle</Badge>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                   <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px'}}>{selectedEmp===r.employee_id?'▲ hide months':'▼ view months'}</td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
       </div>
-
-      {/* Employee HR Snapshot (from SATCO-HR) */}
-      {selectedEmp && empMeta && empMeta[selectedEmp] && (
-        <div style={{...S.card, marginBottom:'16px', padding:'14px 18px'}}>
-          <div style={{ fontWeight:800, fontSize:'14px', marginBottom:'8px' }}>HR Snapshot — {empMeta[selectedEmp].full_name}</div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'10px', fontSize:'12.5px' }}>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Position</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].position||'—'}</div></div>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Nationality</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].nationality||'—'}</div></div>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Joining Date</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].joining_date||'—'}</div></div>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Status</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].status||'—'}</div></div>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Hired From</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].hired_from||'—'}</div></div>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Supplier / Agent</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].supplier_name||'—'}</div></div>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Mobilization Date</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].mobilization_date||'—'}</div></div>
-            <div><div style={{color:'#94a3b8',fontWeight:600}}>Site / Location</div><div style={{fontWeight:700}}>{empMeta[selectedEmp].location||'—'}</div></div>
+      {selectedEmp&&empMeta&&empMeta[selectedEmp]&&(
+        <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
+          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot — {empMeta[selectedEmp].full_name}</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',fontSize:'12.5px'}}>
+            {[['Position',empMeta[selectedEmp].position],['Nationality',empMeta[selectedEmp].nationality],['Joining Date',empMeta[selectedEmp].joining_date],['Status',empMeta[selectedEmp].status],['Hired From',empMeta[selectedEmp].hired_from],['Supplier / Agent',empMeta[selectedEmp].supplier_name],['Mobilization Date',empMeta[selectedEmp].mobilization_date],['Site / Location',empMeta[selectedEmp].location]].map(([k,v])=>(
+              <div key={k}><div style={{color:'#94a3b8',fontWeight:600}}>{k}</div><div style={{fontWeight:700}}>{v||'—'}</div></div>
+            ))}
           </div>
         </div>
       )}
-
-      {/* Per-employee monthly breakdown */}
-      {selectedEmp && (
+      {selectedEmp&&(
         <div style={S.card}>
-          <div style={{ padding:'14px 18px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', fontWeight:800, fontSize:'14px' }}>
-            Monthly Breakdown — {selectedEmp}
-          </div>
-          <div style={{ overflowX:'auto' }}>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12.5px' }}>
+          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:800,fontSize:'14px'}}>Monthly Breakdown — {selectedEmp}</div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
               <thead><tr>{['Month','Salary','Food','Accom.','Transport','Other','Visa','Flights','Training','Onboarding','Total Exp.','Income','Net P/L'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
               <tbody>
-                {empMonthly.map(r => (
-                  <tr key={r.month} className="hr-row" style={{ borderTop:'1px solid #f1f5f9', background: r.total_income===0 ? '#fffbeb' : 'transparent' }}>
-                    <td style={{...S.td,fontWeight:700,whiteSpace:'nowrap'}}>{monthStr(r.month)}{r.total_income===0 && <span style={{marginLeft:'6px',fontSize:'10px',background:'#fde68a',color:'#92400e',padding:'1px 6px',borderRadius:'8px'}}>idle</span>}</td>
-                    <td style={S.td}>{fmt(r.salary)}</td>
-                    <td style={S.td}>{fmt(r.food)}</td>
-                    <td style={S.td}>{fmt(r.accommodation)}</td>
-                    <td style={S.td}>{fmt(r.transport)}</td>
-                    <td style={S.td}>{fmt(r.other_cost)}</td>
-                    <td style={S.td}>{fmt(r.visa_cost)}</td>
-                    <td style={S.td}>{fmt(r.flight_cost)}</td>
-                    <td style={S.td}>{fmt(r.training_cost)}</td>
-                    <td style={S.td}>{fmt(r.onboarding_cost)}</td>
-                    <td style={{...S.td,fontWeight:700,color:'#dc2626'}}>{fmt(r.total_expense)}</td>
-                    <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(r.total_income)}</td>
-                    <td style={S.td}><AmountTag value={r.net_profit_loss} /></td>
-                  </tr>
-                ))}
+                {empMonthly.map(r=>(<tr key={r.month} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:r.total_income===0?'#fffbeb':'transparent'}}>
+                  <td style={{...S.td,fontWeight:700,whiteSpace:'nowrap'}}>{monthStr(r.month)}{r.total_income===0&&<span style={{marginLeft:'6px',fontSize:'10px',background:'#fde68a',color:'#92400e',padding:'1px 6px',borderRadius:'8px'}}>idle</span>}</td>
+                  <td style={S.td}>{fmt(r.salary)}</td><td style={S.td}>{fmt(r.food)}</td><td style={S.td}>{fmt(r.accommodation)}</td>
+                  <td style={S.td}>{fmt(r.transport)}</td><td style={S.td}>{fmt(r.other_cost)}</td>
+                  <td style={S.td}>{fmt(r.visa_cost)}</td><td style={S.td}>{fmt(r.flight_cost)}</td>
+                  <td style={S.td}>{fmt(r.training_cost)}</td><td style={S.td}>{fmt(r.onboarding_cost)}</td>
+                  <td style={{...S.td,fontWeight:700,color:'#dc2626'}}>{fmt(r.total_expense)}</td>
+                  <td style={{...S.td,fontWeight:700,color:'#166534'}}>{fmt(r.total_income)}</td>
+                  <td style={S.td}><AmountTag value={r.net_profit_loss}/></td>
+                </tr>))}
               </tbody>
             </table>
           </div>
@@ -720,133 +622,64 @@ function PnlDashboard({ empMeta }) {
   );
 }
 
-// ============================================================
-// Main App
-// ============================================================
+// ── Login ─────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setError(''); setLoading(true);
-    const { data, error } = await db.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) { setError(error.message); return; }
-    onLogin(data.session);
-  };
-
-  return (
-    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'#f1f5f9' }}>
-      <form onSubmit={submit} style={{ background:'#fff', border:'1px solid #e2e8f0', borderRadius:'12px', padding:'32px', width:'320px' }}>
-        <h2 style={{ margin:'0 0 4px', fontSize:'18px', fontWeight:800 }}>SATCO Finance</h2>
-        <div style={{ fontSize:'12px', color:'#64748b', marginBottom:'20px' }}>Sign in to continue</div>
-        <label style={S.label}>Email</label>
-        <input style={{...S.input, width:'100%', marginBottom:'12px'}} type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
-        <label style={S.label}>Password</label>
-        <input style={{...S.input, width:'100%', marginBottom:'16px'}} type="password" value={password} onChange={e=>setPassword(e.target.value)} required />
-        {error && <div style={{ color:'#dc2626', fontSize:'12px', marginBottom:'12px' }}>{error}</div>}
-        <button type="submit" disabled={loading} style={{...S.btnPri, width:'100%'}}>{loading ? 'Signing in...' : 'Sign In'}</button>
+  const [email,setEmail]=useState('');const [password,setPassword]=useState('');const [error,setError]=useState('');const [loading,setLoading]=useState(false);
+  const submit=async(e)=>{e.preventDefault();setError('');setLoading(true);const{data,error}=await db.auth.signInWithPassword({email,password});setLoading(false);if(error){setError(error.message);return;}onLogin(data.session);};
+  return(
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#f1f5f9'}}>
+      <form onSubmit={submit} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'12px',padding:'32px',width:'320px'}}>
+        <h2 style={{margin:'0 0 4px',fontSize:'18px',fontWeight:800}}>SATCO Finance</h2>
+        <div style={{fontSize:'12px',color:'#64748b',marginBottom:'20px'}}>Sign in to continue</div>
+        <label style={S.label}>Email</label><input style={{...S.input,width:'100%',marginBottom:'12px'}} type="email" value={email} onChange={e=>setEmail(e.target.value)} required/>
+        <label style={S.label}>Password</label><input style={{...S.input,width:'100%',marginBottom:'16px'}} type="password" value={password} onChange={e=>setPassword(e.target.value)} required/>
+        {error&&<div style={{color:'#dc2626',fontSize:'12px',marginBottom:'12px'}}>{error}</div>}
+        <button type="submit" disabled={loading} style={{...S.btnPri,width:'100%'}}>{loading?'Signing in...':'Sign In'}</button>
       </form>
     </div>
   );
 }
 
+// ── Main App ──────────────────────────────────────────────────
 function App() {
-  const [session, setSession] = useState(undefined);
-  const [tab, setTab] = useState('dashboard');
-  const [employees, setEmployees] = useState([]);
-  const [empMeta, setEmpMeta] = useState({}); // employee_id -> HR context
+  const [session,setSession]=useState(undefined);const [tab,setTab]=useState('dashboard');
+  const [employees,setEmployees]=useState([]);const [empMeta,setEmpMeta]=useState({});
+  // Persist banner dismissal across page reloads
+  const [showMigration,setShowMigration]=useState(()=>localStorage.getItem('satco_migration_v1')!=='done');
 
-  useEffect(() => {
-    db.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = db.auth.onAuthStateChange((_event, sess) => setSession(sess));
-    return () => listener.subscription.unsubscribe();
-  }, []);
+  useEffect(()=>{db.auth.getSession().then(({data})=>setSession(data.session));const{data:listener}=db.auth.onAuthStateChange((_e,s)=>setSession(s));return()=>listener.subscription.unsubscribe();},[]);
+  useEffect(()=>{
+    hrDb.from('employees').select('employee_id,full_name,position,nationality,joining_date,hired_from,supplier_name,status,visa_trade,department').order('employee_id')
+    .then(({data,error})=>{if(error||!data)return;setEmployees(data.map(e=>({employee_id:e.employee_id,full_name:e.full_name})));const meta={};data.forEach(e=>{meta[e.employee_id]={...e};});
+    hrDb.from('mob_demob').select('employee_id,mobilization_date,demobilization_date,location,supply').then(({data:md,error:mdErr})=>{if(!mdErr&&md)md.forEach(m=>{if(meta[m.employee_id])meta[m.employee_id]={...meta[m.employee_id],...m};});setEmpMeta(meta);});});
+  },[]);
 
-  useEffect(() => {
-    hrDb.from('employees')
-      .select('employee_id, full_name, position, nationality, joining_date, hired_from, supplier_name, status, visa_trade, department')
-      .order('employee_id')
-      .then(({ data, error }) => {
-        if (error || !data) return;
-        setEmployees(data.map(e => ({ employee_id: e.employee_id, full_name: e.full_name })));
-        const meta = {};
-        data.forEach(e => { meta[e.employee_id] = { ...e }; });
-        hrDb.from('mob_demob').select('employee_id, mobilization_date, demobilization_date, location, supply')
-          .then(({ data: md, error: mdErr }) => {
-            if (!mdErr && md) {
-              md.forEach(m => { if (meta[m.employee_id]) meta[m.employee_id] = { ...meta[m.employee_id], ...m }; });
-            }
-            setEmpMeta(meta);
-          });
-      });
-  }, []);
-
-  const tabs = [
-    ['dashboard', '📊 P&L Dashboard'],
-    ['visa', '🛂 Visa Costs'],
-    ['flights', '✈️ Flights'],
-    ['training', '🎓 Trainings'],
-    ['other', '🧾 Onboarding & Misc Costs'],
-    ['monthly', '💵 Monthly Costs'],
-    ['timesheets', '🕒 Timesheets / Income'],
-  ];
-
-  if (session === undefined) return null;
-  if (!session) return <LoginScreen onLogin={setSession} />;
-
-  return (
+  const tabs=[['dashboard','📊 P&L Dashboard'],['visa','🛂 Visa Costs'],['flights','✈️ Flights'],['training','🎓 Trainings'],['other','🧾 Onboarding & Misc Costs'],['monthly','💵 Monthly Costs'],['timesheets','🕒 Timesheets / Income']];
+  if(session===undefined)return null;
+  if(!session)return <LoginScreen onLogin={setSession}/>;
+  return(
     <div className="container">
-      <div style={{ marginBottom:'18px', display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+      <div style={{marginBottom:'18px',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
         <div>
-          <h1 style={{ margin:0, fontSize:'22px', fontWeight:800 }}>SATCO — Employee Finance &amp; P&amp;L</h1>
-          <div style={{ fontSize:'13px', color:'#64748b', marginTop:'4px' }}>
-            Track visa costs, flights, trainings, monthly recurring costs, and timesheet income per employee.
-          </div>
+          <h1 style={{margin:0,fontSize:'22px',fontWeight:800}}>SATCO — Employee Finance &amp; P&amp;L</h1>
+          <div style={{fontSize:'13px',color:'#64748b',marginTop:'4px'}}>Track visa costs, flights, trainings, monthly recurring costs, and timesheet income per employee.</div>
         </div>
-        <button onClick={()=>db.auth.signOut()} style={{ padding:'8px 14px', borderRadius:'8px', border:'1px solid #e2e8f0', background:'#fff', color:'#475569', fontWeight:700, fontSize:'12px', cursor:'pointer' }}>
-          Sign Out
-        </button>
+        <button onClick={()=>db.auth.signOut()} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12px',cursor:'pointer'}}>Sign Out</button>
       </div>
 
-      <div style={{ display:'flex', gap:'8px', marginBottom:'16px', flexWrap:'wrap' }}>
-        {tabs.map(([k,l]) => (
-          <button key={k} onClick={()=>setTab(k)}
-            style={{ padding:'9px 16px', borderRadius:'8px', border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'), background: tab===k?'#0f172a':'#fff', color: tab===k?'#fff':'#475569', fontWeight:700, fontSize:'13px', cursor:'pointer' }}>
-            {l}
-          </button>
-        ))}
+      {showMigration&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v1','done');setShowMigration(false);}}/>}
+
+      <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
+        {tabs.map(([k,l])=>(<button key={k} onClick={()=>setTab(k)} style={{padding:'9px 16px',borderRadius:'8px',border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'),background:tab===k?'#0f172a':'#fff',color:tab===k?'#fff':'#475569',fontWeight:700,fontSize:'13px',cursor:'pointer'}}>{l}</button>))}
       </div>
 
-      {tab === 'dashboard' && <PnlDashboard empMeta={empMeta} />}
-      {tab === 'visa' && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
-        fields={[
-          { key:'visa_type', label:'Visa Type', type:'select', options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation'] },
-          { key:'cost_date', label:'Date', type:'date' },
-          { key:'cost', label:'Cost (AED)', type:'number' },
-          { key:'remarks', label:'Remarks', type:'text' },
-        ]} />}
-      {tab === 'flights' && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
-        fields={[
-          { key:'flight_date', label:'Date', type:'date' },
-          { key:'sector', label:'Sector', type:'text' },
-          { key:'purpose', label:'Purpose', type:'select', options:['mobilization','demobilization','annual_leave','emergency'] },
-          { key:'cost', label:'Cost (AED)', type:'number' },
-          { key:'remarks', label:'Remarks', type:'text' },
-        ]} />}
-      {tab === 'training' && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date"
-        fields={[
-          { key:'training_name', label:'Training Name', type:'text' },
-          { key:'training_date', label:'Date', type:'date' },
-          { key:'cost', label:'Cost (AED)', type:'number' },
-          { key:'remarks', label:'Remarks', type:'text' },
-        ]} />}
-      {tab === 'other' && <OtherCostsTable employees={employees} />}
-      {tab === 'monthly' && <MonthlyCostsTable employees={employees} />}
-      {tab === 'timesheets' && <TimesheetsTable employees={employees} />}
+      {tab==='dashboard' &&<PnlDashboard empMeta={empMeta}/>}
+      {tab==='visa'      &&<CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date" fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]}/>}
+      {tab==='flights'   &&<CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date" fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]}/>}
+      {tab==='training'  &&<CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date" fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]}/>}
+      {tab==='other'     &&<OtherCostsTable employees={employees}/>}
+      {tab==='monthly'   &&<MonthlyCostsTable employees={employees}/>}
+      {tab==='timesheets'&&<TimesheetsTable employees={employees}/>}
     </div>
   );
 }
