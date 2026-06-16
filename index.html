@@ -66,6 +66,36 @@ function exportCSV(rows, filename, colDefs) {
   URL.revokeObjectURL(url);
 }
 
+// ── MULTI-SECTION CSV EXPORT (one combined file, multiple labeled blocks) ─
+function csvRow(vals) {
+  return vals.map(v => {
+    const s = String(v===undefined||v===null?'':v).replace(/"/g,'""');
+    return /[,"\n]/.test(s) ? `"${s}"` : s;
+  }).join(',');
+}
+function exportMultiSectionCSV(sections, filename) {
+  const hasData = sections.some(s => s.rows && s.rows.length>0);
+  if (!hasData) return alert('No data to export');
+  const lines = [];
+  sections.forEach(sec => {
+    lines.push(csvRow([sec.title]));
+    lines.push(csvRow(sec.cols.map(c=>c.label)));
+    if (!sec.rows || sec.rows.length===0) {
+      lines.push(csvRow(['(no entries)']));
+    } else {
+      sec.rows.forEach(r => lines.push(csvRow(sec.cols.map(c=>r[c.key]))));
+    }
+    lines.push('');
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = filename + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── HELPERS ──────────────────────────────────────────────────────
 const fmt      = (n) => (Number(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const monthStr = (d) => d ? d.slice(0,7) : '';
@@ -181,7 +211,7 @@ ALTER TABLE employee_timesheets
 }
 
 // ── GENERIC COST TABLE ────────────────────────────────────────────
-function CostTable({ title, table, employees, fields, dateField, initialFilter, hideEmpFilter }) {
+function CostTable({ title, table, employees, fields, dateField, initialFilter, hideEmpFilter, hideExportButton }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft]     = useState(null);
@@ -242,7 +272,7 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
           <div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total AED {fmt(total)}</div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
-          <button style={S.btnExp} onClick={()=>exportCSV(filtered, table, csvCols)}>⬇ Export CSV</button>
+          {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered, table, csvCols)}>⬇ Export CSV</button>}
           <button style={S.btnPri} onClick={blank}>+ Add</button>
         </div>
       </div>
@@ -319,7 +349,7 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
 }
 
 // ── MONTHLY COSTS ─────────────────────────────────────────────────
-function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
+function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExportButton }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft]     = useState(null);
@@ -388,7 +418,7 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
           <div style={{fontSize:'12px',color:'#64748b'}}>One row per employee per month</div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
-          <button style={S.btnExp} onClick={()=>exportCSV(filtered,'monthly_costs',csvCols)}>⬇ Export CSV</button>
+          {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered,'monthly_costs',csvCols)}>⬇ Export CSV</button>}
           <button style={S.btnPri} onClick={blank}>+ Add Month</button>
         </div>
       </div>
@@ -509,7 +539,7 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
 }
 
 // ── TIMESHEETS ────────────────────────────────────────────────────
-function TimesheetsTable({ employees, initialFilter, hideEmpFilter }) {
+function TimesheetsTable({ employees, initialFilter, hideEmpFilter, hideExportButton }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft]     = useState(null);
@@ -583,7 +613,7 @@ function TimesheetsTable({ employees, initialFilter, hideEmpFilter }) {
           <div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total AED {fmt(totalIncome)}</div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
-          <button style={S.btnExp} onClick={()=>exportCSV(filtered,'timesheets',csvCols)}>⬇ Export CSV</button>
+          {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered,'timesheets',csvCols)}>⬇ Export CSV</button>}
           <button style={S.btnPri} onClick={blank}>+ Add</button>
         </div>
       </div>
@@ -695,7 +725,7 @@ const OTHER_COST_TYPES = [
 const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o.label]));
 const CURRENCIES = ['INR','PKR','PHP','NPR','LKR','BDT','USD','EUR','GBP','SAR','QAR','KWD','OMR','BHD'];
 
-function OtherCostsTable({ employees, initialFilter, hideEmpFilter }) {
+function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportButton }) {
   const [rows, setRows]           = useState([]);
   const [loading, setLoading]     = useState(true);
   const [draft, setDraft]         = useState(null);
@@ -785,7 +815,7 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter }) {
           </div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
-          <button style={S.btnExp} onClick={()=>exportCSV(filtered,'onboarding_misc',csvCols)}>⬇ Export CSV</button>
+          {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered,'onboarding_misc',csvCols)}>⬇ Export CSV</button>}
           <button style={S.btnPri} onClick={blank}>+ Add</button>
         </div>
       </div>
@@ -1116,15 +1146,49 @@ function LoginScreen({ onLogin }) {
 function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBack }) {
   const meta = empMeta && empMeta[employeeId];
   const filt = { employee_id: employeeId, full_name: employeeName||'' };
+  const [exporting, setExporting] = useState(false);
+
+  const exportAll = async () => {
+    setExporting(true);
+    try {
+      const [visa, flights, training, other, monthly, timesheets] = await Promise.all([
+        db.from('employee_visa_costs').select('*').eq('employee_id',employeeId).order('cost_date',{ascending:false}),
+        db.from('employee_flights').select('*').eq('employee_id',employeeId).order('flight_date',{ascending:false}),
+        db.from('employee_training_costs').select('*').eq('employee_id',employeeId).order('training_date',{ascending:false}),
+        db.from('employee_other_costs').select('*').eq('employee_id',employeeId).order('cost_date',{ascending:false}),
+        db.from('employee_monthly_costs').select('*').eq('employee_id',employeeId).order('month',{ascending:false}),
+        db.from('employee_timesheets').select('*').eq('employee_id',employeeId).order('month',{ascending:false}),
+      ]);
+      exportMultiSectionCSV([
+        { title: `Visa Costs — ${employeeName} (${employeeId})`, rows: visa.data||[],
+          cols: [{key:'visa_type',label:'Visa Type'},{key:'cost_date',label:'Date'},{key:'cost',label:'Cost (AED)'},{key:'remarks',label:'Remarks'}] },
+        { title: `Flight Tickets — ${employeeName} (${employeeId})`, rows: flights.data||[],
+          cols: [{key:'flight_date',label:'Date'},{key:'sector',label:'Sector'},{key:'purpose',label:'Purpose'},{key:'cost',label:'Cost (AED)'},{key:'remarks',label:'Remarks'}] },
+        { title: `Training Costs — ${employeeName} (${employeeId})`, rows: training.data||[],
+          cols: [{key:'training_name',label:'Training Name'},{key:'training_date',label:'Date'},{key:'cost',label:'Cost (AED)'},{key:'remarks',label:'Remarks'}] },
+        { title: `Onboarding & Misc Costs — ${employeeName} (${employeeId})`, rows: other.data||[],
+          cols: [{key:'cost_type',label:'Cost Type'},{key:'cost_date',label:'Date'},{key:'amount',label:'Amount (AED)'},{key:'original_currency',label:'Orig Currency'},{key:'original_amount',label:'Orig Amount'},{key:'exchange_rate',label:'Exchange Rate'},{key:'recoverable',label:'Recoverable'},{key:'recovered_amount',label:'Recovered'},{key:'notes',label:'Remarks'}] },
+        { title: `Monthly Costs — ${employeeName} (${employeeId})`, rows: monthly.data||[],
+          cols: [{key:'month',label:'Month'},{key:'salary_type',label:'Type'},{key:'salary',label:'Salary'},{key:'food',label:'Food'},{key:'accommodation',label:'Accommodation'},{key:'transport',label:'Transport'},{key:'other',label:'Other'},{key:'salary_deductions',label:'Deductions'},{key:'hours_worked',label:'Hours'},{key:'hourly_rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
+        { title: `Timesheets / Income — ${employeeName} (${employeeId})`, rows: timesheets.data||[],
+          cols: [{key:'month',label:'Month'},{key:'client_project',label:'Client/Project'},{key:'income_type',label:'Mode'},{key:'hours',label:'Hours'},{key:'rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
+      ], 'employee_'+employeeId);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div>
-      <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'14px'}}>
-        <button onClick={onBack} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12.5px',cursor:'pointer'}}>← Back to Dashboard</button>
-        <div>
-          <div style={{fontWeight:800,fontSize:'17px'}}>{employeeName} <span style={{fontFamily:'ui-monospace,monospace',color:'#2563eb',fontWeight:700,fontSize:'13px'}}>({employeeId})</span></div>
-          <div style={{fontSize:'12px',color:'#64748b'}}>All visa, flight, training, onboarding, monthly cost &amp; income entries for this employee</div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',marginBottom:'14px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+          <button onClick={onBack} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12.5px',cursor:'pointer'}}>← Back to Dashboard</button>
+          <div>
+            <div style={{fontWeight:800,fontSize:'17px'}}>{employeeName} <span style={{fontFamily:'ui-monospace,monospace',color:'#2563eb',fontWeight:700,fontSize:'13px'}}>({employeeId})</span></div>
+            <div style={{fontSize:'12px',color:'#64748b'}}>All visa, flight, training, onboarding, monthly cost &amp; income entries for this employee</div>
+          </div>
         </div>
+        <button style={S.btnExp} disabled={exporting} onClick={exportAll}>{exporting?'Preparing…':'⬇ Export CSV (all sections)'}</button>
       </div>
 
       {meta && (
@@ -1139,20 +1203,20 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
       )}
 
       <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
-        <CostTable title={'Visa Costs — '+employeeName} table="employee_visa_costs" employees={employees} dateField="cost_date" initialFilter={filt} hideEmpFilter
+        <CostTable title={'Visa Costs — '+employeeName} table="employee_visa_costs" employees={employees} dateField="cost_date" initialFilter={filt} hideEmpFilter hideExportButton
           fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
 
-        <CostTable title={'Flight Tickets — '+employeeName} table="employee_flights" employees={employees} dateField="flight_date" initialFilter={filt} hideEmpFilter
+        <CostTable title={'Flight Tickets — '+employeeName} table="employee_flights" employees={employees} dateField="flight_date" initialFilter={filt} hideEmpFilter hideExportButton
           fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
 
-        <CostTable title={'Training Costs — '+employeeName} table="employee_training_costs" employees={employees} dateField="training_date" initialFilter={filt} hideEmpFilter
+        <CostTable title={'Training Costs — '+employeeName} table="employee_training_costs" employees={employees} dateField="training_date" initialFilter={filt} hideEmpFilter hideExportButton
           fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
 
-        <OtherCostsTable employees={employees} initialFilter={filt} hideEmpFilter />
+        <OtherCostsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
 
-        <MonthlyCostsTable employees={employees} initialFilter={filt} hideEmpFilter />
+        <MonthlyCostsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
 
-        <TimesheetsTable employees={employees} initialFilter={filt} hideEmpFilter />
+        <TimesheetsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
       </div>
     </div>
   );
