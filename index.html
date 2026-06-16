@@ -181,11 +181,12 @@ ALTER TABLE employee_timesheets
 }
 
 // ── GENERIC COST TABLE ────────────────────────────────────────────
-function CostTable({ title, table, employees, fields, dateField }) {
+function CostTable({ title, table, employees, fields, dateField, initialFilter, hideEmpFilter }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft]     = useState(null);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState(initialFilter||{});
+  useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
   const load = async () => {
     setLoading(true);
@@ -196,8 +197,7 @@ function CostTable({ title, table, employees, fields, dateField }) {
   useEffect(()=>{load();},[]);
 
   const filterFields = [
-    {key:'employee_id', label:'Emp ID',  width:'100px'},
-    {key:'full_name',   label:'Name',    width:'150px'},
+    ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',   label:'Name',    width:'150px'}]),
     ...fields.filter(f=>f.type!=='number'&&f.type!=='date')
       .map(f=>({key:f.key, label:f.label, options:f.options, width:f.type==='select'?'160px':'140px'})),
   ];
@@ -214,7 +214,7 @@ function CostTable({ title, table, employees, fields, dateField }) {
   ];
 
   const blank = () => {
-    const d = {employee_id:'',full_name:''};
+    const d = {employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||''};
     fields.forEach(f=>d[f.key]=f.type==='number'?'':'');
     setDraft(d);
   };
@@ -319,11 +319,12 @@ function CostTable({ title, table, employees, fields, dateField }) {
 }
 
 // ── MONTHLY COSTS ─────────────────────────────────────────────────
-function MonthlyCostsTable({ employees }) {
+function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft]     = useState(null);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState(initialFilter||{});
+  useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
   const load = async () => {
     setLoading(true);
@@ -334,8 +335,7 @@ function MonthlyCostsTable({ employees }) {
   useEffect(()=>{load();},[]);
 
   const filterFields = [
-    {key:'employee_id', label:'Emp ID',  width:'100px'},
-    {key:'full_name',   label:'Name',    width:'150px'},
+    ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',   label:'Name',    width:'150px'}]),
     {key:'salary_type', label:'Type',    width:'150px', options:[{value:'monthly_basic',label:'Monthly Basic'},{value:'hourly',label:'Hourly'}]},
     {key:'remarks',     label:'Remarks', width:'160px'},
   ];
@@ -354,7 +354,7 @@ function MonthlyCostsTable({ employees }) {
     {key:'remarks', label:'Remarks'},
   ];
 
-  const blank = ()=>setDraft({employee_id:'',full_name:'',month:'',salary_type:'monthly_basic',salary:'',food:'',accommodation:'',transport:'',other:'',remarks:'',hours_worked:'',hourly_rate:'',salary_deductions:''});
+  const blank = ()=>setDraft({employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||'',month:'',salary_type:'monthly_basic',salary:'',food:'',accommodation:'',transport:'',other:'',remarks:'',hours_worked:'',hourly_rate:'',salary_deductions:''});
 
   const save = async () => {
     if (!draft.employee_id||!draft.month) return alert('Employee ID and month are required');
@@ -509,11 +509,12 @@ function MonthlyCostsTable({ employees }) {
 }
 
 // ── TIMESHEETS ────────────────────────────────────────────────────
-function TimesheetsTable({ employees }) {
+function TimesheetsTable({ employees, initialFilter, hideEmpFilter }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft]     = useState(null);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState(initialFilter||{});
+  useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
   const load = async () => {
     setLoading(true);
@@ -524,8 +525,7 @@ function TimesheetsTable({ employees }) {
   useEffect(()=>{load();},[]);
 
   const filterFields = [
-    {key:'employee_id',    label:'Emp ID',          width:'100px'},
-    {key:'full_name',      label:'Name',             width:'150px'},
+    ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',label:'Name',width:'150px'}]),
     {key:'client_project', label:'Client / Project', width:'150px'},
     {key:'income_type',    label:'Mode',             width:'120px', options:[{value:'hourly',label:'Hourly'},{value:'direct',label:'Direct'}]},
     {key:'remarks',        label:'Remarks',          width:'150px'},
@@ -542,7 +542,7 @@ function TimesheetsTable({ employees }) {
     {key:'rate',label:'Rate'},{key:'remarks',label:'Remarks'},
   ];
 
-  const blank = ()=>setDraft({employee_id:'',full_name:'',month:'',client_project:'',income_type:'hourly',hours:'',rate:'',direct_income:'',remarks:''});
+  const blank = ()=>setDraft({employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||'',month:'',client_project:'',income_type:'hourly',hours:'',rate:'',direct_income:'',remarks:''});
   const rowIncome = (r)=>(r.hours||0)*(r.rate||0);
   const totalIncome = rows.reduce((s,r)=>s+rowIncome(r),0);
 
@@ -695,13 +695,14 @@ const OTHER_COST_TYPES = [
 const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o.label]));
 const CURRENCIES = ['INR','PKR','PHP','NPR','LKR','BDT','USD','EUR','GBP','SAR','QAR','KWD','OMR','BHD'];
 
-function OtherCostsTable({ employees }) {
+function OtherCostsTable({ employees, initialFilter, hideEmpFilter }) {
   const [rows, setRows]           = useState([]);
   const [loading, setLoading]     = useState(true);
   const [draft, setDraft]         = useState(null);
-  const [filters, setFilters]     = useState({});
+  const [filters, setFilters]     = useState(initialFilter||{});
   const [fxStatus, setFxStatus]   = useState('');
   const [fxLoading, setFxLoading] = useState(false);
+  useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
   const load = async () => {
     setLoading(true);
@@ -712,8 +713,7 @@ function OtherCostsTable({ employees }) {
   useEffect(()=>{load();},[]);
 
   const filterFields = [
-    {key:'employee_id', label:'Emp ID',    width:'100px'},
-    {key:'full_name',   label:'Name',      width:'150px'},
+    ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',label:'Name',width:'150px'}]),
     {key:'cost_type',   label:'Cost Type', width:'200px',
       options: OTHER_COST_TYPES.map(o=>({value:o.value, label:o.label.length>38?o.label.slice(0,38)+'…':o.label}))},
     {key:'notes',       label:'Remarks',   width:'150px'},
@@ -732,7 +732,7 @@ function OtherCostsTable({ employees }) {
     {key:'notes',label:'Remarks'},
   ];
 
-  const blank = ()=>{ setFxStatus(''); setDraft({employee_id:'',full_name:'',cost_type:'security_deposit',cost_date:new Date().toISOString().slice(0,10),amount:'',recoverable:false,recovered_amount:'',notes:'',original_currency:'INR',original_amount:'',exchange_rate:''}); };
+  const blank = ()=>{ setFxStatus(''); setDraft({employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||'',cost_type:'security_deposit',cost_date:new Date().toISOString().slice(0,10),amount:'',recoverable:false,recovered_amount:'',notes:'',original_currency:'INR',original_amount:'',exchange_rate:''}); };
 
   const fetchFxRate = async () => {
     if (!draft.original_amount||!draft.cost_date) return alert('Enter original amount and date first');
@@ -883,7 +883,7 @@ function OtherCostsTable({ employees }) {
 }
 
 // ── P&L DASHBOARD ─────────────────────────────────────────────────
-function PnlDashboard({ empMeta }) {
+function PnlDashboard({ empMeta, onOpenEmployee }) {
   const [summary,      setSummary]      = useState([]);
   const [monthly,      setMonthly]      = useState([]);
   const [deposits,     setDeposits]     = useState([]);
@@ -989,22 +989,24 @@ function PnlDashboard({ empMeta }) {
         <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
         <div style={{overflowX:'auto'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-            <thead><tr>{['Emp ID','Name','Total Income','Deposits Received','Total Expense','Onboarding Cost','Advance Outstanding','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Emp ID','Name','Position','Joining Date','Total Income','Deposits Received','Total Expense','Onboarding Cost','Advance Outstanding','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ? <tr><td colSpan={12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : filteredSummary.length===0
-                  ? <tr><td colSpan={10} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
+                  ? <tr><td colSpan={12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : filteredSummary.map(r=>{
                       const dep=depositMap[r.employee_id]||0;
                       const adjIncome=(r.lifetime_income||0)+dep;
                       const adjExpense=Math.max(0,(r.lifetime_expense||0)-dep);
                       const adjNet=(r.lifetime_net||0)+2*dep;
+                      const meta=empMeta&&empMeta[r.employee_id];
                       return (
-                        <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',cursor:'pointer',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}
-                          onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>
-                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                          <td style={{...S.td,fontWeight:600}}>{r.full_name}</td>
+                        <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}>
+                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',cursor:'pointer'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
+                          <td style={{...S.td,fontWeight:700,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.full_name}</td>
+                          <td style={S.td}>{(meta&&meta.position)||'—'}</td>
+                          <td style={S.td}>{(meta&&meta.joining_date)||'—'}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700}}>{fmt(adjIncome)}</td>
                           <td style={S.td}>{dep>0?<span style={{color:'#166534',fontWeight:700}}>💰 {fmt(dep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(adjExpense)}</td>
@@ -1012,7 +1014,7 @@ function PnlDashboard({ empMeta }) {
                           <td style={S.td}>{(r.advance_outstanding||0)>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(r.advance_outstanding)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={S.td}><AmountTag value={adjNet} /></td>
                           <td style={S.td}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px'}}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
+                          <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
                         </tr>
                       );
                     })}
@@ -1110,6 +1112,52 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+// ── EMPLOYEE DETAIL PAGE (single-page entry for one employee) ─────
+function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBack }) {
+  const meta = empMeta && empMeta[employeeId];
+  const filt = { employee_id: employeeId, full_name: employeeName||'' };
+
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'14px'}}>
+        <button onClick={onBack} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12.5px',cursor:'pointer'}}>← Back to Dashboard</button>
+        <div>
+          <div style={{fontWeight:800,fontSize:'17px'}}>{employeeName} <span style={{fontFamily:'ui-monospace,monospace',color:'#2563eb',fontWeight:700,fontSize:'13px'}}>({employeeId})</span></div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>All visa, flight, training, onboarding, monthly cost &amp; income entries for this employee</div>
+        </div>
+      </div>
+
+      {meta && (
+        <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
+          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',fontSize:'12.5px'}}>
+            {[['Position',meta.position],['Nationality',meta.nationality],['Joining Date',meta.joining_date],['Status',meta.status],['Hired From',meta.hired_from],['Supplier / Agent',meta.supplier_name],['Mobilization Date',meta.mobilization_date],['Site / Location',meta.location]].map(([k,v])=>(
+              <div key={k}><div style={{color:'#94a3b8',fontWeight:600}}>{k}</div><div style={{fontWeight:700}}>{v||'—'}</div></div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
+        <CostTable title={'Visa Costs — '+employeeName} table="employee_visa_costs" employees={employees} dateField="cost_date" initialFilter={filt} hideEmpFilter
+          fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
+
+        <CostTable title={'Flight Tickets — '+employeeName} table="employee_flights" employees={employees} dateField="flight_date" initialFilter={filt} hideEmpFilter
+          fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
+
+        <CostTable title={'Training Costs — '+employeeName} table="employee_training_costs" employees={employees} dateField="training_date" initialFilter={filt} hideEmpFilter
+          fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
+
+        <OtherCostsTable employees={employees} initialFilter={filt} hideEmpFilter />
+
+        <MonthlyCostsTable employees={employees} initialFilter={filt} hideEmpFilter />
+
+        <TimesheetsTable employees={employees} initialFilter={filt} hideEmpFilter />
+      </div>
+    </div>
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────
 function App() {
   const [session,   setSession]   = useState(undefined);
@@ -1117,6 +1165,7 @@ function App() {
   const [employees, setEmployees] = useState([]);
   const [empMeta,   setEmpMeta]   = useState({});
   const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v2')!=='done');
+  const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
   useEffect(()=>{
     db.auth.getSession().then(({data})=>setSession(data.session));
@@ -1156,25 +1205,33 @@ function App() {
 
       {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v2','done');setShowMig(false);}} />}
 
-      <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
-        {tabs.map(([k,l])=>(
-          <button key={k} onClick={()=>setTab(k)}
-            style={{padding:'9px 16px',borderRadius:'8px',border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'),background:tab===k?'#0f172a':'#fff',color:tab===k?'#fff':'#475569',fontWeight:700,fontSize:'13px',cursor:'pointer'}}>
-            {l}
-          </button>
-        ))}
-      </div>
+      {!detailEmp && (
+        <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
+          {tabs.map(([k,l])=>(
+            <button key={k} onClick={()=>{setTab(k);setDetailEmp(null);}}
+              style={{padding:'9px 16px',borderRadius:'8px',border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'),background:tab===k?'#0f172a':'#fff',color:tab===k?'#fff':'#475569',fontWeight:700,fontSize:'13px',cursor:'pointer'}}>
+              {l}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {tab==='dashboard' && <PnlDashboard empMeta={empMeta} />}
-      {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
-        fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
-      {tab==='flights'   && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
-        fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
-      {tab==='training'  && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date"
-        fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
-      {tab==='other'     && <OtherCostsTable employees={employees} />}
-      {tab==='monthly'   && <MonthlyCostsTable employees={employees} />}
-      {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
+      {detailEmp ? (
+        <EmployeeDetailPage employeeId={detailEmp.id} employeeName={detailEmp.name} employees={employees} empMeta={empMeta} onBack={()=>setDetailEmp(null)} />
+      ) : (
+        <>
+          {tab==='dashboard' && <PnlDashboard empMeta={empMeta} onOpenEmployee={(id,name)=>setDetailEmp({id,name})} />}
+          {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date"
+            fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
+          {tab==='flights'   && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date"
+            fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
+          {tab==='training'  && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date"
+            fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
+          {tab==='other'     && <OtherCostsTable employees={employees} />}
+          {tab==='monthly'   && <MonthlyCostsTable employees={employees} />}
+          {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
+        </>
+      )}
     </div>
   );
 }
