@@ -204,7 +204,7 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
 
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,dateField),[filtered,dateField]);
-  const colSpan  = fields.length + 3;
+  const colSpan  = fields.length + (hideEmpFilter?1:3);
 
   // CSV columns for this tab
   const csvCols = [
@@ -280,8 +280,8 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
           <thead><tr>
-            <th style={S.th}>Emp ID</th>
-            <th style={S.th}>Name</th>
+            {!hideEmpFilter && <th style={S.th}>Emp ID</th>}
+            {!hideEmpFilter && <th style={S.th}>Name</th>}
             {fields.map(f=><th key={f.key} style={S.th}>{f.label}</th>)}
             <th style={S.th}></th>
           </tr></thead>
@@ -292,11 +292,11 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
                 ? <tr><td colSpan={colSpan} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match the filters'}</td></tr>
                 : grouped.map(g=>(
                     <React.Fragment key={g.month}>
-                      <MonthGroup month={g.month} count={g.rows.length} colSpan={colSpan} />
+                      {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={colSpan} />}
                       {g.rows.map(r=>(
                         <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}} onDoubleClick={()=>setDraft({...r})}>
-                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                          <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                          {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>}
+                          {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
                           {fields.map(f=>(
                             <td key={f.key} style={f.key==='remarks'?S.tdWrap:S.td}>
                               {f.type==='number' ? 'AED '+fmt(r[f.key]) : (r[f.key]||'—')}
@@ -342,7 +342,7 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
 
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
-  const COLS = 13;
+  const COLS = hideEmpFilter?11:13;
 
   const csvCols = [
     {key:'employee_id', label:'Emp ID'}, {key:'full_name', label:'Name'},
@@ -462,7 +462,7 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
           <thead><tr>
-            {['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+            {(hideEmpFilter?['Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']:['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']).map(h=><th key={h} style={S.th}>{h}</th>)}
           </tr></thead>
           <tbody>
             {loading
@@ -471,7 +471,7 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
                 ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match filters'}</td></tr>
                 : grouped.map(g=>(
                     <React.Fragment key={g.month}>
-                      <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
+                      {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />}
                       {g.rows.map(r=>{
                         const rIsH=r.salary_type==='hourly';
                         const ded=Number(r.salary_deductions)||0;
@@ -479,8 +479,8 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter }) {
                         return (
                           <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}
                             onDoubleClick={()=>setDraft({...r,month:monthStr(r.month),salary_type:r.salary_type||'monthly_basic'})}>
-                            <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                            <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                            {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>}
+                            {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
                             <td style={S.td}>{monthStr(r.month)}</td>
                             <td style={S.td}>{rIsH?<span style={{background:'#e0f2fe',color:'#0369a1',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>:<span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>📅 Monthly</span>}</td>
                             <td style={S.td}>{fmt(r.salary)}</td>
@@ -533,7 +533,7 @@ function TimesheetsTable({ employees, initialFilter, hideEmpFilter }) {
 
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
-  const COLS = 10;
+  const COLS = hideEmpFilter?8:10;
 
   const csvCols = [
     {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
@@ -641,7 +641,7 @@ function TimesheetsTable({ employees, initialFilter, hideEmpFilter }) {
 
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead><tr>{['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{(hideEmpFilter?['Month','Client/Project','Mode','Hours','Rate','Income','Remarks','']:['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income','Remarks','']).map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -649,13 +649,13 @@ function TimesheetsTable({ employees, initialFilter, hideEmpFilter }) {
                 ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match filters'}</td></tr>
                 : grouped.map(g=>(
                     <React.Fragment key={g.month}>
-                      <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
+                      {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />}
                       {g.rows.map(r=>{
                         const isDir=r.income_type==='direct';
                         return (
                           <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}} onDoubleClick={()=>openEdit(r)}>
-                            <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                            <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                            {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>}
+                            {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
                             <td style={S.td}>{monthStr(r.month)}</td>
                             <td style={{...S.td,whiteSpace:'normal'}}>{r.client_project||'—'}</td>
                             <td style={S.td}>{isDir?<span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>💰 Direct</span>:<span style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>}</td>
@@ -721,7 +721,7 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter }) {
 
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'cost_date'),[filtered]);
-  const COLS = 10;
+  const COLS = hideEmpFilter?8:10;
 
   const csvCols = [
     {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
@@ -841,7 +841,7 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter }) {
 
       <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead><tr>{['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{(hideEmpFilter?['Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks','']:['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks','']).map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -849,15 +849,15 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter }) {
                 ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No entries yet':'No entries match filters'}</td></tr>
                 : grouped.map(g=>(
                     <React.Fragment key={g.month}>
-                      <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />
+                      {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />}
                       {g.rows.map(r=>{
                         const out=r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0;
                         const isDep=r.cost_type==='security_deposit';
                         return (
                           <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:isDep?'#f0fdf4':'transparent'}}
                             onDoubleClick={()=>{setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>
-                            <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                            <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                            {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>}
+                            {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
                             <td style={{...S.td,whiteSpace:'normal',maxWidth:'220px',fontSize:'11.5px'}}>{isDep?<span>💰 <span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>Income</span> {OTHER_COST_LABEL[r.cost_type]||r.cost_type}</span>:(OTHER_COST_LABEL[r.cost_type]||r.cost_type)}</td>
                             <td style={S.td}>{r.cost_date||'—'}</td>
                             <td style={{...S.td,fontWeight:700,color:isDep?'#166534':'#0f172a'}}>{isDep?'+':''}{fmt(r.amount)}{r.original_currency&&r.original_amount&&<div style={{fontSize:'10px',color:'#94a3b8'}}>{r.original_currency} {Number(r.original_amount).toLocaleString()}</div>}</td>
