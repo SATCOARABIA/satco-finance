@@ -191,7 +191,16 @@ ALTER TABLE employee_monthly_costs
   ADD COLUMN IF NOT EXISTS salary_type text DEFAULT 'monthly_basic',
   ADD COLUMN IF NOT EXISTS hours_worked numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS hourly_rate  numeric DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS salary_deductions numeric DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS salary_deductions numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS basic_salary numeric,
+  ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8,
+  ADD COLUMN IF NOT EXISTS working_days numeric,
+  ADD COLUMN IF NOT EXISTS month_days numeric,
+  ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS holiday_ot_hours numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS computed_salary numeric,
+  ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;
 
 ALTER TABLE employee_other_costs
   ADD COLUMN IF NOT EXISTS original_currency text,
@@ -202,8 +211,8 @@ ALTER TABLE employee_timesheets
   ADD COLUMN IF NOT EXISTS income_type text DEFAULT 'hourly';`;
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>⚠️ One-time Database Migration Required</div>
-      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only):</div>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>⚠️ One-time Database Migration Required (adds salary-calculation fields)</div>
+      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run, it skips columns that already exist):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
       <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>✓ I've run the migration — dismiss</button>
     </div>
@@ -349,6 +358,49 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
 }
 
 // ── MONTHLY COSTS ─────────────────────────────────────────────────
+
+// Calendar days in a "YYYY-MM" month string (used to pro-rate basic salary & allowance)
+function daysInMonth(m) {
+  if (!m) return 30;
+  const parts = m.split('-').map(Number);
+  const y = parts[0], mo = parts[1];
+  if (!y || !mo) return 30;
+  return new Date(y, mo, 0).getDate();
+}
+
+// Reproduces SATCO's accounts-department salary-sheet formula:
+//   Basic Pay     = Basic Salary ÷ Month Days × Working Days
+//   Normal OT     = (Basic Salary ÷ Month Days ÷ Hours/Day) × Normal OT Hours × 1.25
+//   Holiday OT    = (Basic Salary ÷ Month Days ÷ Hours/Day) × Holiday OT Hours × 1.5
+//   Allowance Pay = Fixed Allowance ÷ Month Days × Working Days
+//   Gross         = sum of the above (Food/Accommodation/Transport/Other are tracked separately)
+function calcProrated(d) {
+  const basic   = Number(d.basic_salary) || 0;
+  const allow   = Number(d.fixed_allowance) || 0;
+  const hpd     = Number(d.hours_per_day) || 8;
+  const mDays   = daysInMonth(d.month);
+  const wDays   = Number(d.working_days) || 0;
+  const nOT     = Number(d.normal_ot_hours) || 0;
+  const hOT     = Number(d.holiday_ot_hours) || 0;
+  const basicPay      = mDays ? (basic / mDays * wDays) : 0;
+  const hourlyBase     = (mDays && hpd) ? (basic / mDays / hpd) : 0;
+  const normalOTPay   = hourlyBase * nOT * 1.25;
+  const holidayOTPay  = hourlyBase * hOT * 1.5;
+  const allowPay       = mDays ? (allow / mDays * wDays) : 0;
+  const gross = basicPay + normalOTPay + holidayOTPay + allowPay;
+  return { monthDays: mDays, basicPay, normalOTPay, holidayOTPay, allowPay, gross };
+}
+
+function SalaryTypeBadge({ type }) {
+  const map = {
+    prorated:      { bg:'#fdf4ff', color:'#86198f', label:'📐 Calculated' },
+    monthly_basic: { bg:'#f0fdf4', color:'#166534', label:'📅 Fixed Monthly' },
+    hourly:        { bg:'#e0f2fe', color:'#0369a1', label:'⏱️ Hourly' },
+  };
+  const s = map[type] || map.monthly_basic;
+  return <span style={{background:s.bg,color:s.color,fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>{s.label}</span>;
+}
+
 function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExportButton }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
@@ -366,7 +418,7 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
 
   const filterFields = [
     ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',   label:'Name',    width:'150px'}]),
-    {key:'salary_type', label:'Type',    width:'150px', options:[{value:'monthly_basic',label:'Monthly Basic'},{value:'hourly',label:'Hourly'}]},
+    {key:'salary_type', label:'Type', width:'170px', options:[{value:'prorated',label:'Calculated (Days+OT)'},{value:'monthly_basic',label:'Fixed Monthly'},{value:'hourly',label:'Hourly'}]},
     {key:'remarks',     label:'Remarks', width:'160px'},
   ];
 
@@ -377,26 +429,65 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
   const csvCols = [
     {key:'employee_id', label:'Emp ID'}, {key:'full_name', label:'Name'},
     {key:'month', label:'Month'}, {key:'salary_type', label:'Type'},
-    {key:'salary', label:'Salary'}, {key:'food', label:'Food'},
-    {key:'accommodation', label:'Accommodation'}, {key:'transport', label:'Transport'},
+    {key:'salary', label:'Salary Paid'}, {key:'computed_salary', label:'Calculated Salary'},
+    {key:'manual_override', label:'Overridden?'},
+    {key:'basic_salary', label:'Basic Salary'}, {key:'fixed_allowance', label:'Fixed Allowance'},
+    {key:'working_days', label:'Working Days'}, {key:'month_days', label:'Days in Month'},
+    {key:'normal_ot_hours', label:'Normal OT Hrs'}, {key:'holiday_ot_hours', label:'Holiday OT Hrs'},
+    {key:'hours_per_day', label:'Hours/Day'},
+    {key:'food', label:'Food'}, {key:'accommodation', label:'Accommodation'}, {key:'transport', label:'Transport'},
     {key:'other', label:'Other'}, {key:'salary_deductions', label:'Deductions'},
-    {key:'hours_worked', label:'Hours'}, {key:'hourly_rate', label:'Rate'},
+    {key:'hours_worked', label:'Hours Worked'}, {key:'hourly_rate', label:'Hourly Rate'},
     {key:'remarks', label:'Remarks'},
   ];
 
-  const blank = ()=>setDraft({employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||'',month:'',salary_type:'monthly_basic',salary:'',food:'',accommodation:'',transport:'',other:'',remarks:'',hours_worked:'',hourly_rate:'',salary_deductions:''});
+  const blank = ()=>setDraft({
+    employee_id:initialFilter&&initialFilter.employee_id||'', full_name:initialFilter&&initialFilter.full_name||'',
+    month:'', salary_type:'prorated',
+    salary:'', food:'', accommodation:'', transport:'', other:'', remarks:'', salary_deductions:'',
+    hours_worked:'', hourly_rate:'',
+    basic_salary:'', fixed_allowance:'', hours_per_day:8, working_days:'', normal_ot_hours:'', holiday_ot_hours:'',
+    manual_override:false,
+  });
+
+  // Basic salary / allowance / hours-per-day rarely change month to month — carry them forward
+  // from this employee's most recent "Calculated" entry so they don't need retyping every time.
+  const prefillFromHistory = (employeeId, d) => {
+    if (!employeeId || d.basic_salary) return d;
+    const last = rows.filter(r=>r.employee_id===employeeId && r.salary_type==='prorated' && r.basic_salary)
+      .sort((a,b)=> (a.month<b.month?1:a.month>b.month?-1:0))[0];
+    if (!last) return d;
+    return {...d, basic_salary:last.basic_salary||'', fixed_allowance:last.fixed_allowance||'', hours_per_day:last.hours_per_day||8};
+  };
 
   const save = async () => {
     if (!draft.employee_id||!draft.month) return alert('Employee ID and month are required');
-    const isH = draft.salary_type==='hourly';
-    const grossSalary = isH?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):Number(draft.salary)||0;
+    const type = draft.salary_type||'prorated';
+    const isProrated = type==='prorated';
+    const isHourly    = type==='hourly';
+    const calc = calcProrated(draft);
+    const hourlyGross = isHourly?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):0;
+    const finalSalary = isProrated
+      ? (draft.manual_override ? (Number(draft.salary)||0) : calc.gross)
+      : isHourly ? hourlyGross
+      : (Number(draft.salary)||0);
+
     const clean = {
       employee_id:draft.employee_id, full_name:draft.full_name, month:firstOfMonth(draft.month),
-      salary_type:draft.salary_type||'monthly_basic', salary:grossSalary,
+      salary_type:type, salary:Math.round(finalSalary*100)/100,
       food:Number(draft.food)||0, accommodation:Number(draft.accommodation)||0,
       transport:Number(draft.transport)||0, other:Number(draft.other)||0, remarks:draft.remarks||null,
-      hours_worked:Number(draft.hours_worked)||0, hourly_rate:Number(draft.hourly_rate)||0,
       salary_deductions:Number(draft.salary_deductions)||0,
+      hours_worked:Number(draft.hours_worked)||0, hourly_rate:Number(draft.hourly_rate)||0,
+      basic_salary:      isProrated ? (Number(draft.basic_salary)||0) : null,
+      fixed_allowance:   isProrated ? (Number(draft.fixed_allowance)||0) : 0,
+      hours_per_day:     isProrated ? (Number(draft.hours_per_day)||8) : 8,
+      working_days:      isProrated ? (Number(draft.working_days)||0) : null,
+      month_days:        isProrated ? calc.monthDays : null,
+      normal_ot_hours:   isProrated ? (Number(draft.normal_ot_hours)||0) : 0,
+      holiday_ot_hours:  isProrated ? (Number(draft.holiday_ot_hours)||0) : 0,
+      computed_salary:   isProrated ? Math.round(calc.gross*100)/100 : null,
+      manual_override:   isProrated ? !!draft.manual_override : false,
     };
     const {error} = draft.id
       ? await db.from('employee_monthly_costs').update(clean).eq('id',draft.id)
@@ -406,9 +497,12 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
   };
   const remove = async (id)=>{ if(!window.confirm('Delete?'))return; await db.from('employee_monthly_costs').delete().eq('id',id); load(); };
 
-  const isH = draft&&draft.salary_type==='hourly';
-  const hourlyGross = isH?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):0;
-  const netPayable  = isH?hourlyGross-(Number(draft.salary_deductions)||0):0;
+  const isP = !!draft && draft.salary_type==='prorated';
+  const isH = !!draft && draft.salary_type==='hourly';
+  const isFlat = !!draft && !isP && !isH;
+  const calc = isP ? calcProrated(draft) : null;
+  const hourlyGrossPreview = isH?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):0;
+  const netPayablePreview  = isH?hourlyGrossPreview-(Number(draft.salary_deductions)||0):0;
 
   return (
     <div style={S.card}>
@@ -430,12 +524,12 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
           <div style={{marginBottom:'10px'}}>
             <label style={S.label}>Employee</label>
             <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
-              onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))} />
+              onChange={(id,name)=>setDraft(d=>prefillFromHistory(id,{...d,employee_id:id,full_name:name}))} />
           </div>
           <div style={{marginBottom:'12px'}}>
             <label style={S.label}>Salary Type</label>
-            <div style={{display:'flex',gap:'10px'}}>
-              {[['monthly_basic','📅 Monthly Basic + Allowances'],['hourly','⏱️ Hourly Rate']].map(([val,lbl])=>(
+            <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
+              {[['prorated','📐 Calculated — Days + OT (from timesheet)'],['monthly_basic','📅 Fixed Monthly Amount'],['hourly','⏱️ Hourly Rate']].map(([val,lbl])=>(
                 <label key={val} style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',
                   background:draft.salary_type===val?'#0f172a':'#f1f5f9',color:draft.salary_type===val?'#fff':'#475569',
                   border:'1px solid '+(draft.salary_type===val?'#0f172a':'#cbd5e1'),
@@ -450,7 +544,55 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
             <label style={S.label}>Month</label>
             <input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'160px'}}/>
           </div>
-          {isH ? (
+
+          {isP && (
+            <>
+              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px 14px',marginBottom:'10px'}}>
+                <div style={{fontSize:'11px',fontWeight:800,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:'8px'}}>Fixed pay rates for this employee</div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+                  <div><label style={S.label}>Basic Salary (AED/month)</label><input type="number" value={draft.basic_salary||''} onChange={e=>setDraft(d=>({...d,basic_salary:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                  <div><label style={S.label}>Fixed Allowance (AED/month)</label><input type="number" value={draft.fixed_allowance||''} onChange={e=>setDraft(d=>({...d,fixed_allowance:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                  <div><label style={S.label}>Hours / Day (OT basis)</label><input type="number" value={draft.hours_per_day===''?'':draft.hours_per_day} onChange={e=>setDraft(d=>({...d,hours_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                </div>
+              </div>
+              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px 14px',marginBottom:'10px'}}>
+                <div style={{fontSize:'11px',fontWeight:800,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:'8px'}}>This month's attendance &amp; overtime (from site timesheet)</div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+                  <div><label style={S.label}>Working Days {draft.month?('(of '+daysInMonth(draft.month)+' days in month)'):''}</label><input type="number" value={draft.working_days||''} onChange={e=>setDraft(d=>({...d,working_days:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                  <div><label style={S.label}>Normal OT Hours (×1.25)</label><input type="number" value={draft.normal_ot_hours||''} onChange={e=>setDraft(d=>({...d,normal_ot_hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                  <div><label style={S.label}>Holiday OT Hours (×1.5)</label><input type="number" value={draft.holiday_ot_hours||''} onChange={e=>setDraft(d=>({...d,holiday_ot_hours:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                </div>
+              </div>
+
+              <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
+                <div style={{display:'flex',gap:'14px',flexWrap:'wrap',marginBottom:'4px'}}>
+                  <span>Basic Pay: <strong>AED {fmt(calc.basicPay)}</strong></span>
+                  <span>Normal OT: <strong>AED {fmt(calc.normalOTPay)}</strong></span>
+                  <span>Holiday OT: <strong>AED {fmt(calc.holidayOTPay)}</strong></span>
+                  <span>Allowance: <strong>AED {fmt(calc.allowPay)}</strong></span>
+                </div>
+                <div>= Computed Gross Salary: <strong style={{fontSize:'14px'}}>AED {fmt(calc.gross)}</strong></div>
+              </div>
+
+              <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',marginBottom:'10px',fontSize:'12.5px',fontWeight:700,color:'#92400e'}}>
+                <input type="checkbox" checked={!!draft.manual_override}
+                  onChange={e=>{
+                    const checked = e.target.checked;
+                    setDraft(d=>({...d, manual_override:checked, salary: checked ? (d.salary || (Math.round(calc.gross*100)/100)) : d.salary}));
+                  }} />
+                ⚠️ Calculation doesn't match what was actually paid — enter the final salary manually
+              </label>
+              {draft.manual_override && (
+                <div style={{marginBottom:'10px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:'8px',padding:'10px 14px'}}>
+                  <label style={S.label}>Final Salary to Use (AED)</label>
+                  <input type="number" value={draft.salary||''} onChange={e=>setDraft(d=>({...d,salary:e.target.value}))} style={{...S.input,width:'220px'}}/>
+                  <div style={{fontSize:'11.5px',color:'#92400e',marginTop:'6px'}}>Formula calculated AED {fmt(calc.gross)} — note the reason for the difference in Remarks below.</div>
+                </div>
+              )}
+            </>
+          )}
+
+          {isH && (
             <>
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
                 <div><label style={S.label}>Hours Worked</label><input type="number" value={draft.hours_worked||''} onChange={e=>setDraft(d=>({...d,hours_worked:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="208"/></div>
@@ -459,25 +601,26 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
               </div>
               {(draft.hours_worked&&draft.hourly_rate)&&(
                 <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
-                  Gross: <strong>AED {fmt(hourlyGross)}</strong> · Deductions: <strong style={{color:'#dc2626'}}>AED {fmt(draft.salary_deductions||0)}</strong> · Net: <strong style={{color:netPayable>=0?'#166534':'#dc2626'}}>AED {fmt(netPayable)}</strong>
+                  Gross: <strong>AED {fmt(hourlyGrossPreview)}</strong> · Deductions: <strong style={{color:'#dc2626'}}>AED {fmt(draft.salary_deductions||0)}</strong> · Net: <strong style={{color:netPayablePreview>=0?'#166534':'#dc2626'}}>AED {fmt(netPayablePreview)}</strong>
                 </div>
               )}
-              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
-                <div><label style={S.label}>Food</label><input type="number" value={draft.food||''} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-                <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation||''} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-                <div><label style={S.label}>Transport</label><input type="number" value={draft.transport||''} onChange={e=>setDraft(d=>({...d,transport:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-                <div><label style={S.label}>Other</label><input type="number" value={draft.other||''} onChange={e=>setDraft(d=>({...d,other:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              </div>
             </>
-          ) : (
-            <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'10px',marginBottom:'10px'}}>
+          )}
+
+          {isFlat && (
+            <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:'10px',marginBottom:'10px'}}>
               <div><label style={S.label}>Basic Salary</label><input type="number" value={draft.salary||''} onChange={e=>setDraft(d=>({...d,salary:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              <div><label style={S.label}>Food</label><input type="number" value={draft.food||''} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation||''} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              <div><label style={S.label}>Transport</label><input type="number" value={draft.transport||''} onChange={e=>setDraft(d=>({...d,transport:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              <div><label style={S.label}>Other</label><input type="number" value={draft.other||''} onChange={e=>setDraft(d=>({...d,other:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Salary Deductions (AED)</label><input type="number" value={draft.salary_deductions||''} onChange={e=>setDraft(d=>({...d,salary_deductions:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>
           )}
+
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
+            <div><label style={S.label}>Food</label><input type="number" value={draft.food||''} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation||''} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Transport</label><input type="number" value={draft.transport||''} onChange={e=>setDraft(d=>({...d,transport:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Other</label><input type="number" value={draft.other||''} onChange={e=>setDraft(d=>({...d,other:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+          </div>
+
           <div style={{marginBottom:'10px'}}>
             <label style={S.label}>Remarks</label>
             <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/>
@@ -503,17 +646,25 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
                     <React.Fragment key={g.month}>
                       {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />}
                       {g.rows.map(r=>{
-                        const rIsH=r.salary_type==='hourly';
                         const ded=Number(r.salary_deductions)||0;
                         const tot=(r.salary||0)+(r.food||0)+(r.accommodation||0)+(r.transport||0)+(r.other||0)-ded;
+                        const rIsP = r.salary_type==='prorated';
                         return (
                           <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}
                             onDoubleClick={()=>setDraft({...r,month:monthStr(r.month),salary_type:r.salary_type||'monthly_basic'})}>
                             {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>}
                             {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
                             <td style={S.td}>{monthStr(r.month)}</td>
-                            <td style={S.td}>{rIsH?<span style={{background:'#e0f2fe',color:'#0369a1',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>⏱️ Hourly</span>:<span style={{background:'#f0fdf4',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>📅 Monthly</span>}</td>
-                            <td style={S.td}>{fmt(r.salary)}</td>
+                            <td style={S.td}><SalaryTypeBadge type={r.salary_type}/></td>
+                            <td style={{...S.td,whiteSpace:'normal'}}>
+                              {fmt(r.salary)}
+                              {rIsP && (
+                                <div style={{fontSize:'10.5px',color:'#94a3b8',fontWeight:600,marginTop:'2px'}}>
+                                  {r.working_days||0}/{r.month_days||'—'}d · OT {r.normal_ot_hours||0}h + Hol {r.holiday_ot_hours||0}h
+                                  {r.manual_override && <span style={{color:'#dc2626'}}> · ✏️ overridden (calc AED {fmt(r.computed_salary)})</span>}
+                                </div>
+                              )}
+                            </td>
                             <td style={S.td}>{fmt(r.food)}</td>
                             <td style={S.td}>{fmt(r.accommodation)}</td>
                             <td style={S.td}>{fmt(r.transport)}</td>
@@ -1169,7 +1320,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
         { title: `Onboarding & Misc Costs — ${employeeName} (${employeeId})`, rows: other.data||[],
           cols: [{key:'cost_type',label:'Cost Type'},{key:'cost_date',label:'Date'},{key:'amount',label:'Amount (AED)'},{key:'original_currency',label:'Orig Currency'},{key:'original_amount',label:'Orig Amount'},{key:'exchange_rate',label:'Exchange Rate'},{key:'recoverable',label:'Recoverable'},{key:'recovered_amount',label:'Recovered'},{key:'notes',label:'Remarks'}] },
         { title: `Monthly Costs — ${employeeName} (${employeeId})`, rows: monthly.data||[],
-          cols: [{key:'month',label:'Month'},{key:'salary_type',label:'Type'},{key:'salary',label:'Salary'},{key:'food',label:'Food'},{key:'accommodation',label:'Accommodation'},{key:'transport',label:'Transport'},{key:'other',label:'Other'},{key:'salary_deductions',label:'Deductions'},{key:'hours_worked',label:'Hours'},{key:'hourly_rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
+          cols: [{key:'month',label:'Month'},{key:'salary_type',label:'Type'},{key:'salary',label:'Salary Paid'},{key:'computed_salary',label:'Calculated Salary'},{key:'manual_override',label:'Overridden?'},{key:'basic_salary',label:'Basic Salary'},{key:'fixed_allowance',label:'Fixed Allowance'},{key:'working_days',label:'Working Days'},{key:'month_days',label:'Days in Month'},{key:'normal_ot_hours',label:'Normal OT Hrs'},{key:'holiday_ot_hours',label:'Holiday OT Hrs'},{key:'food',label:'Food'},{key:'accommodation',label:'Accommodation'},{key:'transport',label:'Transport'},{key:'other',label:'Other'},{key:'salary_deductions',label:'Deductions'},{key:'hours_worked',label:'Hours'},{key:'hourly_rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
         { title: `Timesheets / Income — ${employeeName} (${employeeId})`, rows: timesheets.data||[],
           cols: [{key:'month',label:'Month'},{key:'client_project',label:'Client/Project'},{key:'income_type',label:'Mode'},{key:'hours',label:'Hours'},{key:'rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
       ], 'employee_'+employeeId);
@@ -1228,7 +1379,7 @@ function App() {
   const [tab,       setTab]       = useState('dashboard');
   const [employees, setEmployees] = useState([]);
   const [empMeta,   setEmpMeta]   = useState({});
-  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v2')!=='done');
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v3')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
   useEffect(()=>{
@@ -1267,7 +1418,7 @@ function App() {
         <button onClick={()=>db.auth.signOut()} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12px',cursor:'pointer'}}>Sign Out</button>
       </div>
 
-      {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v2','done');setShowMig(false);}} />}
+      {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v3','done');setShowMig(false);}} />}
 
       {!detailEmp && (
         <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
