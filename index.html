@@ -1290,12 +1290,12 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
         <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
         <div style={{overflowX:'auto'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-            <thead><tr>{['Emp ID','Name','Position','Joining Date','Total Income','Deposits Received','Total Expense','Onboarding Cost','Advance Outstanding','Recoverable','Recovered','Balance to Recover','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Emp ID','Name','Position','Joining Date','Total Income','Deposits Received','Total Expense','Recoverable','Recovered','Balance to Recover','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={15} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : filteredSummary.length===0
-                  ? <tr><td colSpan={15} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
+                  ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : filteredSummary.map(r=>{
                       const dep=depositMap[r.employee_id]||0;
                       const adjIncome=(r.lifetime_income||0)+dep;
@@ -1313,8 +1313,6 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                           <td style={{...S.td,color:'#166534',fontWeight:700}}>{fmt(adjIncome)}</td>
                           <td style={S.td}>{dep>0?<span style={{color:'#166534',fontWeight:700}}>💰 {fmt(dep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(adjExpense)}</td>
-                          <td style={S.td}>{fmt(r.lifetime_onboarding_cost)}</td>
-                          <td style={S.td}>{(r.advance_outstanding||0)>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(r.advance_outstanding)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={S.td}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={S.td}>{rec.recoverable>0?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={S.td}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
