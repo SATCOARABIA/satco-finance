@@ -2327,12 +2327,12 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
         <button style={S.btnExp} disabled={exporting} onClick={exportAll}>{exporting?'Preparing…':'Export CSV (all sections)'}</button>
       </div>
 
-      <div style={{...S.card,marginBottom:'16px',overflow:'hidden'}}>
-        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
+      <div style={{...S.card,marginBottom:'16px',overflow:'hidden',width:'fit-content',maxWidth:'360px'}}>
+        <table style={{borderCollapse:'collapse',fontSize:'13px'}}>
           <thead>
             <tr style={{background:'#0f172a'}}>
-              <th style={{textAlign:'left',padding:'10px 18px',color:'#fff',fontWeight:700,fontSize:'11.5px',textTransform:'uppercase',letterSpacing:'.04em'}}>Cost Head</th>
-              <th style={{textAlign:'right',padding:'10px 18px',color:'#fff',fontWeight:700,fontSize:'11.5px',textTransform:'uppercase',letterSpacing:'.04em'}}>AED</th>
+              <th style={{textAlign:'left',padding:'10px 14px',color:'#fff',fontWeight:700,fontSize:'11.5px',textTransform:'uppercase',letterSpacing:'.04em'}}>Cost Head</th>
+              <th style={{textAlign:'right',padding:'10px 14px',color:'#fff',fontWeight:700,fontSize:'11.5px',textTransform:'uppercase',letterSpacing:'.04em'}}>AED</th>
             </tr>
           </thead>
           <tbody>
@@ -2343,21 +2343,21 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
               ['Salary', lifetimeTotals.salary, false],
             ].map(([label,val])=>(
               <tr key={label} style={{borderTop:'1px solid #f1f5f9'}}>
-                <td style={{padding:'9px 18px',fontWeight:600,color:'#334155'}}>{label}</td>
-                <td style={{padding:'9px 18px',textAlign:'right',fontWeight:700,color:'#dc2626'}}>{fmt(val)}</td>
+                <td style={{padding:'8px 14px',fontWeight:600,color:'#334155',whiteSpace:'nowrap'}}>{label}</td>
+                <td style={{padding:'8px 14px',textAlign:'right',fontWeight:700,color:'#dc2626',whiteSpace:'nowrap'}}>{fmt(val)}</td>
               </tr>
             ))}
             <tr style={{borderTop:'1px solid #f1f5f9',background:'#fef2f2'}}>
-              <td style={{padding:'9px 18px',fontWeight:800,color:'#0f172a'}}>Total Cost</td>
-              <td style={{padding:'9px 18px',textAlign:'right',fontWeight:800,color:'#dc2626'}}>{fmt(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)}</td>
+              <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Total Cost</td>
+              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,color:'#dc2626',whiteSpace:'nowrap'}}>{fmt(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)}</td>
             </tr>
             <tr style={{borderTop:'1px solid #f1f5f9'}}>
-              <td style={{padding:'9px 18px',fontWeight:600,color:'#334155'}}>Income</td>
-              <td style={{padding:'9px 18px',textAlign:'right',fontWeight:700,color:'#166534'}}>{fmt(incomeTotal)}</td>
+              <td style={{padding:'8px 14px',fontWeight:600,color:'#334155',whiteSpace:'nowrap'}}>Income</td>
+              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:700,color:'#166534',whiteSpace:'nowrap'}}>{fmt(incomeTotal)}</td>
             </tr>
             <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
-              <td style={{padding:'9px 18px',fontWeight:800,color:'#0f172a'}}>Net (Income − Costs)</td>
-              <td style={{padding:'9px 18px',textAlign:'right',fontWeight:800}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)} /></td>
+              <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Net (Income − Costs)</td>
+              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,whiteSpace:'nowrap'}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)} /></td>
             </tr>
           </tbody>
         </table>
