@@ -1252,14 +1252,15 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
     {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
     {key:'lifetime_income',label:'Total Income (AED)'},{key:'lifetime_expense',label:'Total Expense (AED)'},
     {key:'lifetime_net',label:'Net P/L (AED)'},{key:'lifetime_onboarding_cost',label:'Onboarding Cost'},
-    {key:'advance_outstanding',label:'Advance Outstanding'},
-    {key:'recoverable_total',label:'Recoverable'},{key:'recovered_total',label:'Recovered'},{key:'balance_to_recover',label:'Balance to Recover'},
+    {key:'advance_outstanding',label:'Advance Outstanding'},{key:'deposits_received',label:'Deposits Received'},
+    {key:'recoverable_total',label:'Recoverable'},{key:'recovered_plus_deposits',label:'Recovered / Deposits Received'},{key:'balance_to_recover',label:'Balance to Recover'},
     {key:'idle_months',label:'Idle Months'},
   ];
   const pnlExportRows = useMemo(()=>filteredSummary.map(r=>{
     const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
-    return {...r, recoverable_total:rec.recoverable, recovered_total:rec.recovered, balance_to_recover:rec.recoverable-rec.recovered};
-  }),[filteredSummary,recoveryMap]);
+    const dep=depositMap[r.employee_id]||0;
+    return {...r, deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered+dep, balance_to_recover:rec.recoverable-rec.recovered};
+  }),[filteredSummary,recoveryMap,depositMap]);
 
   const renderNotesCell=(monthKey)=>{
     const n=empNotes[monthKey];
@@ -1290,7 +1291,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
         <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
         <div style={{overflowX:'auto'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-            <thead><tr>{['Emp ID','Name','Position','Joining Date','Total Income','Deposits Received','Total Expense','Recoverable','Recovered','Balance to Recover','Net P/L','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Emp ID','Name','Position','Joining Date','Total Income','Total Expense','Net P/L','Deposits Received','Recoverable','Recovered / Deposits Received','Balance to Recover','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
               {loading
                 ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -1304,6 +1305,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                       const meta=empMeta&&empMeta[r.employee_id];
                       const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
                       const balance=rec.recoverable-rec.recovered;
+                      const recoveredPlusDep=rec.recovered+dep;
                       return (
                         <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}>
                           <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',cursor:'pointer'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
@@ -1311,12 +1313,12 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                           <td style={S.td}>{(meta&&meta.position)||'—'}</td>
                           <td style={S.td}>{(meta&&meta.joining_date)||'—'}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700}}>{fmt(adjIncome)}</td>
-                          <td style={S.td}>{dep>0?<span style={{color:'#166534',fontWeight:700}}>💰 {fmt(dep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(adjExpense)}</td>
-                          <td style={S.td}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={S.td}>{rec.recoverable>0?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={S.td}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={S.td}><AmountTag value={adjNet} /></td>
+                          <td style={S.td}>{dep>0?<span style={{color:'#166534',fontWeight:700}}>💰 {fmt(dep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={S.td}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={S.td}>{(rec.recoverable>0||dep>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(recoveredPlusDep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={S.td}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={S.td}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
                         </tr>
