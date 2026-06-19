@@ -1252,14 +1252,15 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
     {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
     {key:'lifetime_income',label:'Total Income (AED)'},{key:'lifetime_expense',label:'Total Expense (AED)'},
     {key:'lifetime_net',label:'Net P/L (AED)'},{key:'lifetime_onboarding_cost',label:'Onboarding Cost'},
-    {key:'advance_outstanding',label:'Advance Outstanding'},{key:'deposits_received',label:'Deposits Received'},
+    {key:'advance_outstanding',label:'Advance Outstanding'},{key:'deposits_received',label:'Deposits Received (info only — already included in Recovered)'},
     {key:'recoverable_total',label:'Recoverable'},{key:'recovered_plus_deposits',label:'Recovered / Deposits Received'},{key:'balance_to_recover',label:'Balance to Recover'},
     {key:'idle_months',label:'Idle Months'},
   ];
   const pnlExportRows = useMemo(()=>filteredSummary.map(r=>{
     const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
     const dep=depositMap[r.employee_id]||0;
-    return {...r, deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered+dep, balance_to_recover:rec.recoverable-rec.recovered};
+    // rec.recovered already includes deposits received (folded in once when recoveryMap is built) — do not add dep again.
+    return {...r, deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered, balance_to_recover:rec.recoverable-rec.recovered};
   }),[filteredSummary,recoveryMap,depositMap]);
 
   const renderNotesCell=(monthKey)=>{
@@ -1293,19 +1294,19 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px',tableLayout:'fixed'}}>
             <thead><tr>
               {[
-                ['Emp ID','62px'],['Name','110px'],['Position','86px'],['Joining Date','78px'],
-                ['Total Income','80px'],['Total Expense','80px'],['Net P/L','80px'],
-                ['Deposits Received','68px'],['Recoverable','68px'],['Recovered / Deposits Received','74px'],
-                ['Balance to Recover','74px'],['Idle Months','60px'],['',36],
+                ['Emp ID','64px'],['Name','115px'],['Position','90px'],['Joining Date','80px'],
+                ['Total Income','82px'],['Total Expense','82px'],['Net P/L','82px'],
+                ['Recoverable','74px'],['Recovered / Deposits Received','84px'],
+                ['Balance to Recover','80px'],['Idle Months','64px'],['',36],
               ].map(([h,w])=>(
                 <th key={h} style={{...S.th,whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere',lineHeight:'1.3',width:w,verticalAlign:'bottom'}}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ? <tr><td colSpan={12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : filteredSummary.length===0
-                  ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
+                  ? <tr><td colSpan={12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : filteredSummary.map(r=>{
                       const dep=depositMap[r.employee_id]||0;
                       const adjIncome=(r.lifetime_income||0)+dep;
@@ -1314,7 +1315,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                       const meta=empMeta&&empMeta[r.employee_id];
                       const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
                       const balance=rec.recoverable-rec.recovered;
-                      const recoveredPlusDep=rec.recovered+dep;
+                      // rec.recovered already includes deposits received (added once when recoveryMap is built) — this is the single source of truth, no further addition needed.
                       return (
                         <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}>
                           <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',cursor:'pointer',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
@@ -1324,9 +1325,8 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                           <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>{fmt(adjExpense)}</td>
                           <td style={{...S.td,padding:'7px 6px'}}><AmountTag value={adjNet} /></td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{dep>0?<span style={{color:'#166534',fontWeight:700}}>💰 {fmt(dep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||dep>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(recoveredPlusDep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||rec.recovered>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}{dep>0&&<div style={{fontSize:'10px',color:'#94a3b8',fontWeight:600}}>💰 incl. {fmt(dep)} deposit</div>}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer',padding:'7px 6px'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
