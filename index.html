@@ -1905,7 +1905,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
   const [summary,      setSummary]      = useState([]);
   const [monthly,      setMonthly]      = useState([]);
   const [deposits,     setDeposits]     = useState([]);
-  const [recoverySrc,  setRecoverySrc]  = useState({visa:[],flights:[],training:[],other:[],deductions:[]});
+  const [recoverySrc,  setRecoverySrc]  = useState({visa:[],flights:[],training:[],other:[],deductions:[],invoices:[],invoiceLines:[],invoiceRecoveries:[]});
   const [loading,      setLoading]      = useState(true);
   const [selectedEmp,  setSelectedEmp]  = useState(null);
   const [filters,      setFilters]      = useState({});
@@ -1914,7 +1914,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
 
   const load = async () => {
     setLoading(true);
-    const [s,m,d,visa,flights,training,other,ded] = await Promise.all([
+    const [s,m,d,visa,flights,training,other,ded,inv,lns,rec] = await Promise.all([
       db.from('employee_pnl_summary').select('*').order('employee_id',{ascending:true}),
       db.from('employee_pnl_monthly').select('*').order('month',{ascending:false}),
       db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
@@ -1923,6 +1923,9 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
       db.from('employee_training_costs').select('employee_id,cost,recoverable'),
       db.from('employee_other_costs').select('employee_id,amount,recoverable,cost_type'),
       db.from('employee_monthly_costs').select('employee_id,salary_deductions'),
+      db.from('employee_client_invoices').select('id,employee_id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr'),
+      db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
+      db.from('employee_client_recoveries').select('invoice_id,employee_id,amount_aed'),
     ]);
     if (s.data) setSummary(s.data);
     if (m.data) setMonthly(m.data);
@@ -1930,6 +1933,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
     setRecoverySrc({
       visa: visa.data||[], flights: flights.data||[], training: training.data||[],
       other: other.data||[], deductions: ded.data||[],
+      invoices: inv.data||[], invoiceLines: lns.data||[], invoiceRecoveries: rec.data||[],
     });
     setLoading(false);
   };
@@ -1967,17 +1971,41 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
     return m;
   },[deposits]);
 
-  // Per-employee: total recoverable (Visa+Flights+Training+Onboarding marked recoverable)
-  // vs total recovered (sum of monthly salary deductions + deposits received).
+  // Per-employee: total recoverable (Visa+Flights+Training+Onboarding marked recoverable, plus
+  // WPS overpayment vs employee's actual Client Billing share) vs total recovered (salary
+  // deductions + deposits received + logged WPS recoveries). The WPS overpayment figure is
+  // computed directly from employee_client_invoices/_invoice_lines here — the same formula the
+  // Client Billing tab uses — rather than only reading the employee_other_costs sync row, since
+  // that row is only created/repaired when the Client Billing tab itself has been opened.
   const recoveryMap = useMemo(()=>{
     const m = {};
     const ensure = (id) => { if (!m[id]) m[id] = { recoverable:0, recovered:0 }; return m[id]; };
     recoverySrc.visa.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
     recoverySrc.flights.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
     recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
-    recoverySrc.other.forEach(r=>{ if (r.recoverable && r.cost_type!=='security_deposit') ensure(r.employee_id).recoverable += Number(r.amount)||0; });
+    recoverySrc.other.forEach(r=>{ if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') ensure(r.employee_id).recoverable += Number(r.amount)||0; });
     recoverySrc.other.forEach(r=>{ if (r.cost_type==='security_deposit') ensure(r.employee_id).recovered += Number(r.amount)||0; });
     recoverySrc.deductions.forEach(r=>{ ensure(r.employee_id).recovered += Number(r.salary_deductions)||0; });
+
+    // WPS overpayment per invoice, computed directly (Received → implied FX rate → SATCO share → Employee share → vs WPS paid)
+    const linesByInvoice = {};
+    recoverySrc.invoiceLines.forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
+    recoverySrc.invoices.forEach(inv=>{
+      const lns = linesByInvoice[inv.id]||[];
+      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
+      const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
+      const received = Number(inv.received_amount_aed)||0;
+      const wps = Number(inv.wps_paid_aed)||0;
+      if (!received || !totalCcy || !wps) return;
+      const impliedRate = received/totalCcy;
+      const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
+      const empShare = received-satcoAed;
+      const overpaid = wps-empShare;
+      if (overpaid > 0.5) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100;
+    });
+    // Logged recoveries against those invoices count as recovered.
+    recoverySrc.invoiceRecoveries.forEach(r=>{ ensure(r.employee_id).recovered += Number(r.amount_aed)||0; });
+
     return m;
   },[recoverySrc]);
 
@@ -2061,7 +2089,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
             <thead><tr>
               {[
                 ['Emp ID','64px'],['Name','115px'],['Position','90px'],['Joining Date','80px'],
-                ['Visa Total','76px'],['Salary Total','80px'],['Income Total','80px'],
+                ['Income Total','80px'],
                 ['Total Income','82px'],['Total Expense','82px'],['Net P/L','82px'],
                 ['Recoverable','74px'],['Recovered / Deposits Received','84px'],
                 ['Balance to Recover','80px'],['Idle Months','64px'],['',36],
@@ -2071,9 +2099,9 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
             </tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={15} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : filteredSummary.length===0
-                  ? <tr><td colSpan={15} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
+                  ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : filteredSummary.map(r=>{
                       const dep=depositMap[r.employee_id]||0;
                       const adjIncome=(r.lifetime_income||0)+dep;
@@ -2090,8 +2118,6 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                           <td style={{...S.td,fontWeight:700,color:'#2563eb',cursor:'pointer',textDecoration:'underline',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.full_name}</td>
                           <td style={{...S.td,padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}}>{(meta&&meta.position)||'—'}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{(meta&&meta.joining_date)||'—'}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{cat.visa>0?fmt(cat.visa):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{cat.salary>0?fmt(cat.salary):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px',color:'#166534'}}>{cat.income>0?fmt(cat.income):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>{fmt(adjExpense)}</td>
@@ -2287,8 +2313,8 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
     <div>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',marginTop:'4px',marginBottom:'18px',flexWrap:'wrap'}}>
         <div style={{display:'flex',alignItems:'center',gap:'14px',flexWrap:'wrap'}}>
-          <button onClick={onBack} style={{display:'flex',alignItems:'center',gap:'6px',padding:'10px 16px',borderRadius:'8px',border:'1px solid #cbd5e1',background:'#fff',color:'#0f172a',fontWeight:700,fontSize:'13px',cursor:'pointer',boxShadow:'0 1px 2px rgba(15,23,42,0.06)'}}>
-            <span style={{fontSize:'15px'}}>&#8592;</span> Back to Dashboard
+          <button onClick={onBack} style={{display:'flex',alignItems:'center',gap:'6px',padding:'10px 18px',borderRadius:'8px',border:'none',background:'#0f172a',color:'#fff',fontWeight:700,fontSize:'13.5px',cursor:'pointer',boxShadow:'0 2px 6px rgba(15,23,42,0.25)'}}>
+            <span style={{fontSize:'16px'}}>&#8592;</span> Back to Dashboard
           </button>
           <div>
             <div style={{fontWeight:800,fontSize:'17px'}}>{employeeName} <span style={{fontFamily:'ui-monospace,monospace',color:'#2563eb',fontWeight:700,fontSize:'13px'}}>({employeeId})</span></div>
