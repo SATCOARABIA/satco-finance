@@ -2244,7 +2244,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
       db.from('employee_flights').select('cost,recoverable').eq('employee_id',employeeId),
       db.from('employee_training_costs').select('cost,recoverable').eq('employee_id',employeeId),
       db.from('employee_other_costs').select('amount,recoverable,cost_type').eq('employee_id',employeeId),
-      db.from('employee_monthly_costs').select('salary_deductions,salary').eq('employee_id',employeeId),
+      db.from('employee_monthly_costs').select('salary_deductions,salary,food,accommodation,transport,other').eq('employee_id',employeeId),
     ]);
     const recoverableSum = (rows, amtKey) => (rows||[]).filter(r=>r.recoverable).reduce((s,r)=>s+(Number(r[amtKey])||0),0);
     const visaRecoverable     = recoverableSum(visa.data, 'cost');
@@ -2264,12 +2264,18 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
     });
 
     // Lifetime totals (all entries, not just recoverable ones) for the Totals summary card.
+    // "Salary" here is the sum of each month's Net Total (Salary+Food+Accom+Transport+Other−Deductions) —
+    // matching the Net Total column on the Monthly Costs tab, i.e. the actual total paid out per month —
+    // not just the bare salary field.
     const sumAll = (rows, amtKey) => (rows||[]).reduce((s,r)=>s+(Number(r[amtKey])||0),0);
+    const monthlyNetTotal = (monthly.data||[]).reduce((s,r)=>
+      s + (Number(r.salary)||0)+(Number(r.food)||0)+(Number(r.accommodation)||0)+(Number(r.transport)||0)+(Number(r.other)||0)-(Number(r.salary_deductions)||0)
+    ,0);
     setLifetimeTotals({
       visa:     sumAll(visa.data, 'cost'),
       flights:  sumAll(flights.data, 'cost'),
       training: sumAll(training.data, 'cost'),
-      salary:   sumAll(monthly.data, 'salary'),
+      salary:   monthlyNetTotal,
     });
     setRecLoading(false);
   };
