@@ -1290,8 +1290,17 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
         </div>
         <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
         <div style={{overflowX:'auto'}}>
-          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-            <thead><tr>{['Emp ID','Name','Position','Joining Date','Total Income','Total Expense','Net P/L','Deposits Received','Recoverable','Recovered / Deposits Received','Balance to Recover','Idle Months',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px',tableLayout:'fixed'}}>
+            <thead><tr>
+              {[
+                ['Emp ID','62px'],['Name','110px'],['Position','86px'],['Joining Date','78px'],
+                ['Total Income','80px'],['Total Expense','80px'],['Net P/L','80px'],
+                ['Deposits Received','68px'],['Recoverable','68px'],['Recovered / Deposits Received','74px'],
+                ['Balance to Recover','74px'],['Idle Months','60px'],['',36],
+              ].map(([h,w])=>(
+                <th key={h} style={{...S.th,whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere',lineHeight:'1.3',width:w,verticalAlign:'bottom'}}>{h}</th>
+              ))}
+            </tr></thead>
             <tbody>
               {loading
                 ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -1308,19 +1317,19 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                       const recoveredPlusDep=rec.recovered+dep;
                       return (
                         <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}>
-                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',cursor:'pointer'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
-                          <td style={{...S.td,fontWeight:700,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.full_name}</td>
-                          <td style={S.td}>{(meta&&meta.position)||'—'}</td>
-                          <td style={S.td}>{(meta&&meta.joining_date)||'—'}</td>
-                          <td style={{...S.td,color:'#166534',fontWeight:700}}>{fmt(adjIncome)}</td>
-                          <td style={{...S.td,color:'#dc2626',fontWeight:700}}>{fmt(adjExpense)}</td>
-                          <td style={S.td}><AmountTag value={adjNet} /></td>
-                          <td style={S.td}>{dep>0?<span style={{color:'#166534',fontWeight:700}}>💰 {fmt(dep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={S.td}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={S.td}>{(rec.recoverable>0||dep>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(recoveredPlusDep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={S.td}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={S.td}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
+                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',cursor:'pointer',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
+                          <td style={{...S.td,fontWeight:700,color:'#2563eb',cursor:'pointer',textDecoration:'underline',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.full_name}</td>
+                          <td style={{...S.td,padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}}>{(meta&&meta.position)||'—'}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{(meta&&meta.joining_date)||'—'}</td>
+                          <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
+                          <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>{fmt(adjExpense)}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}><AmountTag value={adjNet} /></td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{dep>0?<span style={{color:'#166534',fontWeight:700}}>💰 {fmt(dep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||dep>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(recoveredPlusDep)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer',padding:'7px 6px'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
                         </tr>
                       );
                     })}
