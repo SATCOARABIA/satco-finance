@@ -728,20 +728,23 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
                           </tr>
                         );
                       })}
-                      <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
-                        {!hideEmpFilter && <td style={S.td}></td>}
-                        {!hideEmpFilter && <td style={{...S.td,fontWeight:800,fontSize:'11px',color:'#64748b',textTransform:'uppercase'}}>Month Total</td>}
-                        {hideEmpFilter && <td style={{...S.td,fontWeight:800,fontSize:'11px',color:'#64748b',textTransform:'uppercase'}} colSpan={2}>Month Total</td>}
-                        <td style={{...S.td,fontWeight:800}}>AED {fmt(mSalary)}</td>
-                        <td style={{...S.td,fontWeight:800}}>{fmt(mFood)}</td>
-                        <td style={{...S.td,fontWeight:800}}>{fmt(mAccom)}</td>
-                        <td style={{...S.td,fontWeight:800}}>{fmt(mTrans)}</td>
-                        <td style={{...S.td,fontWeight:800}}>{fmt(mOther)}</td>
-                        <td style={{...S.td,fontWeight:800,color:'#dc2626'}}>{mDed>0?'-'+fmt(mDed):'—'}</td>
-                        <td style={{...S.td,fontWeight:800}}>{fmt(mNet)}</td>
-                        <td style={S.td}></td>
-                        <td style={S.td}></td>
-                      </tr>
+                      {!hideEmpFilter && (
+                        <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                          <td style={S.td}></td>
+                          <td style={{...S.td,fontWeight:800,fontSize:'11px',color:'#64748b',textTransform:'uppercase'}}></td>
+                          <td style={{...S.td,fontWeight:800,fontSize:'11px',color:'#64748b',textTransform:'uppercase'}}>Month Total</td>
+                          <td style={S.td}></td>
+                          <td style={{...S.td,fontWeight:800}}>AED {fmt(mSalary)}</td>
+                          <td style={{...S.td,fontWeight:800}}>{fmt(mFood)}</td>
+                          <td style={{...S.td,fontWeight:800}}>{fmt(mAccom)}</td>
+                          <td style={{...S.td,fontWeight:800}}>{fmt(mTrans)}</td>
+                          <td style={{...S.td,fontWeight:800}}>{fmt(mOther)}</td>
+                          <td style={{...S.td,fontWeight:800,color:'#dc2626'}}>{mDed>0?'-'+fmt(mDed):'—'}</td>
+                          <td style={{...S.td,fontWeight:800}}>{fmt(mNet)}</td>
+                          <td style={S.td}></td>
+                          <td style={S.td}></td>
+                        </tr>
+                      )}
                     </React.Fragment>
                   );})
             }
