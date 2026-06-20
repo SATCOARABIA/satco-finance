@@ -2204,6 +2204,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
   const [notesLoading, setNotesLoading] = useState(false);
 
   const [tempCandMeta, setTempCandMeta] = useState({}); // temp_employee_id -> {full_name, position}
+  const [tempCandError, setTempCandError] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -2219,11 +2220,13 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
       db.from('employee_client_invoices').select('id,employee_id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr'),
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
       db.from('employee_client_recoveries').select('invoice_id,employee_id,amount_aed'),
-      hrDb.from('hiring_pipeline').select('temp_employee_id,candidate_name,position_selected,position').not('temp_employee_id','is',null),
+      hrDb.from('v_temp_candidates').select('temp_employee_id,candidate_name,position_display'),
     ]);
+    if (tempCands.error) { console.error('Temp candidate pull failed (v_temp_candidates):', tempCands.error); setTempCandError(tempCands.error.message || String(tempCands.error)); }
+    else setTempCandError(null);
     let summaryRows = s.data || [];
     const tcMeta = {};
-    (tempCands.data || []).forEach(t => { if (t.temp_employee_id) tcMeta[t.temp_employee_id] = { full_name: t.candidate_name, position: t.position_selected || t.position }; });
+    (tempCands.data || []).forEach(t => { if (t.temp_employee_id) tcMeta[t.temp_employee_id] = { full_name: t.candidate_name, position: t.position_display }; });
     setTempCandMeta(tcMeta);
     // Temp candidates (Visa Processing, not yet a real employee) don't have a row in the
     // employee_pnl_summary view — it's joined off the `employees` table, which they're not in
@@ -2400,6 +2403,11 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
 
   return (
     <div>
+      {tempCandError && (
+        <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'8px',padding:'10px 16px',marginBottom:'14px',color:'#991b1b',fontSize:'12.5px'}}>
+          ⚠️ Couldn't load in-process candidate names/positions from HR for this table — temp-ID rows (if any) will still show using the raw ID as the name. Error: <code>{tempCandError}</code>
+        </div>
+      )}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'16px'}}>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>{totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>incl. AED {fmt(totalDeposits)} deposits received</div>}</div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div></div>
@@ -2802,6 +2810,7 @@ function App() {
   const [session,   setSession]   = useState(undefined);
   const [tab,       setTab]       = useState('dashboard');
   const [employees, setEmployees] = useState([]);
+  const [tempCandError, setTempCandError] = useState(null); // surfaces hiring_pipeline pull failures (RLS, schema, etc) instead of failing silently
   const [empMeta,   setEmpMeta]   = useState({});
   const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v5')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
@@ -2822,11 +2831,18 @@ function App() {
         // EmployeePicker, before they exist in the real `employees` table. They're tagged
         // is_temp:true purely for UI distinction; nothing downstream (WPS, P&L) reads this flag,
         // so they never get pulled into payroll by accident.
-        hrDb.from('hiring_pipeline').select('temp_employee_id,candidate_name,status')
+        hrDb.from('v_temp_candidates').select('temp_employee_id,candidate_name,status')
           .not('temp_employee_id','is',null)
           .neq('status','Joined')
           .then(({data:tempCands,error:tcErr})=>{
-            if (!tcErr && tempCands && tempCands.length) {
+            if (tcErr) {
+              console.error('Temp candidate pull failed (v_temp_candidates):', tcErr);
+              setTempCandError(tcErr.message || String(tcErr));
+              setEmployees(baseEmployees);
+              return;
+            }
+            setTempCandError(null);
+            if (tempCands && tempCands.length) {
               const tempEntries = tempCands
                 .filter(t=>t.temp_employee_id)
                 .map(t=>({ employee_id:t.temp_employee_id, full_name:(t.candidate_name||'')+' (pending)', is_temp:true }));
@@ -2872,6 +2888,12 @@ function App() {
       </div>
 
       {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v5','done');setShowMig(false);}} />}
+      {tempCandError && (
+        <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'8px',padding:'10px 16px',margin:'0 0 14px',color:'#991b1b',fontSize:'12.5px'}}>
+          ⚠️ Couldn't load in-process candidates (Temp Employee IDs) from HR — they won't appear in the Employee ID picker until this is fixed. Error: <code>{tempCandError}</code>
+          <div style={{marginTop:'4px',fontSize:'11.5px',color:'#7f1d1d'}}>Likely cause: a Row Level Security policy on <code>hiring_pipeline</code> in the HR Supabase project is blocking the anon key used here. Check Supabase → HR project → Authentication → Policies → hiring_pipeline → SELECT policy.</div>
+        </div>
+      )}
 
       {!detailEmp && (
         <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
