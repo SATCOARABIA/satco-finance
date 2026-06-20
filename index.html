@@ -2203,9 +2203,11 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
   const [empNotes,     setEmpNotes]     = useState({});
   const [notesLoading, setNotesLoading] = useState(false);
 
+  const [tempCandMeta, setTempCandMeta] = useState({}); // temp_employee_id -> {full_name, position}
+
   const load = async () => {
     setLoading(true);
-    const [s,m,d,visa,flights,training,other,ded,inv,lns,rec] = await Promise.all([
+    const [s,m,d,visa,flights,training,other,ded,inv,lns,rec,tempCands] = await Promise.all([
       db.from('employee_pnl_summary').select('*').order('employee_id',{ascending:true}),
       db.from('employee_pnl_monthly').select('*').order('month',{ascending:false}),
       db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
@@ -2217,8 +2219,29 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
       db.from('employee_client_invoices').select('id,employee_id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr'),
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
       db.from('employee_client_recoveries').select('invoice_id,employee_id,amount_aed'),
+      hrDb.from('hiring_pipeline').select('temp_employee_id,candidate_name,position_selected,position').not('temp_employee_id','is',null),
     ]);
-    if (s.data) setSummary(s.data);
+    let summaryRows = s.data || [];
+    const tcMeta = {};
+    (tempCands.data || []).forEach(t => { if (t.temp_employee_id) tcMeta[t.temp_employee_id] = { full_name: t.candidate_name, position: t.position_selected || t.position }; });
+    setTempCandMeta(tcMeta);
+    // Temp candidates (Visa Processing, not yet a real employee) don't have a row in the
+    // employee_pnl_summary view — it's joined off the `employees` table, which they're not in
+    // yet by design. If a deposit was logged against their temp ID, synthesize a minimal row so
+    // it's actually visible in this table instead of only being folded into the grand totals.
+    if (d.data && d.data.length) {
+      const realIds = new Set(summaryRows.map(r => r.employee_id));
+      const depositedTempIds = [...new Set(d.data.map(r => r.employee_id))].filter(id => /T$/i.test(id) && !realIds.has(id));
+      depositedTempIds.forEach(id => {
+        summaryRows = [...summaryRows, {
+          employee_id: id, full_name: (tcMeta[id] && tcMeta[id].full_name) || id,
+          lifetime_income: 0, lifetime_expense: 0, lifetime_net: 0,
+          lifetime_onboarding_cost: 0, advance_outstanding: 0, idle_months: 0,
+          is_temp: true,
+        }];
+      });
+    }
+    if (summaryRows) setSummary(summaryRows);
     if (m.data) setMonthly(m.data);
     if (d.data) setDeposits(d.data);
     setRecoverySrc({
@@ -2413,16 +2436,17 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                       const adjExpense=Math.max(0,(r.lifetime_expense||0)-dep);
                       const adjNet=(r.lifetime_net||0)+2*dep;
                       const meta=empMeta&&empMeta[r.employee_id];
+                      const tcMeta=tempCandMeta[r.employee_id];
                       const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
                       const balance=rec.recoverable-rec.recovered;
                       const cat=categoryTotals[r.employee_id]||{visa:0,flights:0,training:0,salary:0,income:0};
                       // rec.recovered already includes deposits received (added once when recoveryMap is built) — this is the single source of truth, no further addition needed.
                       return (
                         <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}>
-                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',cursor:'pointer',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
+                          <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:r.is_temp?'#0f766e':'#2563eb',cursor:'pointer',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
                           <td style={{...S.td,fontWeight:700,color:'#2563eb',cursor:'pointer',textDecoration:'underline',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.full_name}</td>
-                          <td style={{...S.td,padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}}>{(meta&&meta.position)||'—'}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{(meta&&meta.joining_date)||'—'}</td>
+                          <td style={{...S.td,padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}}>{(meta&&meta.position)||(tcMeta&&tcMeta.position)||'—'}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{r.is_temp?<span style={{background:'#f0fdfa',color:'#0f766e',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>pending</span>:((meta&&meta.joining_date)||'—')}</td>
                           <td style={{...S.td,padding:'7px 6px',color:'#166534'}}>{cat.income>0?fmt(cat.income):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>{fmt(adjExpense)}</td>
