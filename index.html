@@ -2212,7 +2212,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
       db.from('employee_visa_costs').select('employee_id,cost,recoverable'),
       db.from('employee_flights').select('employee_id,cost,recoverable'),
       db.from('employee_training_costs').select('employee_id,cost,recoverable'),
-      db.from('employee_other_costs').select('employee_id,amount,recoverable,cost_type'),
+      db.from('employee_other_costs').select('employee_id,amount,recoverable,cost_type,recovered_amount,notes'),
       db.from('employee_monthly_costs').select('employee_id,salary_deductions'),
       db.from('employee_client_invoices').select('id,employee_id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr'),
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
@@ -2264,10 +2264,17 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
 
   // Per-employee: total recoverable (Visa+Flights+Training+Onboarding marked recoverable, plus
   // WPS overpayment vs employee's actual Client Billing share) vs total recovered (salary
-  // deductions + deposits received + logged WPS recoveries). The WPS overpayment figure is
-  // computed directly from employee_client_invoices/_invoice_lines here — the same formula the
-  // Client Billing tab uses — rather than only reading the employee_other_costs sync row, since
-  // that row is only created/repaired when the Client Billing tab itself has been opened.
+  // deductions + deposits received + logged WPS recoveries).
+  //
+  // wps_overpayment_recovery rows in employee_other_costs come in two flavours:
+  //  - Invoice-synced: created/repaired automatically by the Client Billing tab, tagged
+  //    "[INV:<id>]" in notes. For these we recompute the amount live from the invoice
+  //    (Received → implied FX rate → SATCO share → Employee share → vs WPS paid) so it
+  //    self-heals even if Client Billing hasn't been reopened since the invoice changed.
+  //  - Manual: entered directly on the Onboarding & Misc tab with no invoice behind them
+  //    (e.g. a one-off "WPS overpaid this month, recover from salary" note). These have no
+  //    [INV:id] tag, so there's nothing to recompute — just use the stored amount, exactly
+  //    like every other recoverable cost type.
   const recoveryMap = useMemo(()=>{
     const m = {};
     const ensure = (id) => { if (!m[id]) m[id] = { recoverable:0, recovered:0 }; return m[id]; };
@@ -2276,6 +2283,13 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
     recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
     recoverySrc.other.forEach(r=>{ if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') ensure(r.employee_id).recoverable += Number(r.amount)||0; });
     recoverySrc.other.forEach(r=>{ if (r.cost_type==='security_deposit') ensure(r.employee_id).recovered += Number(r.amount)||0; });
+    // Manual WPS-overpayment rows (no [INV:id] tag) — use the stored amount/recovered_amount directly.
+    recoverySrc.other.forEach(r=>{
+      if (r.cost_type==='wps_overpayment_recovery' && r.recoverable && !/\[INV:[^\]]+\]/.test(String(r.notes||''))) {
+        ensure(r.employee_id).recoverable += Number(r.amount)||0;
+        ensure(r.employee_id).recovered  += Number(r.recovered_amount)||0;
+      }
+    });
     recoverySrc.deductions.forEach(r=>{ ensure(r.employee_id).recovered += Number(r.salary_deductions)||0; });
 
     // WPS overpayment per invoice, computed directly (Received → implied FX rate → SATCO share → Employee share → vs WPS paid)
@@ -2531,7 +2545,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
       db.from('employee_visa_costs').select('cost,recoverable').eq('employee_id',employeeId),
       db.from('employee_flights').select('cost,recoverable').eq('employee_id',employeeId),
       db.from('employee_training_costs').select('cost,recoverable').eq('employee_id',employeeId),
-      db.from('employee_other_costs').select('amount,recoverable,cost_type').eq('employee_id',employeeId),
+      db.from('employee_other_costs').select('amount,recoverable,cost_type,recovered_amount,notes').eq('employee_id',employeeId),
       db.from('employee_monthly_costs').select('salary_deductions,salary,food,accommodation,transport,other').eq('employee_id',employeeId),
       db.from('employee_client_invoices').select('id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr').eq('employee_id',employeeId),
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
@@ -2542,16 +2556,23 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
     const flightsRecoverable  = recoverableSum(flights.data, 'cost');
     const trainingRecoverable = recoverableSum(training.data, 'cost');
     // Onboarding/Misc recoverable total — excludes security_deposit (that's income, tracked under
-    // "recovered") and excludes wps_overpayment_recovery (computed live from invoices just below,
-    // same as the P&L Dashboard, so this card always matches the Dashboard's figures exactly
-    // instead of depending on the stored employee_other_costs row being freshly auto-synced).
+    // "recovered") and excludes wps_overpayment_recovery (handled separately just below, since that
+    // cost type can be either invoice-synced or entered manually — see comment there).
     const otherRecoverable = (other.data||[]).filter(r=>r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery').reduce((s,r)=>s+(Number(r.amount)||0),0);
 
-    // WPS overpayment vs employee's actual Client Billing share — identical formula to the
-    // P&L Dashboard and the Client Billing tab's auto-repair, so all three always agree.
+    // WPS overpayment vs employee's actual Client Billing share. Two sources, both counted:
+    //  - Manual entries on Onboarding & Misc (no "[INV:id]" tag in notes) — e.g. Firangi's
+    //    "WPS paid 1600 vs hourly-rate salary 1350" — use the stored amount directly.
+    //  - Invoice-synced entries (tagged "[INV:id]") — recomputed live from the invoice
+    //    (Received → implied FX rate → SATCO share → Employee share → vs WPS paid), identical
+    //    formula to the P&L Dashboard and Client Billing's auto-repair, so all three agree.
+    const manualWpsRows = (other.data||[]).filter(r=>r.cost_type==='wps_overpayment_recovery' && r.recoverable && !/\[INV:[^\]]+\]/.test(String(r.notes||'')));
+    const manualWpsRecoverable = manualWpsRows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+    const manualWpsRecovered   = manualWpsRows.reduce((s,r)=>s+(Number(r.recovered_amount)||0),0);
+
     const linesByInvoice = {};
     (invoiceLines.data||[]).forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
-    let wpsOverpaymentRecoverable = 0;
+    let invoiceWpsRecoverable = 0;
     (invoices.data||[]).forEach(inv=>{
       const lns = linesByInvoice[inv.id]||[];
       const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
@@ -2563,14 +2584,15 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
       const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
       const empShare = received-satcoAed;
       const overpaid = wps-empShare;
-      if (overpaid > 0.5) wpsOverpaymentRecoverable += Math.round(overpaid*100)/100;
+      if (overpaid > 0.5) invoiceWpsRecoverable += Math.round(overpaid*100)/100;
     });
+    const wpsOverpaymentRecoverable = manualWpsRecoverable + invoiceWpsRecoverable;
 
     const totalRecoverable = visaRecoverable + flightsRecoverable + trainingRecoverable + otherRecoverable + wpsOverpaymentRecoverable;
 
     const recoveredFromDeductions = (monthly.data||[]).reduce((s,r)=>s+(Number(r.salary_deductions)||0),0);
     const depositsReceived = (other.data||[]).filter(r=>r.cost_type==='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
-    const recoveredFromInvoices = (invoiceRecoveries.data||[]).reduce((s,r)=>s+(Number(r.amount_aed)||0),0);
+    const recoveredFromInvoices = (invoiceRecoveries.data||[]).reduce((s,r)=>s+(Number(r.amount_aed)||0),0) + manualWpsRecovered;
     const totalRecovered = recoveredFromDeductions + depositsReceived + recoveredFromInvoices;
 
     setRecovery({
@@ -2725,7 +2747,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>+ WPS Recoveries Logged</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.recoveredFromInvoices)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Balance to Recover</div><div style={{fontWeight:800,fontSize:'16px',color:recovery.balance>0?'#dc2626':'#166534'}}>AED {fmt(Math.abs(recovery.balance))}{recovery.balance<0?' (over-recovered)':''}</div></div>
           </div>
-          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}>"Recovered" = sum of "Deductions" entered each month in Monthly Costs, plus any Deposits Received logged in Onboarding &amp; Misc, plus any WPS recoveries logged on Client Billing. "WPS Overpaid vs Billing" is calculated live from Client Billing invoices, the same way it's shown on the P&amp;L Dashboard — these figures will always match. To recover this employee's costs, enter the deduction amount when adding/editing their monthly salary record.</div>
+          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}>"Recovered" = sum of "Deductions" entered each month in Monthly Costs, plus any Deposits Received logged in Onboarding &amp; Misc, plus any "Recovered" amount on a manual WPS Overpaid entry, plus any WPS recoveries logged on Client Billing. "WPS Overpaid vs Billing" = manually-entered WPS-overpaid rows from Onboarding &amp; Misc, plus any amount calculated live from Client Billing invoices — same totals shown on the P&amp;L Dashboard, so these figures will always match. To recover this employee's costs, enter the deduction amount when adding/editing their monthly salary record.</div>
         </div>
       )}
 
