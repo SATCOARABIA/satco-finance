@@ -206,7 +206,8 @@ ALTER TABLE employee_monthly_costs
   ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS holiday_ot_hours numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS computed_salary numeric,
-  ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;
+  ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS recurring_allowance_total numeric DEFAULT 0;
 
 ALTER TABLE employee_other_costs
   ADD COLUMN IF NOT EXISTS original_currency text,
@@ -223,11 +224,44 @@ ALTER TABLE employee_flights
   ADD COLUMN IF NOT EXISTS recoverable boolean DEFAULT false;
 
 ALTER TABLE employee_training_costs
-  ADD COLUMN IF NOT EXISTS recoverable boolean DEFAULT false;`;
+  ADD COLUMN IF NOT EXISTS recoverable boolean DEFAULT false;
+
+-- Fix: "Onboarding & Misc Costs" save was failing with
+--   new row for relation "employee_other_costs" violates check constraint "employee_other_costs_cost_type_check"
+-- because the DB constraint's allowed list was created before "wps_overpayment_recovery" and "other"
+-- were added to the app. Re-create the constraint to match every cost_type value the app can send.
+ALTER TABLE employee_other_costs DROP CONSTRAINT IF EXISTS employee_other_costs_cost_type_check;
+ALTER TABLE employee_other_costs ADD CONSTRAINT employee_other_costs_cost_type_check
+  CHECK (cost_type IN (
+    'security_deposit','agent_commission','salary_advance','local_transport',
+    'medical_test_expense','food_accommodation_presite','site_accommodation',
+    'visit_visa_extra','wps_overpayment_recovery','other'
+  ));
+
+-- New: recurring site allowances (mobile, food, transport, etc.) that auto-apply every month
+-- an employee is on a given site, until their HR demobilization date stops them.
+CREATE TABLE IF NOT EXISTS employee_allowances (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id text NOT NULL,
+  full_name text,
+  allowance_type text NOT NULL DEFAULT 'mobile' CHECK (allowance_type IN ('mobile','food','transport','site','other')),
+  amount numeric NOT NULL DEFAULT 0,
+  location text,
+  start_date date NOT NULL,
+  end_date date,
+  auto_stop_on_demob boolean DEFAULT true,
+  active boolean DEFAULT true,
+  remarks text,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE employee_allowances ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_allowances;
+CREATE POLICY "Allow authenticated full access" ON employee_allowances
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>One-time Database Migration Required (adds salary-calculation fields)</div>
-      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run, it skips columns that already exist):</div>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>One-time Database Migration Required (fixes "Onboarding & Misc Costs" save error + adds Recurring Site Allowances)</div>
+      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run, it skips columns/policies that already exist):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
       <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss</button>
     </div>
@@ -409,6 +443,51 @@ function daysInMonth(m) {
   return new Date(y, mo, 0).getDate();
 }
 
+// ── RECURRING SITE ALLOWANCES ─────────────────────────────────────
+// An allowance (e.g. mobile, food) runs from start_date until end_date OR the employee's
+// HR demobilization_date (whichever is earlier, when auto_stop_on_demob is set), OR keeps
+// going indefinitely if neither is set. This works out, for a given "YYYY-MM" salary month,
+// which allowances were active that month and how many of that month's days they cover —
+// so a mid-month mobilization/demobilization is pro-rated the same way Basic Pay is.
+function monthBounds(monthStr) {
+  if (!monthStr) return null;
+  const [y,mo] = monthStr.split('-').map(Number);
+  if (!y||!mo) return null;
+  return { first: new Date(Date.UTC(y,mo-1,1)), last: new Date(Date.UTC(y,mo,0)) };
+}
+function allowanceActiveDaysInMonth(allowance, monthStr, demobDate) {
+  const b = monthBounds(monthStr);
+  if (!b || !allowance.start_date) return 0;
+  const start = new Date(allowance.start_date+'T00:00:00Z');
+  let end = allowance.end_date ? new Date(allowance.end_date+'T00:00:00Z') : null;
+  if (allowance.auto_stop_on_demob && demobDate) {
+    const demob = new Date(demobDate+'T00:00:00Z');
+    if (!end || demob < end) end = demob;
+  }
+  const rangeStart = start > b.first ? start : b.first;
+  const rangeEnd = end && end < b.last ? end : b.last;
+  if (rangeEnd < rangeStart) return 0;
+  return Math.round((rangeEnd - rangeStart) / 86400000) + 1;
+}
+// Returns { total, lines:[{...allowance, daysActive, amountThisMonth}], stoppedAlerts:[...] }
+function computeRecurringAllowances(allowances, monthStr, demobDate) {
+  const mDays = daysInMonth(monthStr);
+  const lines = (allowances||[]).filter(a=>a.active!==false).map(a=>{
+    const daysActive = allowanceActiveDaysInMonth(a, monthStr, demobDate);
+    const amountThisMonth = mDays ? Math.round((Number(a.amount)||0)/mDays*daysActive*100)/100 : 0;
+    return { ...a, daysActive, amountThisMonth };
+  }).filter(a=>a.daysActive>0);
+  const total = Math.round(lines.reduce((s,a)=>s+a.amountThisMonth,0)*100)/100;
+  // Flag allowances that are still "active" in the DB but whose employee has demobilized
+  // before the end of this month and auto_stop_on_demob is on — these need closing out.
+  const stoppedAlerts = (allowances||[]).filter(a=>a.active!==false && a.auto_stop_on_demob && demobDate).filter(a=>{
+    const b = monthBounds(monthStr);
+    if (!b) return false;
+    return new Date(demobDate+'T00:00:00Z') <= b.last && new Date(demobDate+'T00:00:00Z') >= b.first;
+  });
+  return { total, lines, stoppedAlerts };
+}
+
 // Reproduces SATCO's accounts-department salary-sheet formula:
 //   Basic Pay     = Basic Salary ÷ Month Days × Working Days
 //   Normal OT     = (Basic Salary ÷ Month Days ÷ Hours/Day) × Normal OT Hours × 1.25
@@ -442,11 +521,140 @@ function SalaryTypeBadge({ type }) {
   return <span style={{background:s.bg,color:s.color,fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>{s.label}</span>;
 }
 
-function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExportButton }) {
+const ALLOWANCE_TYPES = [
+  {value:'mobile',     label:'📱 Mobile Allowance'},
+  {value:'food',       label:'🍽️ Food Allowance'},
+  {value:'transport',  label:'🚗 Transport Allowance'},
+  {value:'site',       label:'🏗️ Site / Hardship Allowance'},
+  {value:'other',      label:'➕ Other Allowance'},
+];
+const ALLOWANCE_LABEL = Object.fromEntries(ALLOWANCE_TYPES.map(o=>[o.value,o.label]));
+
+// Manages recurring per-employee allowances (e.g. AED 100/month mobile allowance for a specific
+// site) that auto-apply every "Monthly Costs" salary calculation from start_date onward, and
+// auto-stop (or flag for review) once the employee's HR demobilization_date passes — so it's no
+// longer possible to "forget" to add or remove a site allowance in next month's WPS run.
+function AllowanceManager({ employees, empMeta, allowances, loading, draft, setDraft, onAdd, onSave, onDelete, onStopNow, demobDateFor }) {
+  const today = new Date().toISOString().slice(0,10);
+  return (
+    <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#faf5ff'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}}>
+        <div>
+          <div style={{fontWeight:800,fontSize:'13.5px',color:'#581c87'}}>Recurring Site Allowances</div>
+          <div style={{fontSize:'11.5px',color:'#7c3aed'}}>Set once — auto-applied to every Monthly Cost calculation from the start date until the employee demobilizes (or the end date you set).</div>
+        </div>
+        <button style={{...S.btnPri,background:'#7c3aed'}} onClick={onAdd}>+ Add Allowance</button>
+      </div>
+
+      {draft && (
+        <div style={{background:'#fff',border:'1px solid #d8b4fe',borderRadius:'8px',padding:'12px 14px',marginBottom:'12px'}}>
+          <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:'10px',marginBottom:'8px'}}>
+            <div>
+              <label style={S.label}>Employee</label>
+              <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+                onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))} />
+            </div>
+            <div>
+              <label style={S.label}>Allowance Type</label>
+              <select value={draft.allowance_type} onChange={e=>setDraft(d=>({...d,allowance_type:e.target.value}))} style={{...S.input,width:'100%'}}>
+                {ALLOWANCE_TYPES.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Amount (AED/month)</label>
+              <input type="number" value={draft.amount||''} onChange={e=>setDraft(d=>({...d,amount:e.target.value}))} style={{...S.input,width:'100%'}} />
+            </div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:'10px',marginBottom:'8px'}}>
+            <div>
+              <label style={S.label}>Site / Location</label>
+              <input value={draft.location||''} onChange={e=>setDraft(d=>({...d,location:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="e.g. ENPPI" />
+            </div>
+            <div>
+              <label style={S.label}>Start Date (effective from)</label>
+              <input type="date" value={draft.start_date||''} onChange={e=>setDraft(d=>({...d,start_date:e.target.value}))} style={{...S.input,width:'100%'}} />
+            </div>
+            <div>
+              <label style={S.label}>End Date (optional — leave blank to run until demob)</label>
+              <input type="date" value={draft.end_date||''} onChange={e=>setDraft(d=>({...d,end_date:e.target.value}))} style={{...S.input,width:'100%'}} />
+            </div>
+            <div style={{display:'flex',alignItems:'flex-end',paddingBottom:'9px'}}>
+              <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',fontSize:'12px',fontWeight:700,color:'#475569'}}>
+                <input type="checkbox" checked={draft.auto_stop_on_demob!==false} onChange={e=>setDraft(d=>({...d,auto_stop_on_demob:e.target.checked}))} />
+                Auto-stop on HR demob date
+              </label>
+            </div>
+          </div>
+          <div style={{marginBottom:'10px'}}>
+            <label style={S.label}>Remarks</label>
+            <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="e.g. approved per site assignment email" />
+          </div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <button style={{...S.btnPri,background:'#7c3aed'}} onClick={onSave}>Save Allowance</button>
+            <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
+          <thead><tr>
+            {['Emp ID','Name','Type','Site','Amount/mo','Start','End / Status','Remarks',''].map(h=><th key={h} style={S.th}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {loading
+              ? <tr><td colSpan={9} style={{padding:'20px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+              : allowances.length===0
+                ? <tr><td colSpan={9} style={{padding:'20px',textAlign:'center',color:'#94a3b8'}}>No recurring allowances set up yet</td></tr>
+                : allowances.map(a=>{
+                    const demob = demobDateFor(a.employee_id);
+                    const isStoppedByDate = a.end_date && a.end_date < today;
+                    const demobPassed = a.auto_stop_on_demob && demob && demob < today && (!a.end_date || demob < a.end_date);
+                    const isClosed = isStoppedByDate || demobPassed;
+                    return (
+                      <tr key={a.id} style={{borderTop:'1px solid #f1f5f9',opacity:a.active===false?0.5:1}}>
+                        <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#7c3aed'}}>{a.employee_id}</td>
+                        <td style={{...S.td,fontWeight:600}}>{a.full_name}</td>
+                        <td style={S.td}>{ALLOWANCE_LABEL[a.allowance_type]||a.allowance_type}</td>
+                        <td style={S.td}>{a.location||'—'}</td>
+                        <td style={{...S.td,fontWeight:700}}>AED {fmt(a.amount)}</td>
+                        <td style={S.td}>{a.start_date}</td>
+                        <td style={{...S.td,whiteSpace:'normal'}}>
+                          {isClosed
+                            ? <span style={{background:'#fee2e2',color:'#991b1b',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>
+                                Stopped {a.end_date||demob}
+                              </span>
+                            : demobPassed===false && demob
+                              ? <span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>Active · stops on demob {demob}</span>
+                              : <span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>Active · ongoing</span>}
+                        </td>
+                        <td style={{...S.td,whiteSpace:'normal',fontSize:'11px',color:'#64748b'}}>{a.remarks||'—'}</td>
+                        <td style={S.td}>
+                          <div style={{display:'flex',gap:'6px'}}>
+                            <button onClick={()=>setDraft({...a})} style={{...S.btnExp,padding:'3px 8px',fontSize:'11px'}}>Edit</button>
+                            {!a.end_date && <button onClick={()=>onStopNow(a)} style={{...S.btnExp,padding:'3px 8px',fontSize:'11px',color:'#92400e'}}>Stop Today</button>}
+                            <button onClick={()=>onDelete(a.id)} style={{...S.btnExp,padding:'3px 8px',fontSize:'11px',color:'#dc2626'}}>Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MonthlyCostsTable({ employees, empMeta, initialFilter, hideEmpFilter, hideExportButton }) {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft]     = useState(null);
   const [filters, setFilters] = useState(initialFilter||{});
+  const [allowances, setAllowances]       = useState([]);
+  const [allowLoading, setAllowLoading]   = useState(true);
+  const [allowDraft, setAllowDraft]       = useState(null); // editor for a single recurring allowance row
+  const [showAllowMgr, setShowAllowMgr]   = useState(false);
   useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
   const load = async () => {
@@ -456,6 +664,19 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
     setLoading(false);
   };
   useEffect(()=>{load();},[]);
+
+  const loadAllowances = async () => {
+    setAllowLoading(true);
+    const {data,error} = await db.from('employee_allowances').select('*').order('start_date',{ascending:false});
+    if (!error) setAllowances(data||[]);
+    setAllowLoading(false);
+  };
+  useEffect(()=>{loadAllowances();},[]);
+
+  // HR demobilization date for whichever employee is currently selected in the draft / filters,
+  // used to pro-rate and alert on recurring allowances.
+  const demobDateFor = (employeeId) => empMeta && empMeta[employeeId] && empMeta[employeeId].demobilization_date || null;
+  const allowancesFor = (employeeId) => allowances.filter(a=>a.employee_id===employeeId);
 
   const filterFields = [
     ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',   label:'Name',    width:'150px'}]),
@@ -478,6 +699,7 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
     {key:'hours_per_day', label:'Hours/Day'},
     {key:'food', label:'Food'}, {key:'accommodation', label:'Accommodation'}, {key:'transport', label:'Transport'},
     {key:'other', label:'Other'}, {key:'salary_deductions', label:'Deductions'},
+    {key:'recurring_allowance_total', label:'Recurring Allowance'},
     {key:'hours_worked', label:'Hours Worked'}, {key:'hourly_rate', label:'Hourly Rate'},
     {key:'remarks', label:'Remarks'},
   ];
@@ -507,11 +729,12 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
     const isProrated = type==='prorated';
     const isHourly    = type==='hourly';
     const calc = calcProrated(draft);
+    const recurring = computeRecurringAllowances(allowancesFor(draft.employee_id), draft.month, demobDateFor(draft.employee_id));
     const hourlyGross = isHourly?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):0;
     const finalSalary = isProrated
-      ? (draft.manual_override ? (Number(draft.salary)||0) : calc.gross)
-      : isHourly ? hourlyGross
-      : (Number(draft.salary)||0);
+      ? (draft.manual_override ? (Number(draft.salary)||0) : calc.gross + recurring.total)
+      : isHourly ? hourlyGross + recurring.total
+      : (Number(draft.salary)||0) + recurring.total;
 
     const clean = {
       employee_id:draft.employee_id, full_name:draft.full_name, month:firstOfMonth(draft.month),
@@ -527,8 +750,9 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
       month_days:        isProrated ? calc.monthDays : null,
       normal_ot_hours:   isProrated ? (Number(draft.normal_ot_hours)||0) : 0,
       holiday_ot_hours:  isProrated ? (Number(draft.holiday_ot_hours)||0) : 0,
-      computed_salary:   isProrated ? Math.round(calc.gross*100)/100 : null,
+      computed_salary:   isProrated ? Math.round((calc.gross+recurring.total)*100)/100 : null,
       manual_override:   isProrated ? !!draft.manual_override : false,
+      recurring_allowance_total: Math.round(recurring.total*100)/100,
     };
     const {error} = draft.id
       ? await db.from('employee_monthly_costs').update(clean).eq('id',draft.id)
@@ -538,12 +762,38 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
   };
   const remove = async (id)=>{ if(!window.confirm('Delete?'))return; await db.from('employee_monthly_costs').delete().eq('id',id); load(); };
 
+  const blankAllowance = (employeeId, fullName) => setAllowDraft({
+    employee_id:employeeId||'', full_name:fullName||'',
+    allowance_type:'mobile', amount:'', location:'',
+    start_date:new Date().toISOString().slice(0,10), end_date:'',
+    auto_stop_on_demob:true, active:true, remarks:'',
+  });
+  const saveAllowance = async () => {
+    if (!allowDraft.employee_id||!allowDraft.start_date) return alert('Employee and start date are required');
+    const clean = {
+      employee_id:allowDraft.employee_id, full_name:allowDraft.full_name||null,
+      allowance_type:allowDraft.allowance_type||'mobile', amount:Number(allowDraft.amount)||0,
+      location:allowDraft.location||null, start_date:allowDraft.start_date,
+      end_date:allowDraft.end_date||null, auto_stop_on_demob:!!allowDraft.auto_stop_on_demob,
+      active: allowDraft.active!==false, remarks:allowDraft.remarks||null,
+    };
+    const {error} = allowDraft.id
+      ? await db.from('employee_allowances').update(clean).eq('id',allowDraft.id)
+      : await db.from('employee_allowances').insert(clean);
+    if (error) return alert(error.message);
+    setAllowDraft(null); loadAllowances();
+  };
+  const removeAllowance = async (id) => { if(!window.confirm('Delete this recurring allowance?'))return; await db.from('employee_allowances').delete().eq('id',id); loadAllowances(); };
+  const stopAllowanceNow = async (a) => { await db.from('employee_allowances').update({end_date:new Date().toISOString().slice(0,10)}).eq('id',a.id); loadAllowances(); };
+
   const isP = !!draft && draft.salary_type==='prorated';
   const isH = !!draft && draft.salary_type==='hourly';
   const isFlat = !!draft && !isP && !isH;
   const calc = isP ? calcProrated(draft) : null;
   const hourlyGrossPreview = isH?(Number(draft.hours_worked)||0)*(Number(draft.hourly_rate)||0):0;
   const netPayablePreview  = isH?hourlyGrossPreview-(Number(draft.salary_deductions)||0):0;
+  const draftDemobDate = draft ? demobDateFor(draft.employee_id) : null;
+  const recurringPreview = draft ? computeRecurringAllowances(allowancesFor(draft.employee_id), draft.month, draftDemobDate) : { total:0, lines:[], stoppedAlerts:[] };
 
   return (
     <div style={S.card}>
@@ -554,9 +804,22 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
         </div>
         <div style={{display:'flex',gap:'8px'}}>
           {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered,'monthly_costs',csvCols)}>Export CSV</button>}
+          <button style={{...S.btnPri,background:showAllowMgr?'#0f172a':'#7c3aed'}} onClick={()=>setShowAllowMgr(v=>!v)}>
+            📡 Recurring Allowances{allowances.filter(a=>a.active!==false).length>0?` (${allowances.filter(a=>a.active!==false).length})`:''}
+          </button>
           <button style={S.btnPri} onClick={blank}>+ Add Month</button>
         </div>
       </div>
+
+      {showAllowMgr && (
+        <AllowanceManager
+          employees={employees} empMeta={empMeta} allowances={allowances} loading={allowLoading}
+          draft={allowDraft} setDraft={setAllowDraft}
+          onAdd={()=>blankAllowance(initialFilter&&initialFilter.employee_id, initialFilter&&initialFilter.full_name)}
+          onSave={saveAllowance} onDelete={removeAllowance} onStopNow={stopAllowanceNow}
+          demobDateFor={demobDateFor}
+        />
+      )}
 
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
 
@@ -655,6 +918,28 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
             </div>
           )}
 
+          {draft.employee_id && draft.month && (
+            <div style={{background:'#faf5ff',border:'1px solid #d8b4fe',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
+              <div style={{fontWeight:800,color:'#581c87',marginBottom:'6px'}}>📡 Recurring Site Allowances (auto-applied to salary above)</div>
+              {recurringPreview.lines.length===0 ? (
+                <div style={{color:'#7c3aed'}}>No active recurring allowance for this employee this month.</div>
+              ) : recurringPreview.lines.map(l=>(
+                <div key={l.id} style={{display:'flex',justifyContent:'space-between',marginBottom:'2px'}}>
+                  <span>{ALLOWANCE_LABEL[l.allowance_type]||l.allowance_type}{l.location?` — ${l.location}`:''} ({l.daysActive}/{daysInMonth(draft.month)}d)</span>
+                  <strong>AED {fmt(l.amountThisMonth)}</strong>
+                </div>
+              ))}
+              {recurringPreview.lines.length>0 && (
+                <div style={{marginTop:'4px',paddingTop:'4px',borderTop:'1px dashed #d8b4fe'}}>= Recurring Allowance Total: <strong>AED {fmt(recurringPreview.total)}</strong> <span style={{color:'#7c3aed'}}>(added into the salary saved below)</span></div>
+              )}
+              {draftDemobDate && recurringPreview.stoppedAlerts.length>0 && (
+                <div style={{marginTop:'8px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'6px',padding:'8px 10px',color:'#991b1b',fontWeight:700}}>
+                  ⚠️ This employee demobilized on {draftDemobDate} — the allowance below is set to auto-stop on demob and was pro-rated up to that date for this month. Confirm it shouldn't continue into next month's WPS run.
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
             <div><label style={S.label}>Food</label><input type="number" value={draft.food||''} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation||''} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
@@ -712,6 +997,9 @@ function MonthlyCostsTable({ employees, initialFilter, hideEmpFilter, hideExport
                                   {r.working_days||0}/{r.month_days||'—'}d · OT {r.normal_ot_hours||0}h + Hol {r.holiday_ot_hours||0}h
                                   {r.manual_override && <span style={{color:'#dc2626'}}> · overridden (calc AED {fmt(r.computed_salary)})</span>}
                                 </div>
+                              )}
+                              {Number(r.recurring_allowance_total)>0 && (
+                                <div style={{fontSize:'10.5px',color:'#7c3aed',fontWeight:700,marginTop:'2px'}}>📡 incl. AED {fmt(r.recurring_allowance_total)} recurring allowance</div>
                               )}
                             </td>
                             <td style={S.td}>{fmt(r.food)}</td>
@@ -2423,7 +2711,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
 
         <OtherCostsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
 
-        <MonthlyCostsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
+        <MonthlyCostsTable employees={employees} empMeta={empMeta} initialFilter={filt} hideEmpFilter hideExportButton />
 
         <TimesheetsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
 
@@ -2439,7 +2727,7 @@ function App() {
   const [tab,       setTab]       = useState('dashboard');
   const [employees, setEmployees] = useState([]);
   const [empMeta,   setEmpMeta]   = useState({});
-  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v4')!=='done');
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v5')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
   useEffect(()=>{
@@ -2457,7 +2745,18 @@ function App() {
         data.forEach(e=>{meta[e.employee_id]={...e};});
         hrDb.from('mob_demob').select('employee_id,mobilization_date,demobilization_date,location,supply')
           .then(({data:md,error:mdErr})=>{
-            if (!mdErr&&md) md.forEach(m=>{if(meta[m.employee_id]) meta[m.employee_id]={...meta[m.employee_id],...m};});
+            if (!mdErr&&md) {
+              // mob_demob can have multiple rows per employee (one per assignment/site).
+              // Pick the ACTIVE assignment: prefer a row with no demobilization_date (currently on site);
+              // if every row is closed, fall back to the most recently mobilized one.
+              const byEmp = {};
+              md.forEach(m=>{ (byEmp[m.employee_id] = byEmp[m.employee_id]||[]).push(m); });
+              Object.keys(byEmp).forEach(empId=>{
+                const rowsForEmp = byEmp[empId].slice().sort((a,b)=> (a.mobilization_date||'') < (b.mobilization_date||'') ? 1 : -1);
+                const activeRow = rowsForEmp.find(r=>!r.demobilization_date) || rowsForEmp[0];
+                if (meta[empId]) meta[empId] = {...meta[empId], ...activeRow, assignment_history: rowsForEmp};
+              });
+            }
             setEmpMeta(meta);
           });
       });
@@ -2478,7 +2777,7 @@ function App() {
         <button onClick={()=>db.auth.signOut()} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12px',cursor:'pointer'}}>Sign Out</button>
       </div>
 
-      {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v4','done');setShowMig(false);}} />}
+      {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v5','done');setShowMig(false);}} />}
 
       {!detailEmp && (
         <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
@@ -2503,7 +2802,7 @@ function App() {
           {tab==='training'  && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date" recoverableSupport
             fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
           {tab==='other'     && <OtherCostsTable employees={employees} />}
-          {tab==='monthly'   && <MonthlyCostsTable employees={employees} />}
+          {tab==='monthly'   && <MonthlyCostsTable employees={employees} empMeta={empMeta} />}
           {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
           {tab==='billing'    && <ClientBillingTab employees={employees} />}
         </>
