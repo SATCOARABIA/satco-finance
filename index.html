@@ -2792,7 +2792,25 @@ function App() {
     hrDb.from('employees').select('employee_id,full_name,position,nationality,joining_date,hired_from,supplier_name,status,visa_trade,department').order('employee_id')
       .then(({data,error})=>{
         if (error||!data) return;
-        setEmployees(data.map(e=>({employee_id:e.employee_id,full_name:e.full_name})));
+        let baseEmployees = data.map(e=>({employee_id:e.employee_id,full_name:e.full_name}));
+        // Pull in-process candidates (Visa Processing started, not yet Joined) that have a Temp
+        // Employee ID — lets Finance log a security deposit/advance against them via the same
+        // EmployeePicker, before they exist in the real `employees` table. They're tagged
+        // is_temp:true purely for UI distinction; nothing downstream (WPS, P&L) reads this flag,
+        // so they never get pulled into payroll by accident.
+        hrDb.from('hiring_pipeline').select('temp_employee_id,candidate_name,status')
+          .not('temp_employee_id','is',null)
+          .neq('status','Joined')
+          .then(({data:tempCands,error:tcErr})=>{
+            if (!tcErr && tempCands && tempCands.length) {
+              const tempEntries = tempCands
+                .filter(t=>t.temp_employee_id)
+                .map(t=>({ employee_id:t.temp_employee_id, full_name:(t.candidate_name||'')+' (pending)', is_temp:true }));
+              setEmployees([...baseEmployees, ...tempEntries]);
+            } else {
+              setEmployees(baseEmployees);
+            }
+          });
         const meta={};
         data.forEach(e=>{meta[e.employee_id]={...e};});
         hrDb.from('mob_demob').select('employee_id,mobilization_date,demobilization_date,location,supply')
