@@ -2527,27 +2527,55 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
 
   const loadRecovery = async () => {
     setRecLoading(true);
-    const [visa, flights, training, other, monthly] = await Promise.all([
+    const [visa, flights, training, other, monthly, invoices, invoiceLines, invoiceRecoveries] = await Promise.all([
       db.from('employee_visa_costs').select('cost,recoverable').eq('employee_id',employeeId),
       db.from('employee_flights').select('cost,recoverable').eq('employee_id',employeeId),
       db.from('employee_training_costs').select('cost,recoverable').eq('employee_id',employeeId),
       db.from('employee_other_costs').select('amount,recoverable,cost_type').eq('employee_id',employeeId),
       db.from('employee_monthly_costs').select('salary_deductions,salary,food,accommodation,transport,other').eq('employee_id',employeeId),
+      db.from('employee_client_invoices').select('id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr').eq('employee_id',employeeId),
+      db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
+      db.from('employee_client_recoveries').select('amount_aed').eq('employee_id',employeeId),
     ]);
     const recoverableSum = (rows, amtKey) => (rows||[]).filter(r=>r.recoverable).reduce((s,r)=>s+(Number(r[amtKey])||0),0);
     const visaRecoverable     = recoverableSum(visa.data, 'cost');
     const flightsRecoverable  = recoverableSum(flights.data, 'cost');
     const trainingRecoverable = recoverableSum(training.data, 'cost');
-    const otherRecoverable    = (other.data||[]).filter(r=>r.recoverable && r.cost_type!=='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
-    const totalRecoverable    = visaRecoverable + flightsRecoverable + trainingRecoverable + otherRecoverable;
+    // Onboarding/Misc recoverable total — excludes security_deposit (that's income, tracked under
+    // "recovered") and excludes wps_overpayment_recovery (computed live from invoices just below,
+    // same as the P&L Dashboard, so this card always matches the Dashboard's figures exactly
+    // instead of depending on the stored employee_other_costs row being freshly auto-synced).
+    const otherRecoverable = (other.data||[]).filter(r=>r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery').reduce((s,r)=>s+(Number(r.amount)||0),0);
+
+    // WPS overpayment vs employee's actual Client Billing share — identical formula to the
+    // P&L Dashboard and the Client Billing tab's auto-repair, so all three always agree.
+    const linesByInvoice = {};
+    (invoiceLines.data||[]).forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
+    let wpsOverpaymentRecoverable = 0;
+    (invoices.data||[]).forEach(inv=>{
+      const lns = linesByInvoice[inv.id]||[];
+      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
+      const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
+      const received = Number(inv.received_amount_aed)||0;
+      const wps = Number(inv.wps_paid_aed)||0;
+      if (!received || !totalCcy || !wps) return;
+      const impliedRate = received/totalCcy;
+      const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
+      const empShare = received-satcoAed;
+      const overpaid = wps-empShare;
+      if (overpaid > 0.5) wpsOverpaymentRecoverable += Math.round(overpaid*100)/100;
+    });
+
+    const totalRecoverable = visaRecoverable + flightsRecoverable + trainingRecoverable + otherRecoverable + wpsOverpaymentRecoverable;
 
     const recoveredFromDeductions = (monthly.data||[]).reduce((s,r)=>s+(Number(r.salary_deductions)||0),0);
     const depositsReceived = (other.data||[]).filter(r=>r.cost_type==='security_deposit').reduce((s,r)=>s+(Number(r.amount)||0),0);
-    const totalRecovered = recoveredFromDeductions + depositsReceived;
+    const recoveredFromInvoices = (invoiceRecoveries.data||[]).reduce((s,r)=>s+(Number(r.amount_aed)||0),0);
+    const totalRecovered = recoveredFromDeductions + depositsReceived + recoveredFromInvoices;
 
     setRecovery({
-      visaRecoverable, flightsRecoverable, trainingRecoverable, otherRecoverable, totalRecoverable,
-      recoveredFromDeductions, depositsReceived, totalRecovered,
+      visaRecoverable, flightsRecoverable, trainingRecoverable, otherRecoverable, wpsOverpaymentRecoverable, totalRecoverable,
+      recoveredFromDeductions, depositsReceived, recoveredFromInvoices, totalRecovered,
       balance: totalRecoverable - totalRecovered,
     });
 
@@ -2683,19 +2711,21 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
       {!recLoading && recovery && recovery.totalRecoverable>0 && (
         <div style={{...S.card,marginBottom:'16px',padding:'14px 18px',background:'#fffbeb',border:'1px solid #fbbf24'}}>
           <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px',color:'#92400e'}}>Recovery Summary — costs recoverable from {employeeName.split(' ')[0]}'s salary</div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',fontSize:'12.5px',marginBottom:'10px'}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'10px',fontSize:'12.5px',marginBottom:'10px'}}>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Visa (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.visaRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Flights (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.flightsRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Training (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.trainingRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Onboarding/Misc (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.otherRecoverable)}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>WPS Overpaid vs Billing</div><div style={{fontWeight:700}}>AED {fmt(recovery.wpsOverpaymentRecoverable)}</div></div>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',fontSize:'13px',paddingTop:'10px',borderTop:'1px solid #fde68a'}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'10px',fontSize:'13px',paddingTop:'10px',borderTop:'1px solid #fde68a'}}>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Total Recoverable</div><div style={{fontWeight:800,fontSize:'16px'}}>AED {fmt(recovery.totalRecoverable)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Recovered (salary deductions)</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.recoveredFromDeductions)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>+ Deposits Received</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.depositsReceived)}</div></div>
+            <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>+ WPS Recoveries Logged</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.recoveredFromInvoices)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Balance to Recover</div><div style={{fontWeight:800,fontSize:'16px',color:recovery.balance>0?'#dc2626':'#166534'}}>AED {fmt(Math.abs(recovery.balance))}{recovery.balance<0?' (over-recovered)':''}</div></div>
           </div>
-          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}>"Recovered" = sum of "Deductions" entered each month in Monthly Costs, plus any Deposits Received logged in Onboarding &amp; Misc. To recover this employee's costs, enter the deduction amount when adding/editing their monthly salary record.</div>
+          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}>"Recovered" = sum of "Deductions" entered each month in Monthly Costs, plus any Deposits Received logged in Onboarding &amp; Misc, plus any WPS recoveries logged on Client Billing. "WPS Overpaid vs Billing" is calculated live from Client Billing invoices, the same way it's shown on the P&amp;L Dashboard — these figures will always match. To recover this employee's costs, enter the deduction amount when adding/editing their monthly salary record.</div>
         </div>
       )}
 
