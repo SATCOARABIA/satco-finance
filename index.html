@@ -2236,7 +2236,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
               <div><label style={S.label}>Client Rate ({draft.currency||'EUR'}/hr)</label><input type="number" step="0.01" value={draft.brunel_rate_eur_hr} onChange={e=>setDraft(d=>({...d,brunel_rate_eur_hr:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>SATCO Rate ({draft.currency||'EUR'}/hr)</label><input type="number" step="0.01" value={draft.satco_rate_eur_hr} onChange={e=>setDraft(d=>({...d,satco_rate_eur_hr:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'14px'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'14px'}}>
               <div><label style={S.label}>Client Address Line 1</label><input value={draft.client_address_line1||''} onChange={e=>setDraft(d=>({...d,client_address_line1:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Client Address Line 2</label><input value={draft.client_address_line2||''} onChange={e=>setDraft(d=>({...d,client_address_line2:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Client Address Line 3</label><input value={draft.client_address_line3||''} onChange={e=>setDraft(d=>({...d,client_address_line3:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
@@ -2479,6 +2479,7 @@ const BANK_ROUTING_OPTS = [
 const WPS_SQL = `-- Run ONCE in Finance Supabase → SQL Editor
 -- Creates/updates WPS Employee Master + Monthly Salary Sheet tables.
 -- Safe to re-run. It does NOT delete salary or employee data.
+-- v6 adds Hourly Contract salary mode and hourly-rate based monthly salary.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -2492,6 +2493,7 @@ CREATE TABLE IF NOT EXISTS public.wps_employee_master (
   basic_salary     numeric DEFAULT 0,
   fixed_allowance  numeric DEFAULT 0,
   salary_type      text DEFAULT 'fixed',
+  hourly_rate      numeric DEFAULT 0,
   remarks          text,
   active           boolean DEFAULT true,
   created_at       timestamptz DEFAULT now(),
@@ -2505,32 +2507,40 @@ ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS iban text;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS basic_salary numeric DEFAULT 0;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS salary_type text DEFAULT 'fixed';
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS remarks text;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS active boolean DEFAULT true;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 
 ALTER TABLE public.wps_employee_master ALTER COLUMN bank_routing DROP DEFAULT;
+ALTER TABLE public.wps_employee_master ALTER COLUMN hourly_rate SET DEFAULT 0;
 
 ALTER TABLE public.wps_employee_master DROP CONSTRAINT IF EXISTS wps_employee_master_salary_type_check;
 ALTER TABLE public.wps_employee_master
   ADD CONSTRAINT wps_employee_master_salary_type_check
-  CHECK (salary_type IN ('fixed','variable'));
+  CHECK (salary_type IN ('fixed','variable','hourly'));
 
 CREATE TABLE IF NOT EXISTS public.wps_salary_monthly (
   id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   employee_id              text NOT NULL,
   full_name                text,
+  labour_card_no           text,
+  bank_routing             text,
+  iban                     text,
   salary_month             date NOT NULL,
   salary_type              text DEFAULT 'fixed',
   basic_salary             numeric DEFAULT 0,
   fixed_allowance          numeric DEFAULT 0,
+  hourly_rate              numeric DEFAULT 0,
   hours_per_day            numeric DEFAULT 8,
   working_days             numeric DEFAULT 0,
+  hours_worked             numeric DEFAULT 0,
   normal_ot_hours          numeric DEFAULT 0,
   holiday_ot_hours         numeric DEFAULT 0,
   extra_allowance          numeric DEFAULT 0,
   overtime_amount          numeric DEFAULT 0,
   food_allowance           numeric DEFAULT 0,
+  hourly_pay               numeric DEFAULT 0,
   basic_pay                numeric DEFAULT 0,
   normal_ot_pay            numeric DEFAULT 0,
   holiday_ot_pay           numeric DEFAULT 0,
@@ -2554,16 +2564,22 @@ CREATE TABLE IF NOT EXISTS public.wps_salary_monthly (
 );
 
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS full_name text;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS labour_card_no text;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS bank_routing text;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS iban text;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS salary_type text DEFAULT 'fixed';
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS basic_salary numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS working_days numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hours_worked numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS holiday_ot_hours numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS extra_allowance numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS overtime_amount numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS food_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hourly_pay numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS basic_pay numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS normal_ot_pay numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS holiday_ot_pay numeric DEFAULT 0;
@@ -2587,6 +2603,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS wps_salary_monthly_employee_month_uidx
   ON public.wps_salary_monthly(employee_id, salary_month);
 
 -- Needed for upsert from Salary Sheet to Monthly Costs / P&L.
+-- Make Monthly Costs/P&L ready to receive the Salary Sheet sync payload.
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS salary_type text;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS salary numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS computed_salary numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS basic_salary numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS working_days numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS month_days numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS holiday_ot_hours numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS salary_deductions numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS hours_worked numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS food numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS accommodation numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS transport numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS other numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS recurring_allowance_total numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS remarks text;
+
 CREATE UNIQUE INDEX IF NOT EXISTS employee_monthly_costs_employee_month_uidx
   ON public.employee_monthly_costs(employee_id, month);
 
@@ -2684,6 +2722,36 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     return m;
   }, [savedSheet]);
 
+  const draftKey = (m = month) => `satco_wps_salary_sheet_unsaved_${m}`;
+  const readLocalDraft = (m = month) => {
+    try { return JSON.parse(window.localStorage.getItem(draftKey(m)) || '{}') || {}; }
+    catch { return {}; }
+  };
+  const writeLocalDraft = (m, obj) => {
+    try { window.localStorage.setItem(draftKey(m), JSON.stringify(obj || {})); } catch {}
+  };
+  const clearLocalDraft = (m = month) => {
+    try { window.localStorage.removeItem(draftKey(m)); } catch {}
+  };
+  const hasUnsavedDraft = Object.keys(overrides || {}).length > 0;
+
+  const ensureXlsx = () => new Promise((resolve, reject) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const existing = document.querySelector('script[data-satco-xlsx="true"]');
+    if (existing) {
+      existing.addEventListener('load', () => window.XLSX ? resolve(window.XLSX) : reject(new Error('XLSX library loaded but global object is unavailable.')));
+      existing.addEventListener('error', () => reject(new Error('Could not load XLSX library. Check internet connection / CDN access.')));
+      return;
+    }
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    sc.async = true;
+    sc.setAttribute('data-satco-xlsx','true');
+    sc.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error('XLSX library loaded but global object is unavailable.'));
+    sc.onerror = () => reject(new Error('Could not load XLSX library. Check internet connection / CDN access.'));
+    document.head.appendChild(sc);
+  });
+
   const loadMonthlySheet = async () => {
     if (!month) return;
     const { data, error } = await db.from('wps_salary_monthly')
@@ -2701,7 +2769,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     }
     setSheetReady(true);
     setSavedSheet(data || []);
-    setOverrides({});
+    setOverrides(readLocalDraft(month));
   };
 
   const loadRecoveryContext = async () => {
@@ -2799,6 +2867,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       basic_salary: Number(draft.basic_salary) || 0,
       fixed_allowance: Number(draft.fixed_allowance) || 0,
       salary_type: draft.salary_type || 'fixed',
+      hourly_rate: Number(draft.hourly_rate) || 0,
       remarks: draft.remarks || null,
       active: draft.active !== false,
       updated_at: new Date().toISOString(),
@@ -2820,7 +2889,21 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
         remarks:'Updated from WPS Employee Master', updated_at:new Date().toISOString()
       }, { onConflict:'employee_id' });
     }
-    setDraft(null); loadMaster();
+    const wasCorrection = !!draft.id;
+    setDraft(null);
+    await loadMaster();
+    await loadMonthlySheet();
+    alert(wasCorrection
+      ? 'WPS Employee Master corrected. The corrected Labour Card / Bank Routing / IBAN / Salary / Hourly Rate values will be used for future salary sheets. For the current open month, click Save Salary Sheet once to update the monthly snapshot.'
+      : 'Employee added to WPS Master. These values will be reused every salary month.');
+  };
+
+  const openMasterCorrection = (employeeId) => {
+    const row = master.find(m => m.employee_id === employeeId);
+    if (!row) return alert('Employee not found in WPS Master.');
+    setDraft({ ...row });
+    setActiveSection('master');
+    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
   };
 
   const removeMaster = async (id) => {
@@ -2838,9 +2921,12 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const saved = savedByEmp[emp.employee_id] || {};
       const ov = overrides[emp.employee_id] || {};
       const pick = (key, def='') => (ov[key] !== undefined ? ov[key] : (saved[key] !== undefined && saved[key] !== null ? saved[key] : def));
-      const isVar = emp.salary_type === 'variable';
+      const salaryType = emp.salary_type || 'fixed';
+      const isVar = salaryType === 'variable';
+      const isHourly = salaryType === 'hourly';
       const hpd = Number(pick('hours_per_day', 8)) || 8;
-      const workDays = Number(pick('working_days', isVar ? lastDay : lastDay)) || 0;
+      const workDays = Number(pick('working_days', isHourly ? 0 : lastDay)) || 0;
+      const hoursWorked = isHourly ? (Number(pick('hours_worked', 0)) || 0) : 0;
       const normalOT = Number(pick('normal_ot_hours', 0)) || 0;
       const holidayOT = Number(pick('holiday_ot_hours', 0)) || 0;
       const extraAllowance = Number(pick('extra_allowance', 0)) || 0;
@@ -2849,18 +2935,27 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const deductionManual = Number(pick('deduction_manual', 0)) || 0;
       const deductionAuto = Number(pick('deduction_auto', 0)) || 0;
       const remarks = String(pick('remarks', '') || '');
-      const baseBasic = Number(emp.basic_salary) || 0;
+      const baseBasic = Number(emp.basic_salary) || 0;          // contractual / WPS master basic; not used for hourly calculation
       const baseAllow = Number(emp.fixed_allowance) || 0;
+      const hourlyRate = Number(emp.hourly_rate ?? saved.hourly_rate ?? 0) || 0;
       const craft = (empMeta && empMeta[emp.employee_id] && (empMeta[emp.employee_id].position || empMeta[emp.employee_id].trade)) || emp.remarks || '';
 
-      let basicPay, normalOTPay, holidayOTPay, allowancePay;
-      if (isVar) {
+      let basicPay, normalOTPay, holidayOTPay, allowancePay, hourlyPay;
+      if (isHourly) {
+        hourlyPay = hourlyRate * hoursWorked;
+        basicPay = hourlyPay;
+        normalOTPay = hourlyRate * normalOT * 1.25;
+        holidayOTPay = hourlyRate * holidayOT * 1.5;
+        allowancePay = baseAllow;
+      } else if (isVar) {
         const hourlyBase = (lastDay && hpd) ? (baseBasic / lastDay / hpd) : 0;
+        hourlyPay = 0;
         basicPay = lastDay ? (baseBasic / lastDay * workDays) : baseBasic;
         normalOTPay = hourlyBase * normalOT * 1.25;
         holidayOTPay = hourlyBase * holidayOT * 1.5;
         allowancePay = lastDay ? (baseAllow / lastDay * workDays) : baseAllow;
       } else {
+        hourlyPay = 0;
         basicPay = baseBasic;
         normalOTPay = 0;
         holidayOTPay = 0;
@@ -2887,19 +2982,23 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
         employee_id: emp.employee_id,
         name: emp.full_name || emp.employee_id,
         craft,
-        labour_card_no: emp.labour_card_no || '',
-        bank_routing: emp.bank_routing || '',
-        iban: emp.iban || '',
-        salary_type: emp.salary_type,
+        labour_card_no: emp.labour_card_no || saved.labour_card_no || '',
+        bank_routing: emp.bank_routing || saved.bank_routing || '',
+        iban: emp.iban || saved.iban || '',
+        salary_type: salaryType,
+        is_hourly: isHourly,
         base_basic: baseBasic,
         base_allowance: baseAllow,
+        hourly_rate: hourlyRate,
         working_days: workDays,
+        hours_worked: hoursWorked,
         normal_ot: normalOT,
         holiday_ot: holidayOT,
         hours_per_day: hpd,
         extra_allowance: extraAllowance,
         overtime_amount: overtimeAmount,
         food_allowance: foodAllowance,
+        hourly_pay: money(hourlyPay),
         basic_pay: money(basicPay),
         normal_ot_pay: money(normalOTPay),
         holiday_ot_pay: money(holidayOTPay),
@@ -2942,10 +3041,10 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   const grandTotal = (rows) => rows.reduce((s,r) => s + r.basic + r.ot_allow, 0);
 
   // ── Export XLS — exactly matching bank template ───────────────────────────
-  const exportXls = () => {
+  const exportXls = async () => {
     setGenerating('xls');
     try {
-      if (!window.XLSX) throw new Error('XLSX library is not loaded. Refresh the page after opening v11.');
+      const XLSXLib = await ensureXlsx();
       const rows  = computeWps();
       const [y, mo] = month.split('-').map(Number);
       const lastDay = daysInMonthFn(y, mo);
@@ -2969,11 +3068,11 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const SLB = ['Record Type','COMP MOL ID','Bank Routing code','File Creation date','Time HHMM','Salary month MMYYYY','Total EMP Count','Total Amount Basic+Allow','Currency','Company Name', null];
 
       const wsData = [HDR, ARR, ...EDR, BLK, SCR, AU, SLB];
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const ws = XLSXLib.utils.aoa_to_sheet(wsData);
       ws['!cols'] = [{wch:12},{wch:24},{wch:18},{wch:28},{wch:12},{wch:12},{wch:10},{wch:14},{wch:20},{wch:18},{wch:38}];
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'WPS');
-      XLSX.writeFile(wb, `WPS_FILE_-${String(mo).padStart(2,'0')}-${y}.xls`);
+      const wb = XLSXLib.utils.book_new();
+      XLSXLib.utils.book_append_sheet(wb, ws, 'WPS');
+      XLSXLib.writeFile(wb, `WPS_FILE_-${String(mo).padStart(2,'0')}-${y}.xls`);
     } catch(e) { alert('XLS export failed: ' + e.message); }
     setGenerating('');
   };
@@ -3084,10 +3183,10 @@ ${rows.map(r => `<tr class="edr">
       [],
       ['Month:', new Date(y, mo-1, 1), 'Month Days', lastDay, '', '', '', '', '', '', '', '', '', '', '', 'TOTAL TO RECOVER', totalBalance, 'DEDUCTION THIS MONTH', totalDed, 'NET WPS', totalNet],
       [],
-      ['', '', '', '', '', '', 'WORKING DAYS/HOURS', '', '', 'TOTAL AMOUNT', '', '', '', '', '', 'FINANCE RECOVERY', '', '', '', 'Remark'],
-      ['Sl no.','EMP CODE','Name of Employee','Craft','Basic Salary','ALLOWANCE','Working days/hr','NORMAL OT HRS','HOLIDAYS OT','BASIC','NORMAL OVERTIME (X1.25)','HOLIDAY OVERTIME (X1.5)','ALLOWANCE','Food Allowance','GROSS SALARY','Balance to Recover','Cash Advance & Deductions','Deposits Received','Net Amount / WPS','Remark'],
-      ...rows.map(r => [r.sl_no, r.employee_id, r.name, r.craft, r.base_basic, r.base_allowance, r.working_days, r.normal_ot, r.holiday_ot, r.basic_pay, r.normal_ot_pay, r.holiday_ot_pay, r.allowance_pay, r.food_allowance, r.gross_salary, r.finance_balance_before, r.deduction_total, r.finance_deposits, r.net_salary, r.remarks]),
-      ['Total Salaries','','','','','','','','', rows.reduce((s,r)=>s+r.basic_pay,0), rows.reduce((s,r)=>s+r.normal_ot_pay,0), rows.reduce((s,r)=>s+r.holiday_ot_pay,0), rows.reduce((s,r)=>s+r.allowance_pay,0), rows.reduce((s,r)=>s+r.food_allowance,0), totalGross, totalBalance, totalDed, totalDeposits, totalNet, ''],
+      ['', '', '', '', '', '', '', 'WORKING DAYS/HOURS', '', '', 'TOTAL AMOUNT', '', '', '', '', '', 'FINANCE RECOVERY', '', '', '', 'Remark'],
+      ['Sl no.','EMP CODE','Name of Employee','Craft','Basic Salary','ALLOWANCE','Hourly Rate','Working days / Hours Worked','NORMAL OT HRS','HOLIDAYS OT','BASIC / HOURLY PAY','NORMAL OVERTIME (X1.25)','HOLIDAY OVERTIME (X1.5)','ALLOWANCE','Food Allowance','GROSS SALARY','Balance to Recover','Cash Advance & Deductions','Deposits Received','Net Amount / WPS','Remark'],
+      ...rows.map(r => [r.sl_no, r.employee_id, r.name, r.craft, r.base_basic, r.base_allowance, r.hourly_rate, r.is_hourly ? r.hours_worked : r.working_days, r.normal_ot, r.holiday_ot, r.basic_pay, r.normal_ot_pay, r.holiday_ot_pay, r.allowance_pay, r.food_allowance, r.gross_salary, r.finance_balance_before, r.deduction_total, r.finance_deposits, r.net_salary, r.remarks]),
+      ['Total Salaries','','','','','','','','','', rows.reduce((s,r)=>s+r.basic_pay,0), rows.reduce((s,r)=>s+r.normal_ot_pay,0), rows.reduce((s,r)=>s+r.holiday_ot_pay,0), rows.reduce((s,r)=>s+r.allowance_pay,0), rows.reduce((s,r)=>s+r.food_allowance,0), totalGross, totalBalance, totalDed, totalDeposits, totalNet, ''],
       [],
       ['', '', 'Summary', WPS_CO.name],
       ['', '', 'Gross Salary with Allowances', totalGross],
@@ -3097,19 +3196,19 @@ ${rows.map(r => `<tr class="edr">
     ];
   };
 
-  const exportSalarySheetXls = () => {
+  const exportSalarySheetXls = async () => {
     setGenerating('salary_xls');
     try {
-      if (!window.XLSX) throw new Error('XLSX library is not loaded. Refresh the page after opening v11.');
+      const XLSXLib = await ensureXlsx();
       const [y, mo] = month.split('-').map(Number);
-      const ws = XLSX.utils.aoa_to_sheet(salarySheetAoa());
+      const ws = XLSXLib.utils.aoa_to_sheet(salarySheetAoa());
       ws['!cols'] = [
-        {wch:8},{wch:12},{wch:28},{wch:22},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},
-        {wch:18},{wch:18},{wch:14},{wch:14},{wch:14},{wch:18},{wch:18},{wch:16},{wch:16},{wch:30}
+        {wch:8},{wch:12},{wch:28},{wch:22},{wch:14},{wch:14},{wch:12},{wch:16},{wch:14},{wch:14},
+        {wch:18},{wch:18},{wch:18},{wch:14},{wch:14},{wch:14},{wch:18},{wch:18},{wch:16},{wch:16},{wch:30}
       ];
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Salary Sheet');
-      XLSX.writeFile(wb, `SALARY_SHEET_${String(mo).padStart(2,'0')}-${y}.xlsx`);
+      const wb = XLSXLib.utils.book_new();
+      XLSXLib.utils.book_append_sheet(wb, ws, 'Salary Sheet');
+      XLSXLib.writeFile(wb, `SALARY_SHEET_${String(mo).padStart(2,'0')}-${y}.xlsx`);
     } catch(e) { alert('Salary Sheet XLS export failed: ' + e.message); }
     setGenerating('');
   };
@@ -3152,15 +3251,15 @@ ${rows.map(r => `<tr class="edr">
 </div>
 <table>
 <thead><tr>
-  <th>Sl</th><th>Emp Code</th><th>Name</th><th>Craft</th><th>Basic Salary</th><th>Allowance</th>
-  <th>Working Days/hr</th><th>Normal OT</th><th>Holiday OT</th>
+  <th>Sl</th><th>Emp Code</th><th>Name</th><th>Craft</th><th>Basic Salary</th><th>Allowance</th><th>Hourly Rate</th>
+  <th>Working Days / Hours</th><th>Normal OT</th><th>Holiday OT</th>
   <th>Basic</th><th>Normal OT Pay</th><th>Holiday OT Pay</th><th>Allowance</th><th>Food Allowance</th>
   <th>Gross Salary</th><th>Balance to Recover</th><th>Deductions</th><th>Deposits</th><th>Net Amount / WPS</th><th>Remark</th>
 </tr></thead>
 <tbody>
 ${rows.map(r=>`<tr>
   <td class="center">${r.sl_no}</td><td>${esc(r.employee_id)}</td><td>${esc(r.name)}</td><td>${esc(r.craft)}</td>
-  <td class="num">${fmt(r.base_basic)}</td><td class="num">${fmt(r.base_allowance)}</td><td class="num">${fmt(r.working_days)}</td>
+  <td class="num">${fmt(r.base_basic)}</td><td class="num">${fmt(r.base_allowance)}</td><td class="num">${fmt(r.hourly_rate)}</td><td class="num">${fmt(r.is_hourly ? r.hours_worked : r.working_days)}</td>
   <td class="num">${fmt(r.normal_ot)}</td><td class="num">${fmt(r.holiday_ot)}</td>
   <td class="num">${fmt(r.basic_pay)}</td><td class="num">${fmt(r.normal_ot_pay)}</td><td class="num">${fmt(r.holiday_ot_pay)}</td>
   <td class="num">${fmt(r.allowance_pay)}</td><td class="num">${fmt(r.food_allowance)}</td><td class="num">${fmt(r.gross_salary)}</td>
@@ -3168,7 +3267,7 @@ ${rows.map(r=>`<tr>
   <td class="num">${fmt(r.finance_deposits)}</td><td class="num net">${fmt(r.net_salary)}</td><td>${esc(r.remarks)}</td>
 </tr>`).join('')}
 <tr class="total">
-  <td colspan="9">TOTAL — ${rows.length} employees</td>
+  <td colspan="10">TOTAL — ${rows.length} employees</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.basic_pay,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.normal_ot_pay,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.holiday_ot_pay,0))}</td>
@@ -3193,11 +3292,11 @@ ${rows.map(r=>`<tr>
     setSavingSheet(true);
     const salaryMonth = firstOfMonth(month);
     const salaryPayload = rows.map(r => ({
-      employee_id:r.employee_id, full_name:r.name, salary_month:salaryMonth, salary_type:r.salary_type,
-      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hours_per_day:r.hours_per_day,
-      working_days:r.working_days, normal_ot_hours:r.normal_ot, holiday_ot_hours:r.holiday_ot,
+      employee_id:r.employee_id, full_name:r.name, labour_card_no:r.labour_card_no, bank_routing:r.bank_routing, iban:r.iban, salary_month:salaryMonth, salary_type:r.salary_type,
+      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hourly_rate:r.hourly_rate, hours_per_day:r.hours_per_day,
+      working_days:r.working_days, hours_worked:r.hours_worked, normal_ot_hours:r.normal_ot, holiday_ot_hours:r.holiday_ot,
       extra_allowance:r.extra_allowance, overtime_amount:r.overtime_amount, food_allowance:r.food_allowance,
-      basic_pay:r.basic_pay, normal_ot_pay:r.normal_ot_pay, holiday_ot_pay:r.holiday_ot_pay,
+      hourly_pay:r.hourly_pay, basic_pay:r.basic_pay, normal_ot_pay:r.normal_ot_pay, holiday_ot_pay:r.holiday_ot_pay,
       allowance_pay:r.allowance_pay, gross_salary:r.gross_salary,
       finance_recoverable:r.finance_recoverable, finance_recovered_before:r.finance_recovered_before,
       finance_deposits:r.finance_deposits, finance_balance_before:r.finance_balance_before,
@@ -3212,7 +3311,7 @@ ${rows.map(r=>`<tr>
       food:0, accommodation:0, transport:0, other:0,
       remarks:(r.remarks ? r.remarks + ' | ' : '') + 'Saved from WPS Salary Sheet. Net WPS: AED ' + fmt(r.net_salary),
       salary_deductions:r.deduction_total,
-      hours_worked:0, hourly_rate:0,
+      hours_worked:r.hours_worked || 0, hourly_rate:r.hourly_rate || 0,
       basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hours_per_day:r.hours_per_day,
       working_days:r.working_days, month_days:daysInMonthFn(...month.split('-').map(Number)),
       normal_ot_hours:r.normal_ot, holiday_ot_hours:r.holiday_ot,
@@ -3231,6 +3330,8 @@ ${rows.map(r=>`<tr>
     const m = await db.from('employee_monthly_costs').upsert(monthlyPayload, { onConflict:'employee_id,month' });
     setSavingSheet(false);
     if (m.error) return alert('Salary sheet saved, but P&L monthly sync failed: ' + m.error.message);
+    clearLocalDraft(month);
+    setOverrides({});
     await loadMonthlySheet();
     await loadRecoveryContext();
     alert('Salary Sheet saved. Monthly deductions are now reflected in P&L recovery balance.');
@@ -3316,7 +3417,11 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
 
   // ── Override setter ───────────────────────────────────────────────────────
   const setOv = (empId, key, val) =>
-    setOverrides(prev => ({ ...prev, [empId]: { ...(prev[empId]||{}), [key]: val } }));
+    setOverrides(prev => {
+      const next = { ...prev, [empId]: { ...(prev[empId]||{}), [key]: val } };
+      writeLocalDraft(month, next);
+      return next;
+    });
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const [y, mo] = month.split('-').map(Number);
@@ -3327,7 +3432,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
   const activeMaster   = master.filter(m => m.active !== false);
   const months         = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const monthLabel     = `${months[mo-1]}-${y}`;
-  const missingData    = previewRows.filter(r => !r.labour_card_no || !r.bank_routing || !r.iban);
+  const missingData    = salaryRows.filter(r => !r.labour_card_no || !r.bank_routing || !r.iban || (r.salary_type === 'hourly' && !r.hourly_rate));
   const sheetTotals    = {
     recoverable: salaryRows.reduce((s,r)=>s+r.finance_recoverable,0),
     recoveredBefore: salaryRows.reduce((s,r)=>s+r.finance_recovered_before,0),
@@ -3412,53 +3517,61 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Net WPS Amount</div><div style={{fontSize:'20px',fontWeight:800,color:'#166534'}}>AED {fmt(sheetTotals.net)}</div></div>
             {missingData.length > 0 && (
               <div style={{marginLeft:'auto',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'6px',padding:'6px 12px',fontSize:'12px',color:'#991b1b',fontWeight:700}}>
-                ⚠️ {missingData.length} employee(s) missing Labour Card / Bank Routing / IBAN
+                ⚠️ {missingData.length} employee(s) missing Labour Card / Bank Routing / IBAN / Hourly Rate
               </div>
             )}
           </div>
 
           <div style={{padding:'8px 18px',borderBottom:'1px solid #e2e8f0',background:'#fff7ed',fontSize:'11.5px',color:'#92400e'}}>
-            Enter working days/hours and this month's deduction here, then click <strong>Save Salary Sheet</strong>. Saved values reload for the same month and sync to Monthly Costs/P&amp;L so the remaining balance carries forward automatically.
+            Master data such as Labour Card, Bank Routing, IBAN, Basic Salary, Allowance and Hourly Rate is taken from <strong>Employee WPS Master</strong> and reused every month. If any master entry is wrong, click <strong>Correct Master</strong>, edit it once, then save the salary sheet again for this month. Only monthly values such as days/hours worked, OT, food allowance, deduction and remarks are entered here. {hasUnsavedDraft && <strong style={{marginLeft:'8px',color:'#dc2626'}}>Unsaved entries are temporarily kept on this browser — click Save Salary Sheet to store in database.</strong>}
           </div>
 
           {/* Salary Sheet table */}
           <div style={{overflowX:'auto'}}>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',minWidth:'1900px'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',minWidth:'2050px'}}>
               <thead>
                 <tr style={{background:'#f8fafc'}}>
-                  {['Sl','Employee','Craft','Basic Salary','Allowance','Working Days/hr','Normal OT hrs','Holiday OT hrs','Basic','Normal OT Pay','Holiday OT Pay','Allowance Pay','Food Allowance','Gross Salary','Balance to Recover','Deduction This Month','Deposits Received','Balance After','Net WPS','Remarks'].map(h => (
+                  {['Sl','Employee','Craft','Basic Salary','Allowance','Hourly Rate','Working Days / Hours','Normal OT hrs','Holiday OT hrs','Basic / Hourly Pay','Normal OT Pay','Holiday OT Pay','Allowance Pay','Food Allowance','Gross Salary','Balance to Recover','Deduction This Month','Deposits Received','Balance After','Net WPS','Remarks'].map(h => (
                     <th key={h} style={{...S.th,whiteSpace:'nowrap',fontSize:'10.5px'}}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={20} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                  <tr><td colSpan={21} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 ) : activeMaster.length === 0 ? (
-                  <tr><td colSpan={20} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
+                  <tr><td colSpan={21} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
                     No active employees. Go to <strong>Employee WPS Master</strong> and add employees.
                   </td></tr>
                 ) : salaryRows.map(r => {
                   const ov = overrides[r.employee_id] || {};
                   const isVar = r.salary_type === 'variable';
-                  const missing  = !r.labour_card_no || !r.bank_routing || !r.iban;
+                  const isHourly = r.salary_type === 'hourly';
+                  const missing  = !r.labour_card_no || !r.bank_routing || !r.iban || (r.salary_type === 'hourly' && !r.hourly_rate);
                   return (
                     <tr key={r.employee_id} style={{borderTop:'1px solid #f1f5f9',background:missing?'#fff7f7':'#fff'}} className="hr-row">
                       <td style={{...S.td,textAlign:'center',fontWeight:700}}>{r.sl_no}</td>
                       <td style={S.td}>
                         <div style={{fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{r.employee_id}</div>
                         <div style={{fontWeight:600,color:'#0f172a',fontSize:'12px'}}>{r.name}</div>
+                        {isHourly && <div style={{fontSize:'10px',fontWeight:800,color:'#0369a1'}}>Hourly contract — pay by actual hours</div>}
+                        <button type="button" onClick={() => openMasterCorrection(r.employee_id)}
+                          style={{marginTop:'4px',padding:'2px 7px',border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1d4ed8',borderRadius:'999px',fontSize:'10px',fontWeight:800,cursor:'pointer'}}>
+                          Correct Master
+                        </button>
                         {missing && <div style={{fontSize:'10px',color:'#dc2626',fontWeight:700}}>
-                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.bank_routing?' No Bank Routing':''}{!r.iban?' No IBAN':''}
+                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.bank_routing?' No Bank Routing':''}{!r.iban?' No IBAN':''}{(r.salary_type==='hourly' && !r.hourly_rate)?' No Hourly Rate':''}
                         </div>}
                       </td>
                       <td style={{...S.tdWrap,minWidth:'150px'}}>{r.craft||'—'}</td>
-                      <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{fmt(r.base_basic)}</td>
+                      <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{fmt(r.base_basic)}{isHourly && <div style={{fontSize:'10px',color:'#64748b'}}>dummy basic</div>}</td>
                       <td style={{...S.td,textAlign:'right'}}>{fmt(r.base_allowance)}</td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:isHourly?800:500,color:isHourly?'#0369a1':'#94a3b8'}}>{isHourly ? fmt(r.hourly_rate) : '—'}</td>
                       <td style={S.td}>
-                        <input type="number" value={ov.working_days ?? r.working_days ?? ''} placeholder={lastDayOfMonth}
-                          onChange={e=>setOv(r.employee_id,'working_days',e.target.value)}
-                          style={{...S.input,width:'72px',padding:'3px 5px',fontSize:'11.5px'}}/>
+                        <input type="number" value={isHourly ? (ov.hours_worked ?? r.hours_worked ?? '') : (ov.working_days ?? r.working_days ?? '')} placeholder={isHourly ? 'hours' : lastDayOfMonth}
+                          onChange={e=>setOv(r.employee_id, isHourly ? 'hours_worked' : 'working_days', e.target.value)}
+                          style={{...S.input,width:'78px',padding:'3px 5px',fontSize:'11.5px',borderColor:isHourly?'#7dd3fc':'#cbd5e1',fontWeight:isHourly?800:500}}/>
+                        <div style={{fontSize:'10px',color:'#64748b'}}>{isHourly ? 'regular hrs' : 'days'}</div>
                       </td>
                       <td style={S.td}>
                         <input type="number" value={ov.normal_ot_hours ?? r.normal_ot ?? ''} placeholder="0"
@@ -3505,7 +3618,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
               {salaryRows.length > 0 && (
                 <tfoot>
                   <tr style={{background:'#0f172a',color:'#fff'}}>
-                    <td style={{padding:'10px 14px',fontWeight:800,fontSize:'12px'}} colSpan={8}>TOTAL — {salaryRows.length} employees</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,fontSize:'12px'}} colSpan={9}>TOTAL — {salaryRows.length} employees</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.basic_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.normal_ot_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.holiday_ot_pay,0))}</td>
@@ -3649,7 +3762,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
               <button style={S.btnPri} onClick={() => setDraft({
                 employee_id:'', full_name:'', labour_card_no:'',
                 bank_routing: '', iban:'',
-                basic_salary:'', fixed_allowance:'', salary_type:'fixed', remarks:'', active:true,
+                basic_salary:'', fixed_allowance:'', salary_type:'fixed', hourly_rate:'', remarks:'', active:true,
               })}>+ Add Employee</button>
             </div>
           </div>
@@ -3671,8 +3784,13 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
           {draft && (
             <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
               <div style={{fontWeight:800,fontSize:'13px',marginBottom:'12px',color:'#92400e'}}>
-                {draft.id ? `Edit — ${draft.full_name||draft.employee_id}` : 'Add Employee to WPS Master'}
+                {draft.id ? `Correct Master Entry — ${draft.full_name||draft.employee_id}` : 'Add Employee to WPS Master'}
               </div>
+              {draft.id && (
+                <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',color:'#1e40af',borderRadius:'8px',padding:'8px 10px',fontSize:'11.5px',fontWeight:700,marginBottom:'10px'}}>
+                  Correction mode: update the wrong Labour Card No, Bank Routing Code, IBAN, Basic Salary, Allowance or Hourly Rate here. Once saved, this master value will be reused every month. For the open salary month, click Save Salary Sheet again to refresh the monthly snapshot.
+                </div>
+              )}
               <div style={{marginBottom:'10px'}}>
                 <label style={S.label}>Employee</label>
                 <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
@@ -3723,7 +3841,8 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                   <label style={S.label}>Salary Type</label>
                   <select value={draft.salary_type||'fixed'} onChange={e=>setDraft(d=>({...d,salary_type:e.target.value}))} style={{...S.input,width:'100%'}}>
                     <option value="fixed">Fixed — same every month</option>
-                    <option value="variable">Variable — site workers (OT + prorated)</option>
+                    <option value="variable">Variable — site workers (days + OT)</option>
+                    <option value="hourly">Hourly Contract — rate × actual hours worked</option>
                   </select>
                 </div>
                 <div>
@@ -3733,6 +3852,11 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                 <div>
                   <label style={S.label}>Fixed Allowance (AED/month)</label>
                   <input type="number" value={draft.fixed_allowance||''} onChange={e=>setDraft(d=>({...d,fixed_allowance:e.target.value}))} style={{...S.input,width:'100%'}} />
+                </div>
+                <div>
+                  <label style={S.label}>Hourly Rate (AED/hr)</label>
+                  <input type="number" step="0.01" value={draft.hourly_rate||''} onChange={e=>setDraft(d=>({...d,hourly_rate:e.target.value}))} placeholder="e.g. 7.50" style={{...S.input,width:'100%'}} />
+                  <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>Used only when Salary Type is Hourly Contract.</div>
                 </div>
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:'10px',marginBottom:'12px',alignItems:'end'}}>
@@ -3757,16 +3881,16 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
               <thead>
                 <tr style={{background:'#f8fafc'}}>
-                  {['Emp ID','Name','Labour Card No','Bank','IBAN','Type','Basic','Allowance','Remarks',''].map(h=>(
+                  {['Emp ID','Name','Labour Card No','Bank Routing','IBAN','Type','Basic','Allowance','Hourly Rate','Remarks','Action'].map(h=>(
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={10} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                  <tr><td colSpan={11} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 ) : master.length === 0 ? (
-                  <tr><td colSpan={10} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No employees yet. Click <strong>+ Add Employee</strong>.</td></tr>
+                  <tr><td colSpan={11} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No employees yet. Click <strong>+ Add Employee</strong>.</td></tr>
                 ) : master.map(emp => (
                   <tr key={emp.id} style={{borderTop:'1px solid #f1f5f9',opacity:emp.active===false?0.5:1}} className="hr-row">
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{emp.employee_id}</td>
@@ -3781,16 +3905,17 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                       {emp.iban||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
                     </td>
                     <td style={S.td}>
-                      <span style={{background:emp.salary_type==='variable'?'#fdf4ff':'#f0fdf4',color:emp.salary_type==='variable'?'#7e22ce':'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
-                        {emp.salary_type==='variable'?'Variable':'Fixed'}
+                      <span style={{background:emp.salary_type==='hourly'?'#e0f2fe':(emp.salary_type==='variable'?'#fdf4ff':'#f0fdf4'),color:emp.salary_type==='hourly'?'#0369a1':(emp.salary_type==='variable'?'#7e22ce':'#166534'),fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
+                        {emp.salary_type==='hourly'?'Hourly':(emp.salary_type==='variable'?'Variable':'Fixed')}
                       </span>
                     </td>
                     <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{Number(emp.basic_salary||0).toLocaleString()}</td>
                     <td style={{...S.td,textAlign:'right'}}>{Number(emp.fixed_allowance||0).toLocaleString()}</td>
+                    <td style={{...S.td,textAlign:'right',fontWeight:emp.salary_type==='hourly'?800:500,color:emp.salary_type==='hourly'?'#0369a1':'#94a3b8'}}>{emp.salary_type==='hourly' ? Number(emp.hourly_rate||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
                     <td style={{...S.tdWrap,fontSize:'11px',color:'#64748b'}}>{emp.remarks||'—'}</td>
                     <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                      <button style={S.iconBtn} onClick={()=>setDraft({...emp})}>&#9998;</button>
-                      <button style={S.iconBtn} onClick={()=>removeMaster(emp.id)}>&#128465;</button>
+                      <button style={{...S.iconBtn,width:'auto',padding:'4px 8px',fontWeight:800,color:'#1d4ed8'}} onClick={()=>setDraft({...emp})}>✎ Correct</button>
+                      <button style={{...S.iconBtn,width:'auto',padding:'4px 8px',fontWeight:800,color:'#dc2626'}} onClick={()=>removeMaster(emp.id)}>Remove</button>
                     </td>
                   </tr>
                 ))}
@@ -3799,7 +3924,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
           </div>
 
           <div style={{padding:'12px 18px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',fontSize:'11.5px',color:'#64748b'}}>
-            <strong style={{color:'#0f172a'}}>Tip:</strong> Add each employee once. For <strong>Variable</strong> employees (site workers), enter OT hours and working days each month in the Generate tab. For <strong>Fixed</strong> employees, the same Basic + Allowance is used every month automatically.
+            <strong style={{color:'#0f172a'}}>Tip:</strong> Add each employee once only. If any Labour Card, manual Bank Routing Code, IBAN, Basic Salary, Allowance or Hourly Rate is wrong, click <strong>Correct</strong>, edit it, and save. The corrected master data will be reused for every future salary month. For <strong>Variable</strong> employees, enter monthly working days / OT. For <strong>Hourly Contract</strong> employees, enter actual regular hours worked; salary is calculated as hourly rate × hours worked plus OT/allowances.
           </div>
         </div>
       )}
