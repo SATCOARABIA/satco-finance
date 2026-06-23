@@ -2467,34 +2467,64 @@ const WPS_CO = {
 };
 
 const BANK_ROUTING_OPTS = [
-  { value:'801120101', label:'801120101 — ADCB' },
-  { value:'600310101', label:'600310101 — FAB (First Abu Dhabi Bank)' },
-  { value:'803510106', label:'803510106 — Emirates NBD' },
-  { value:'802610101', label:'802610101 — Dubai Islamic Bank' },
-  { value:'801010101', label:'801010101 — Al Hilal Bank' },
-  { value:'801110101', label:'801110101 — Bank of Baroda' },
+  { value:'801120101', label:'801120101 — Company default / Bank of Baroda' },
+  { value:'600310101', label:'600310101 — Saved code (verify bank name)' },
+  { value:'803510106', label:'803510106 — Saved code (verify bank name)' },
+  { value:'802610101', label:'802610101 — Saved code (verify bank name)' },
+  { value:'801010101', label:'801010101 — Saved code (verify bank name)' },
+  { value:'801110101', label:'801110101 — Saved code (verify bank name)' },
 ];
 
 const WPS_SQL = `-- Run ONCE in Finance Supabase → SQL Editor
-CREATE TABLE IF NOT EXISTS wps_employee_master (
+-- Creates the WPS Employee Master table used to save Labour Card, IBAN,
+-- manual Bank Routing Code, salary type, basic salary and fixed allowance.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS public.wps_employee_master (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   employee_id      text NOT NULL UNIQUE,
   full_name        text,
   labour_card_no   text,
-  bank_routing     text DEFAULT '801120101',
+  bank_routing     text,
   iban             text,
   basic_salary     numeric DEFAULT 0,
   fixed_allowance  numeric DEFAULT 0,
-  salary_type      text DEFAULT 'fixed' CHECK (salary_type IN ('fixed','variable')),
+  salary_type      text DEFAULT 'fixed',
   remarks          text,
   active           boolean DEFAULT true,
   created_at       timestamptz DEFAULT now(),
   updated_at       timestamptz DEFAULT now()
 );
-ALTER TABLE wps_employee_master ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow authenticated full access" ON wps_employee_master;
-CREATE POLICY "Allow authenticated full access" ON wps_employee_master
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
+
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS full_name text;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS labour_card_no text;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS bank_routing text;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS iban text;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS basic_salary numeric DEFAULT 0;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS salary_type text DEFAULT 'fixed';
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS remarks text;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS active boolean DEFAULT true;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+
+-- Do not force any default employee bank routing code.
+-- The code must be entered / corrected manually and will then be retained.
+ALTER TABLE public.wps_employee_master ALTER COLUMN bank_routing DROP DEFAULT;
+
+ALTER TABLE public.wps_employee_master DROP CONSTRAINT IF EXISTS wps_employee_master_salary_type_check;
+ALTER TABLE public.wps_employee_master
+  ADD CONSTRAINT wps_employee_master_salary_type_check
+  CHECK (salary_type IN ('fixed','variable'));
+
+ALTER TABLE public.wps_employee_master ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON public.wps_employee_master;
+DROP POLICY IF EXISTS "Allow finance app access" ON public.wps_employee_master;
+CREATE POLICY "Allow finance app access" ON public.wps_employee_master
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.wps_employee_master TO authenticated;
+NOTIFY pgrst, 'reload schema';`;
 
 // ── Number to words (AED) ────────────────────────────────────────────────────
 function numToWordsAED(n) {
@@ -2579,10 +2609,13 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   // Save master row
   const saveMaster = async () => {
     if (!draft.employee_id) return alert('Employee ID is required');
+    const routingClean = String(draft.bank_routing || '').replace(/\D/g,'');
+    if (!routingClean) return alert('Bank Routing Code is required. Enter the 9-digit WPS bank routing code once; it will be saved for future months.');
+    if (!/^\d{9}$/.test(routingClean)) return alert('Bank Routing Code must be 9 digits. Please verify the WPS routing code with the bank / WPS template.');
     const clean = {
       employee_id: draft.employee_id, full_name: draft.full_name || null,
       labour_card_no: draft.labour_card_no || null,
-      bank_routing: draft.bank_routing || WPS_CO.bank_rout,
+      bank_routing: routingClean,
       iban: (draft.iban || '').replace(/\s/g,'').toUpperCase() || null,
       basic_salary: Number(draft.basic_salary) || 0,
       fixed_allowance: Number(draft.fixed_allowance) || 0,
@@ -2594,7 +2627,14 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     const { error } = draft.id
       ? await db.from('wps_employee_master').update(clean).eq('id', draft.id)
       : await db.from('wps_employee_master').upsert(clean, { onConflict: 'employee_id' });
-    if (error) return alert(error.message);
+    if (error) {
+      if (error.code === '42P01' || /wps_employee_master/i.test(error.message||'')) {
+        setTableReady(false);
+        setShowSql(true);
+        return alert('WPS Employee Master table is not created yet. Please run the setup SQL once in Finance Supabase, then refresh this page.');
+      }
+      return alert(error.message);
+    }
     if ((Number(clean.basic_salary)||0) > 0 || (Number(clean.fixed_allowance)||0) > 0) {
       await db.from('employee_salary_profiles').upsert({
         employee_id:clean.employee_id, full_name:clean.full_name, basic_salary:clean.basic_salary, fixed_allowance:clean.fixed_allowance,
@@ -2643,7 +2683,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
         employee_id:    emp.employee_id,
         name:           emp.full_name || emp.employee_id,
         labour_card_no: emp.labour_card_no || '',
-        bank_routing:   emp.bank_routing || WPS_CO.bank_rout,
+        bank_routing:   emp.bank_routing || '',
         iban:           emp.iban || '',
         sal_from: salFrom, sal_to: salTo, days: lastDay,
         basic: basicWps, ot_allow: otAllowWps, leave_days: 0,
@@ -2874,7 +2914,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
   const activeMaster   = master.filter(m => m.active !== false);
   const months         = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const monthLabel     = `${months[mo-1]}-${y}`;
-  const missingData    = previewRows.filter(r => !r.labour_card_no || !r.iban);
+  const missingData    = previewRows.filter(r => !r.labour_card_no || !r.bank_routing || !r.iban);
 
   // Table-not-ready banner
   if (tableReady === false) {
@@ -2937,7 +2977,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Total WPS Amount</div><div style={{fontSize:'20px',fontWeight:800,color:'#166534'}}>AED {total.toLocaleString()}</div></div>
             {missingData.length > 0 && (
               <div style={{marginLeft:'auto',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'6px',padding:'6px 12px',fontSize:'12px',color:'#991b1b',fontWeight:700}}>
-                ⚠️ {missingData.length} employee(s) missing Labour Card / IBAN
+                ⚠️ {missingData.length} employee(s) missing Labour Card / Bank Routing / IBAN
               </div>
             )}
           </div>
@@ -2971,13 +3011,13 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                         <div style={{fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{r.employee_id}</div>
                         <div style={{fontWeight:600,color:'#0f172a',fontSize:'12px'}}>{r.name}</div>
                         {missing && <div style={{fontSize:'10px',color:'#dc2626',fontWeight:700}}>
-                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.iban?' No IBAN':''}
+                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.bank_routing?' No Bank Routing':''}{!r.iban?' No IBAN':''}
                         </div>}
                       </td>
                       <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:r.labour_card_no?'#0f172a':'#dc2626'}}>
                         {r.labour_card_no||'— missing —'}
                       </td>
-                      <td style={{...S.td,fontSize:'11px'}}>{r.bank_routing}</td>
+                      <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:r.bank_routing?'#0f172a':'#dc2626'}}>{r.bank_routing||'— missing —'}</td>
                       <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'10.5px',color:r.iban?'#0f172a':'#dc2626',whiteSpace:'nowrap'}}>
                         {r.iban||'— missing —'}
                       </td>
@@ -3146,7 +3186,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
               <button style={S.btnExp} onClick={() => setShowSql(v => !v)}>{showSql?'Hide SQL':'📋 Show Setup SQL'}</button>
               <button style={S.btnPri} onClick={() => setDraft({
                 employee_id:'', full_name:'', labour_card_no:'',
-                bank_routing: WPS_CO.bank_rout, iban:'',
+                bank_routing: '', iban:'',
                 basic_salary:'', fixed_allowance:'', salary_type:'fixed', remarks:'', active:true,
               })}>+ Add Employee</button>
             </div>
@@ -3200,9 +3240,14 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                 </div>
                 <div>
                   <label style={S.label}>Bank Routing Code</label>
-                  <select value={draft.bank_routing||WPS_CO.bank_rout} onChange={e=>setDraft(d=>({...d,bank_routing:e.target.value}))} style={{...S.input,width:'100%'}}>
+                  <input list="bankRoutingCodes" value={draft.bank_routing||''}
+                    onChange={e=>setDraft(d=>({...d,bank_routing:e.target.value.replace(/\D/g,'').slice(0,9)}))}
+                    placeholder="Enter 9-digit WPS routing code"
+                    style={{...S.input,width:'100%',fontFamily:'ui-monospace,monospace',fontWeight:700,letterSpacing:'.05em'}} />
+                  <datalist id="bankRoutingCodes">
                     {BANK_ROUTING_OPTS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
+                  </datalist>
+                  <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>Manual code is saved in WPS Master and reused every month.</div>
                 </div>
                 <div>
                   <label style={S.label}>IBAN</label>
@@ -3267,7 +3312,9 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:emp.labour_card_no?'#0f172a':'#dc2626'}}>
                       {emp.labour_card_no||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
                     </td>
-                    <td style={{...S.td,fontSize:'11px'}}>{(BANK_ROUTING_OPTS.find(o=>o.value===emp.bank_routing)||{label:emp.bank_routing||'—'}).label.split('—')[0].trim()}</td>
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:emp.bank_routing?'#0f172a':'#dc2626'}}>
+                      {emp.bank_routing||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
+                    </td>
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'10.5px',color:emp.iban?'#0f172a':'#dc2626'}}>
                       {emp.iban||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
                     </td>
