@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SATCO — Employee Finance & P&L</title>
+<title>SATCO — Employee Finance & P&L v15</title>
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
@@ -2866,7 +2866,9 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       iban: (draft.iban || '').replace(/\s/g,'').toUpperCase() || null,
       basic_salary: Number(draft.basic_salary) || 0,
       fixed_allowance: Number(draft.fixed_allowance) || 0,
-      salary_type: draft.salary_type || 'fixed',
+      // If an hourly rate is entered, treat this employee as Hourly Contract automatically.
+      // Basic salary remains only as contractual / WPS dummy reference.
+      salary_type: (Number(draft.hourly_rate) || 0) > 0 ? 'hourly' : (draft.salary_type || 'fixed'),
       hourly_rate: Number(draft.hourly_rate) || 0,
       remarks: draft.remarks || null,
       active: draft.active !== false,
@@ -2921,7 +2923,10 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const saved = savedByEmp[emp.employee_id] || {};
       const ov = overrides[emp.employee_id] || {};
       const pick = (key, def='') => (ov[key] !== undefined ? ov[key] : (saved[key] !== undefined && saved[key] !== null ? saved[key] : def));
-      const salaryType = emp.salary_type || 'fixed';
+      const hourlyRateMaster = Number(emp.hourly_rate ?? saved.hourly_rate ?? 0) || 0;
+      // Any employee with Hourly Rate in WPS Master is treated as hourly, even if salary type was left as Variable/Fixed.
+      // Basic salary is displayed only as dummy/contractual reference for such employees.
+      const salaryType = hourlyRateMaster > 0 ? 'hourly' : (emp.salary_type || 'fixed');
       const isVar = salaryType === 'variable';
       const isHourly = salaryType === 'hourly';
       const hpd = Number(pick('hours_per_day', 8)) || 8;
@@ -2937,7 +2942,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const remarks = String(pick('remarks', '') || '');
       const baseBasic = Number(emp.basic_salary) || 0;          // contractual / WPS master basic; not used for hourly calculation
       const baseAllow = Number(emp.fixed_allowance) || 0;
-      const hourlyRate = Number(emp.hourly_rate ?? saved.hourly_rate ?? 0) || 0;
+      const hourlyRate = hourlyRateMaster;
       const craft = (empMeta && empMeta[emp.employee_id] && (empMeta[emp.employee_id].position || empMeta[emp.employee_id].trade)) || emp.remarks || '';
 
       let basicPay, normalOTPay, holidayOTPay, allowancePay, hourlyPay;
@@ -3432,7 +3437,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
   const activeMaster   = master.filter(m => m.active !== false);
   const months         = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const monthLabel     = `${months[mo-1]}-${y}`;
-  const missingData    = salaryRows.filter(r => !r.labour_card_no || !r.bank_routing || !r.iban || (r.salary_type === 'hourly' && !r.hourly_rate));
+  const missingData    = salaryRows.filter(r => !r.labour_card_no || !r.bank_routing || !r.iban || (r.is_hourly && !r.hourly_rate));
   const sheetTotals    = {
     recoverable: salaryRows.reduce((s,r)=>s+r.finance_recoverable,0),
     recoveredBefore: salaryRows.reduce((s,r)=>s+r.finance_recovered_before,0),
@@ -3523,7 +3528,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
           </div>
 
           <div style={{padding:'8px 18px',borderBottom:'1px solid #e2e8f0',background:'#fff7ed',fontSize:'11.5px',color:'#92400e'}}>
-            Master data such as Labour Card, Bank Routing, IBAN, Basic Salary, Allowance and Hourly Rate is taken from <strong>Employee WPS Master</strong> and reused every month. If any master entry is wrong, click <strong>Correct Master</strong>, edit it once, then save the salary sheet again for this month. Only monthly values such as days/hours worked, OT, food allowance, deduction and remarks are entered here. {hasUnsavedDraft && <strong style={{marginLeft:'8px',color:'#dc2626'}}>Unsaved entries are temporarily kept on this browser — click Save Salary Sheet to store in database.</strong>}
+            Master data such as Labour Card, Bank Routing, IBAN, Basic Salary, Allowance and Hourly Rate is taken from <strong>Employee WPS Master</strong> and reused every month. If <strong>Hourly Rate</strong> is entered, salary is calculated by <strong>Hourly Rate × actual regular hours worked</strong>; Basic Salary is shown only as a contractual / WPS dummy value. If any master entry is wrong, click <strong>Correct Master</strong>, edit it once, then save the salary sheet again for this month. Only monthly values such as days/hours worked, OT, food allowance, deduction and remarks are entered here. {hasUnsavedDraft && <strong style={{marginLeft:'8px',color:'#dc2626'}}>Unsaved entries are temporarily kept on this browser — click Save Salary Sheet to store in database.</strong>}
           </div>
 
           {/* Salary Sheet table */}
@@ -3546,8 +3551,8 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                 ) : salaryRows.map(r => {
                   const ov = overrides[r.employee_id] || {};
                   const isVar = r.salary_type === 'variable';
-                  const isHourly = r.salary_type === 'hourly';
-                  const missing  = !r.labour_card_no || !r.bank_routing || !r.iban || (r.salary_type === 'hourly' && !r.hourly_rate);
+                  const isHourly = !!r.is_hourly;
+                  const missing  = !r.labour_card_no || !r.bank_routing || !r.iban || (r.is_hourly && !r.hourly_rate);
                   return (
                     <tr key={r.employee_id} style={{borderTop:'1px solid #f1f5f9',background:missing?'#fff7f7':'#fff'}} className="hr-row">
                       <td style={{...S.td,textAlign:'center',fontWeight:700}}>{r.sl_no}</td>
@@ -3560,7 +3565,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                           Correct Master
                         </button>
                         {missing && <div style={{fontSize:'10px',color:'#dc2626',fontWeight:700}}>
-                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.bank_routing?' No Bank Routing':''}{!r.iban?' No IBAN':''}{(r.salary_type==='hourly' && !r.hourly_rate)?' No Hourly Rate':''}
+                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.bank_routing?' No Bank Routing':''}{!r.iban?' No IBAN':''}{(r.is_hourly && !r.hourly_rate)?' No Hourly Rate':''}
                         </div>}
                       </td>
                       <td style={{...S.tdWrap,minWidth:'150px'}}>{r.craft||'—'}</td>
@@ -3856,7 +3861,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                 <div>
                   <label style={S.label}>Hourly Rate (AED/hr)</label>
                   <input type="number" step="0.01" value={draft.hourly_rate||''} onChange={e=>setDraft(d=>({...d,hourly_rate:e.target.value}))} placeholder="e.g. 7.50" style={{...S.input,width:'100%'}} />
-                  <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>Used only when Salary Type is Hourly Contract.</div>
+                  <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>If entered, this employee is treated as Hourly Contract automatically. Basic Salary remains dummy/reference only.</div>
                 </div>
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:'10px',marginBottom:'12px',alignItems:'end'}}>
@@ -3905,13 +3910,13 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                       {emp.iban||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
                     </td>
                     <td style={S.td}>
-                      <span style={{background:emp.salary_type==='hourly'?'#e0f2fe':(emp.salary_type==='variable'?'#fdf4ff':'#f0fdf4'),color:emp.salary_type==='hourly'?'#0369a1':(emp.salary_type==='variable'?'#7e22ce':'#166534'),fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
-                        {emp.salary_type==='hourly'?'Hourly':(emp.salary_type==='variable'?'Variable':'Fixed')}
+                      <span style={{background:(Number(emp.hourly_rate)||0)>0?'#e0f2fe':(emp.salary_type==='variable'?'#fdf4ff':'#f0fdf4'),color:(Number(emp.hourly_rate)||0)>0?'#0369a1':(emp.salary_type==='variable'?'#7e22ce':'#166534'),fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
+                        {(Number(emp.hourly_rate)||0)>0?'Hourly':(emp.salary_type==='variable'?'Variable':'Fixed')}
                       </span>
                     </td>
                     <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{Number(emp.basic_salary||0).toLocaleString()}</td>
                     <td style={{...S.td,textAlign:'right'}}>{Number(emp.fixed_allowance||0).toLocaleString()}</td>
-                    <td style={{...S.td,textAlign:'right',fontWeight:emp.salary_type==='hourly'?800:500,color:emp.salary_type==='hourly'?'#0369a1':'#94a3b8'}}>{emp.salary_type==='hourly' ? Number(emp.hourly_rate||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
+                    <td style={{...S.td,textAlign:'right',fontWeight:(Number(emp.hourly_rate)||0)>0?800:500,color:(Number(emp.hourly_rate)||0)>0?'#0369a1':'#94a3b8'}}>{(Number(emp.hourly_rate)||0)>0 ? Number(emp.hourly_rate||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
                     <td style={{...S.tdWrap,fontSize:'11px',color:'#64748b'}}>{emp.remarks||'—'}</td>
                     <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
                       <button style={{...S.iconBtn,width:'auto',padding:'4px 8px',fontWeight:800,color:'#1d4ed8'}} onClick={()=>setDraft({...emp})}>✎ Correct</button>
