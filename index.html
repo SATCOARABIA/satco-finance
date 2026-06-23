@@ -2221,53 +2221,6 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
 //     Col 9: Company Name
 //
 // Company constants from the actual files:
-const WPS_COMPANY = {
-  mol_id:       '2740739',
-  name:         'SATCO ARABIA GENERAL CONTRACTING - L.L.C - S.P.C',
-  bank_routing: '801120101',  // default ADCB routing; can be overridden per employee
-};
-
-// Bank routing codes observed in actual WPS files
-const BANK_ROUTING_OPTS = [
-  { value:'801120101', label:'801120101 — ADCB' },
-  { value:'600310101', label:'600310101 — FAB (First Abu Dhabi Bank)' },
-  { value:'803510106', label:'803510106 — Emirates NBD' },
-  { value:'802610101', label:'802610101 — Dubai Islamic Bank' },
-  { value:'801010101', label:'801010101 — Al Hilal Bank' },
-];
-
-// Supabase Finance table that stores WPS employee master data (IBAN, Labour Card, etc.)
-// We store this in the FINANCE project (not HR) for simplicity — one record per employee_id.
-// Table DDL (run once in Finance SQL editor):
-const WPS_SQL = `-- Run ONCE in your Finance Supabase project → SQL Editor
-CREATE TABLE IF NOT EXISTS wps_employee_master (
-  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  employee_id      text NOT NULL UNIQUE,
-  full_name        text,
-  labour_card_no   text,
-  bank_routing     text DEFAULT '801120101',
-  iban             text,
-  basic_salary     numeric DEFAULT 0,
-  fixed_allowance  numeric DEFAULT 0,
-  salary_type      text DEFAULT 'fixed'  -- 'fixed' or 'variable' (site workers with OT)
-                   CHECK (salary_type IN ('fixed','variable')),
-  remarks          text,
-  active           boolean DEFAULT true,
-  created_at       timestamptz DEFAULT now(),
-  updated_at       timestamptz DEFAULT now()
-);
-ALTER TABLE wps_employee_master ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow authenticated full access" ON wps_employee_master;
-CREATE POLICY "Allow authenticated full access" ON wps_employee_master
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WPS REPORT TAB — Full-featured version
-// Generates: XLS (exact bank format) + PDF + Bank Letter (DOCX)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Company constants
 const WPS_CO = {
   mol_id:    '2740739',
   name:      'SATCO ARABIA GENERAL CONTRACTING - L.L.C - S.P.C',
