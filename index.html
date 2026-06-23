@@ -9,6 +9,7 @@
 <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.2"></script>
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin:0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f1f5f9; color:#0f172a; }
@@ -2476,8 +2477,8 @@ const BANK_ROUTING_OPTS = [
 ];
 
 const WPS_SQL = `-- Run ONCE in Finance Supabase → SQL Editor
--- Creates the WPS Employee Master table used to save Labour Card, IBAN,
--- manual Bank Routing Code, salary type, basic salary and fixed allowance.
+-- Creates/updates WPS Employee Master + Monthly Salary Sheet tables.
+-- Safe to re-run. It does NOT delete salary or employee data.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -2508,8 +2509,6 @@ ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS remarks text;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS active boolean DEFAULT true;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 
--- Do not force any default employee bank routing code.
--- The code must be entered / corrected manually and will then be retained.
 ALTER TABLE public.wps_employee_master ALTER COLUMN bank_routing DROP DEFAULT;
 
 ALTER TABLE public.wps_employee_master DROP CONSTRAINT IF EXISTS wps_employee_master_salary_type_check;
@@ -2517,13 +2516,94 @@ ALTER TABLE public.wps_employee_master
   ADD CONSTRAINT wps_employee_master_salary_type_check
   CHECK (salary_type IN ('fixed','variable'));
 
+CREATE TABLE IF NOT EXISTS public.wps_salary_monthly (
+  id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id              text NOT NULL,
+  full_name                text,
+  salary_month             date NOT NULL,
+  salary_type              text DEFAULT 'fixed',
+  basic_salary             numeric DEFAULT 0,
+  fixed_allowance          numeric DEFAULT 0,
+  hours_per_day            numeric DEFAULT 8,
+  working_days             numeric DEFAULT 0,
+  normal_ot_hours          numeric DEFAULT 0,
+  holiday_ot_hours         numeric DEFAULT 0,
+  extra_allowance          numeric DEFAULT 0,
+  overtime_amount          numeric DEFAULT 0,
+  food_allowance           numeric DEFAULT 0,
+  basic_pay                numeric DEFAULT 0,
+  normal_ot_pay            numeric DEFAULT 0,
+  holiday_ot_pay           numeric DEFAULT 0,
+  allowance_pay            numeric DEFAULT 0,
+  gross_salary             numeric DEFAULT 0,
+  finance_recoverable      numeric DEFAULT 0,
+  finance_recovered_before numeric DEFAULT 0,
+  finance_deposits         numeric DEFAULT 0,
+  finance_balance_before   numeric DEFAULT 0,
+  deduction_auto           numeric DEFAULT 0,
+  deduction_manual         numeric DEFAULT 0,
+  deduction_total          numeric DEFAULT 0,
+  net_salary               numeric DEFAULT 0,
+  wps_basic                numeric DEFAULT 0,
+  wps_ot_allowance         numeric DEFAULT 0,
+  remarks                  text,
+  saved_to_monthly_costs   boolean DEFAULT false,
+  created_at               timestamptz DEFAULT now(),
+  updated_at               timestamptz DEFAULT now(),
+  UNIQUE(employee_id, salary_month)
+);
+
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS full_name text;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS salary_type text DEFAULT 'fixed';
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS basic_salary numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS working_days numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS holiday_ot_hours numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS extra_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS overtime_amount numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS food_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS basic_pay numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS normal_ot_pay numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS holiday_ot_pay numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS allowance_pay numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS gross_salary numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS finance_recoverable numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS finance_recovered_before numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS finance_deposits numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS finance_balance_before numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS deduction_auto numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS deduction_manual numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS deduction_total numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS net_salary numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS wps_basic numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS wps_ot_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS remarks text;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS saved_to_monthly_costs boolean DEFAULT false;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+
+CREATE UNIQUE INDEX IF NOT EXISTS wps_salary_monthly_employee_month_uidx
+  ON public.wps_salary_monthly(employee_id, salary_month);
+
+-- Needed for upsert from Salary Sheet to Monthly Costs / P&L.
+CREATE UNIQUE INDEX IF NOT EXISTS employee_monthly_costs_employee_month_uidx
+  ON public.employee_monthly_costs(employee_id, month);
+
 ALTER TABLE public.wps_employee_master ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow authenticated full access" ON public.wps_employee_master;
+ALTER TABLE public.wps_salary_monthly ENABLE ROW LEVEL SECURITY;
+
 DROP POLICY IF EXISTS "Allow finance app access" ON public.wps_employee_master;
 CREATE POLICY "Allow finance app access" ON public.wps_employee_master
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow finance app access" ON public.wps_salary_monthly;
+CREATE POLICY "Allow finance app access" ON public.wps_salary_monthly
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.wps_employee_master TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.wps_salary_monthly TO authenticated;
+
 NOTIFY pgrst, 'reload schema';`;
 
 // ── Number to words (AED) ────────────────────────────────────────────────────
@@ -2569,6 +2649,10 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   const [draft,    setDraft]    = useState(null);
   const [showSql,  setShowSql]  = useState(false);
   const [overrides, setOverrides] = useState({});
+  const [savedSheet, setSavedSheet] = useState([]);
+  const [sheetReady, setSheetReady] = useState(true);
+  const [savingSheet, setSavingSheet] = useState(false);
+  const [recoveryCtx, setRecoveryCtx] = useState({});
   const [generating, setGenerating] = useState('');
   const [hrPullError, setHrPullError] = useState('');
   const hrSalaryByEmp = useMemo(()=>salaryMapFromRows(hrSalaryRows||[]), [hrSalaryRows]);
@@ -2592,6 +2676,101 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     setLoading(false);
   };
   useEffect(() => { loadMaster(); }, []);
+
+  const money = (v) => Math.round((Number(v)||0)*100)/100;
+  const savedByEmp = useMemo(() => {
+    const m = {};
+    (savedSheet||[]).forEach(r => { if (r.employee_id) m[r.employee_id] = r; });
+    return m;
+  }, [savedSheet]);
+
+  const loadMonthlySheet = async () => {
+    if (!month) return;
+    const { data, error } = await db.from('wps_salary_monthly')
+      .select('*')
+      .eq('salary_month', firstOfMonth(month))
+      .order('employee_id');
+    if (error) {
+      if (error.code === '42P01' || /wps_salary_monthly/i.test(error.message||'')) {
+        setSheetReady(false);
+        setShowSql(true);
+      } else {
+        console.error('WPS salary sheet load failed', error);
+      }
+      return;
+    }
+    setSheetReady(true);
+    setSavedSheet(data || []);
+    setOverrides({});
+  };
+
+  const loadRecoveryContext = async () => {
+    const currentMonth = firstOfMonth(month);
+    const [visa, flights, training, other, monthly, invoices, invoiceLines, invoiceRecoveries] = await Promise.all([
+      db.from('employee_visa_costs').select('employee_id,cost,recoverable'),
+      db.from('employee_flights').select('employee_id,cost,recoverable'),
+      db.from('employee_training_costs').select('employee_id,cost,recoverable'),
+      db.from('employee_other_costs').select('employee_id,amount,recoverable,cost_type,recovered_amount,notes'),
+      db.from('employee_monthly_costs').select('employee_id,month,salary_deductions'),
+      db.from('employee_client_invoices').select('id,employee_id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr'),
+      db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
+      db.from('employee_client_recoveries').select('invoice_id,employee_id,amount_aed'),
+    ]);
+
+    const linesByInvoice = {};
+    (invoiceLines.data||[]).forEach(l => { if (!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
+    const recoveryByInvoice = {};
+    (invoiceRecoveries.data||[]).forEach(r => { recoveryByInvoice[r.employee_id] = (recoveryByInvoice[r.employee_id]||0) + (Number(r.amount_aed)||0); });
+
+    const m = {};
+    const ensure = (id) => { if (!m[id]) m[id] = { recoverable:0, recoveredBefore:0, deposits:0, balanceBefore:0 }; return m[id]; };
+    const addRecoverable = (id, amt) => { if (!id) return; ensure(id).recoverable += Number(amt)||0; };
+    const addRecovered = (id, amt) => { if (!id) return; ensure(id).recoveredBefore += Number(amt)||0; };
+    const addDeposit = (id, amt) => { if (!id) return; const r=ensure(id); r.deposits += Number(amt)||0; r.recoveredBefore += Number(amt)||0; };
+
+    (visa.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, r.cost));
+    (flights.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, r.cost));
+    (training.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, r.cost));
+    (other.data||[]).forEach(r => {
+      if (r.cost_type === 'security_deposit') addDeposit(r.employee_id, r.amount);
+      else if (r.recoverable && r.cost_type !== 'wps_overpayment_recovery') {
+        addRecoverable(r.employee_id, r.amount);
+        addRecovered(r.employee_id, r.recovered_amount);
+      } else if (r.cost_type === 'wps_overpayment_recovery' && r.recoverable && !/\[INV:[^\]]+\]/.test(String(r.notes||''))) {
+        addRecoverable(r.employee_id, r.amount);
+        addRecovered(r.employee_id, r.recovered_amount);
+      }
+    });
+
+    (monthly.data||[]).forEach(r => {
+      // Exclude this salary month from the "before" balance so the table can show the effect
+      // of the deduction the admin is entering now.
+      if (String(r.month||'').slice(0,10) === currentMonth) return;
+      addRecovered(r.employee_id, r.salary_deductions);
+    });
+
+    (invoices.data||[]).forEach(inv => {
+      const lns = linesByInvoice[inv.id] || [];
+      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
+      const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
+      const received = Number(inv.received_amount_aed)||0;
+      const wps = Number(inv.wps_paid_aed)||0;
+      if (!received || !totalCcy || !wps) return;
+      const impliedRate = received / totalCcy;
+      const satcoAed = hours * (Number(inv.satco_rate_eur_hr)||4.5) * impliedRate;
+      const empShare = received - satcoAed;
+      const overpaid = wps - empShare;
+      if (overpaid > 0.5) addRecoverable(inv.employee_id, Math.round(overpaid*100)/100);
+    });
+
+    Object.keys(recoveryByInvoice).forEach(id => addRecovered(id, recoveryByInvoice[id]));
+    Object.keys(m).forEach(id => { m[id].balanceBefore = Math.max(0, money(m[id].recoverable - m[id].recoveredBefore)); });
+    setRecoveryCtx(m);
+  };
+
+  useEffect(() => { if (tableReady !== false) loadMonthlySheet(); }, [month, tableReady]);
+  useEffect(() => { loadRecoveryContext(); }, [month, master.length]);
+
 
   // Pull IBAN + salary from HR bridge only when an exact employee is selected
   const pullHrProfile = async (employeeId) => {
@@ -2650,47 +2829,114 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     loadMaster();
   };
 
-  // ── Compute WPS rows ──────────────────────────────────────────────────────
+  // ── Compute Salary Sheet → WPS rows ────────────────────────────────────────
+  const computeSalarySheet = () => {
+    const [y, mo] = month.split('-').map(Number);
+    const lastDay = daysInMonthFn(y, mo);
+    const active  = master.filter(m => m.active !== false);
+    return active.map((emp, idx) => {
+      const saved = savedByEmp[emp.employee_id] || {};
+      const ov = overrides[emp.employee_id] || {};
+      const pick = (key, def='') => (ov[key] !== undefined ? ov[key] : (saved[key] !== undefined && saved[key] !== null ? saved[key] : def));
+      const isVar = emp.salary_type === 'variable';
+      const hpd = Number(pick('hours_per_day', 8)) || 8;
+      const workDays = Number(pick('working_days', isVar ? lastDay : lastDay)) || 0;
+      const normalOT = Number(pick('normal_ot_hours', 0)) || 0;
+      const holidayOT = Number(pick('holiday_ot_hours', 0)) || 0;
+      const extraAllowance = Number(pick('extra_allowance', 0)) || 0;
+      const overtimeAmount = Number(pick('overtime_amount', 0)) || 0;
+      const foodAllowance = Number(pick('food_allowance', 0)) || 0;
+      const deductionManual = Number(pick('deduction_manual', 0)) || 0;
+      const deductionAuto = Number(pick('deduction_auto', 0)) || 0;
+      const remarks = String(pick('remarks', '') || '');
+      const baseBasic = Number(emp.basic_salary) || 0;
+      const baseAllow = Number(emp.fixed_allowance) || 0;
+      const craft = (empMeta && empMeta[emp.employee_id] && (empMeta[emp.employee_id].position || empMeta[emp.employee_id].trade)) || emp.remarks || '';
+
+      let basicPay, normalOTPay, holidayOTPay, allowancePay;
+      if (isVar) {
+        const hourlyBase = (lastDay && hpd) ? (baseBasic / lastDay / hpd) : 0;
+        basicPay = lastDay ? (baseBasic / lastDay * workDays) : baseBasic;
+        normalOTPay = hourlyBase * normalOT * 1.25;
+        holidayOTPay = hourlyBase * holidayOT * 1.5;
+        allowancePay = lastDay ? (baseAllow / lastDay * workDays) : baseAllow;
+      } else {
+        basicPay = baseBasic;
+        normalOTPay = 0;
+        holidayOTPay = 0;
+        allowancePay = baseAllow + overtimeAmount;
+      }
+
+      const gross = money(basicPay + normalOTPay + holidayOTPay + allowancePay + extraAllowance + foodAllowance);
+      const deductionTotal = Math.min(gross, money(deductionAuto + deductionManual));
+      const net = money(gross - deductionTotal);
+      const rec = recoveryCtx[emp.employee_id] || { recoverable:0, recoveredBefore:0, deposits:0, balanceBefore:0 };
+      const balanceAfter = Math.max(0, money((Number(rec.balanceBefore)||0) - deductionTotal));
+
+      // WPS file must carry the net payable amount. Deduction is applied against OT/allowance first,
+      // then basic if needed, so Basic + OT/Allowance always equals salary actually paid.
+      let wpsBasic = Math.max(0, Math.round(basicPay));
+      let wpsOtAllow = Math.max(0, Math.round(gross) - wpsBasic);
+      let dedRounded = Math.round(deductionTotal);
+      const cutOt = Math.min(wpsOtAllow, dedRounded);
+      wpsOtAllow -= cutOt; dedRounded -= cutOt;
+      if (dedRounded > 0) wpsBasic = Math.max(0, wpsBasic - dedRounded);
+
+      return {
+        sl_no: idx + 1,
+        employee_id: emp.employee_id,
+        name: emp.full_name || emp.employee_id,
+        craft,
+        labour_card_no: emp.labour_card_no || '',
+        bank_routing: emp.bank_routing || '',
+        iban: emp.iban || '',
+        salary_type: emp.salary_type,
+        base_basic: baseBasic,
+        base_allowance: baseAllow,
+        working_days: workDays,
+        normal_ot: normalOT,
+        holiday_ot: holidayOT,
+        hours_per_day: hpd,
+        extra_allowance: extraAllowance,
+        overtime_amount: overtimeAmount,
+        food_allowance: foodAllowance,
+        basic_pay: money(basicPay),
+        normal_ot_pay: money(normalOTPay),
+        holiday_ot_pay: money(holidayOTPay),
+        allowance_pay: money(allowancePay + extraAllowance),
+        gross_salary: gross,
+        finance_recoverable: money(rec.recoverable),
+        finance_recovered_before: money(rec.recoveredBefore),
+        finance_deposits: money(rec.deposits),
+        finance_balance_before: money(rec.balanceBefore),
+        deduction_auto: deductionAuto,
+        deduction_manual: deductionManual,
+        deduction_total: deductionTotal,
+        balance_after: balanceAfter,
+        net_salary: net,
+        wps_basic: wpsBasic,
+        wps_ot_allowance: wpsOtAllow,
+        remarks,
+      };
+    });
+  };
+
   const computeWps = () => {
     const [y, mo] = month.split('-').map(Number);
     const lastDay = daysInMonthFn(y, mo);
     const salFrom = `${month}-01`;
     const salTo   = `${month}-${String(lastDay).padStart(2,'0')}`;
-    const active  = master.filter(m => m.active !== false);
-    return active.map(emp => {
-      const ov = overrides[emp.employee_id] || {};
-      const workDays   = Number(ov.working_days)    || lastDay;
-      const normalOT   = Number(ov.normal_ot_hours)  || 0;
-      const holidayOT  = Number(ov.holiday_ot_hours) || 0;
-      const hpd        = Number(ov.hours_per_day)    || 8;
-      const basic      = Number(emp.basic_salary)    || 0;
-      const allowance  = Number(emp.fixed_allowance) || 0;
-      const extraAllow = Number(ov.extra_allowance)  || 0;
-      let basicWps, otAllowWps;
-      if (emp.salary_type === 'variable') {
-        const hBase   = lastDay && hpd ? (basic / lastDay / hpd) : 0;
-        const bPay    = lastDay ? (basic / lastDay * workDays) : basic;
-        const nOTPay  = hBase * normalOT * 1.25;
-        const hOTPay  = hBase * holidayOT * 1.5;
-        const aPay    = lastDay ? (allowance / lastDay * workDays) : allowance;
-        basicWps   = Math.round(bPay);
-        otAllowWps = Math.round(nOTPay + hOTPay + aPay + extraAllow);
-      } else {
-        basicWps   = Math.round(basic);
-        otAllowWps = Math.round(allowance + extraAllow + (Number(ov.overtime_amount)||0));
-      }
-      return {
-        employee_id:    emp.employee_id,
-        name:           emp.full_name || emp.employee_id,
-        labour_card_no: emp.labour_card_no || '',
-        bank_routing:   emp.bank_routing || '',
-        iban:           emp.iban || '',
-        sal_from: salFrom, sal_to: salTo, days: lastDay,
-        basic: basicWps, ot_allow: otAllowWps, leave_days: 0,
-        salary_type: emp.salary_type,
-        working_days: workDays, normal_ot: normalOT, holiday_ot: holidayOT,
-      };
-    });
+    return computeSalarySheet().map(r => ({
+      employee_id:    r.employee_id,
+      name:           r.name,
+      labour_card_no: r.labour_card_no,
+      bank_routing:   r.bank_routing,
+      iban:           r.iban,
+      sal_from: salFrom, sal_to: salTo, days: lastDay,
+      basic: r.wps_basic, ot_allow: r.wps_ot_allowance, leave_days: 0,
+      salary_type: r.salary_type,
+      working_days: r.working_days, normal_ot: r.normal_ot, holiday_ot: r.holiday_ot,
+    }));
   };
 
   const grandTotal = (rows) => rows.reduce((s,r) => s + r.basic + r.ot_allow, 0);
@@ -2699,6 +2945,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   const exportXls = () => {
     setGenerating('xls');
     try {
+      if (!window.XLSX) throw new Error('XLSX library is not loaded. Refresh the page after opening v11.');
       const rows  = computeWps();
       const [y, mo] = month.split('-').map(Number);
       const lastDay = daysInMonthFn(y, mo);
@@ -2824,6 +3071,171 @@ ${rows.map(r => `<tr class="edr">
     }
   };
 
+  const salarySheetAoa = () => {
+    const rows = computeSalarySheet();
+    const [y, mo] = month.split('-').map(Number);
+    const lastDay = daysInMonthFn(y, mo);
+    const totalGross = rows.reduce((s,r)=>s+r.gross_salary,0);
+    const totalDed = rows.reduce((s,r)=>s+r.deduction_total,0);
+    const totalNet = rows.reduce((s,r)=>s+r.net_salary,0);
+    const totalBalance = rows.reduce((s,r)=>s+r.finance_balance_before,0);
+    const totalDeposits = rows.reduce((s,r)=>s+r.finance_deposits,0);
+    return [
+      [],
+      ['Month:', new Date(y, mo-1, 1), 'Month Days', lastDay, '', '', '', '', '', '', '', '', '', '', '', 'TOTAL TO RECOVER', totalBalance, 'DEDUCTION THIS MONTH', totalDed, 'NET WPS', totalNet],
+      [],
+      ['', '', '', '', '', '', 'WORKING DAYS/HOURS', '', '', 'TOTAL AMOUNT', '', '', '', '', '', 'FINANCE RECOVERY', '', '', '', 'Remark'],
+      ['Sl no.','EMP CODE','Name of Employee','Craft','Basic Salary','ALLOWANCE','Working days/hr','NORMAL OT HRS','HOLIDAYS OT','BASIC','NORMAL OVERTIME (X1.25)','HOLIDAY OVERTIME (X1.5)','ALLOWANCE','Food Allowance','GROSS SALARY','Balance to Recover','Cash Advance & Deductions','Deposits Received','Net Amount / WPS','Remark'],
+      ...rows.map(r => [r.sl_no, r.employee_id, r.name, r.craft, r.base_basic, r.base_allowance, r.working_days, r.normal_ot, r.holiday_ot, r.basic_pay, r.normal_ot_pay, r.holiday_ot_pay, r.allowance_pay, r.food_allowance, r.gross_salary, r.finance_balance_before, r.deduction_total, r.finance_deposits, r.net_salary, r.remarks]),
+      ['Total Salaries','','','','','','','','', rows.reduce((s,r)=>s+r.basic_pay,0), rows.reduce((s,r)=>s+r.normal_ot_pay,0), rows.reduce((s,r)=>s+r.holiday_ot_pay,0), rows.reduce((s,r)=>s+r.allowance_pay,0), rows.reduce((s,r)=>s+r.food_allowance,0), totalGross, totalBalance, totalDed, totalDeposits, totalNet, ''],
+      [],
+      ['', '', 'Summary', WPS_CO.name],
+      ['', '', 'Gross Salary with Allowances', totalGross],
+      ['', '', 'Deductions / Recoveries', totalDed],
+      ['', '', 'Deposits received in Finance (already recovered)', totalDeposits],
+      ['', '', 'Net WPS / Bank Amount', totalNet],
+    ];
+  };
+
+  const exportSalarySheetXls = () => {
+    setGenerating('salary_xls');
+    try {
+      if (!window.XLSX) throw new Error('XLSX library is not loaded. Refresh the page after opening v11.');
+      const [y, mo] = month.split('-').map(Number);
+      const ws = XLSX.utils.aoa_to_sheet(salarySheetAoa());
+      ws['!cols'] = [
+        {wch:8},{wch:12},{wch:28},{wch:22},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},
+        {wch:18},{wch:18},{wch:14},{wch:14},{wch:14},{wch:18},{wch:18},{wch:16},{wch:16},{wch:30}
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Salary Sheet');
+      XLSX.writeFile(wb, `SALARY_SHEET_${String(mo).padStart(2,'0')}-${y}.xlsx`);
+    } catch(e) { alert('Salary Sheet XLS export failed: ' + e.message); }
+    setGenerating('');
+  };
+
+  const salarySheetHtml = () => {
+    const rows = computeSalarySheet();
+    const [y, mo] = month.split('-').map(Number);
+    const lastDay = daysInMonthFn(y, mo);
+    const monthFull = new Date(y,mo-1,1).toLocaleString('en-GB',{month:'long',year:'numeric'});
+    const totalGross = rows.reduce((s,r)=>s+r.gross_salary,0);
+    const totalDed = rows.reduce((s,r)=>s+r.deduction_total,0);
+    const totalNet = rows.reduce((s,r)=>s+r.net_salary,0);
+    const totalBalance = rows.reduce((s,r)=>s+r.finance_balance_before,0);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>Salary Sheet ${monthFull}</title>
+<style>
+  @page { size:A4 landscape; margin:8mm; }
+  body { font-family:Arial,sans-serif; font-size:7.5pt; color:#0f172a; }
+  h2 { margin:0 0 4px; font-size:12pt; }
+  .meta { display:flex; gap:16px; margin:6px 0 8px; padding:6px 8px; border:1px solid #94a3b8; background:#f8fafc; }
+  .meta strong { color:#0f172a; }
+  table { border-collapse:collapse; width:100%; }
+  th { background:#1e293b; color:#fff; padding:4px; border:1px solid #475569; font-size:6.5pt; }
+  td { padding:3px 4px; border:1px solid #cbd5e1; vertical-align:top; }
+  .num { text-align:right; font-family:monospace; }
+  .center { text-align:center; }
+  .total td { background:#0f172a; color:#fff; font-weight:bold; }
+  .ded { color:#dc2626; font-weight:bold; }
+  .net { color:#166534; font-weight:bold; }
+</style></head><body>
+<h2>${esc(WPS_CO.name)} — Salary Sheet</h2>
+<div class="meta">
+  <span>Month: <strong>${esc(monthFull)}</strong></span>
+  <span>Month Days: <strong>${lastDay}</strong></span>
+  <span>Employees: <strong>${rows.length}</strong></span>
+  <span>Total to Recover before this month: <strong>AED ${fmt(totalBalance)}</strong></span>
+  <span>Deduction this month: <strong>AED ${fmt(totalDed)}</strong></span>
+  <span>Net WPS: <strong>AED ${fmt(totalNet)}</strong></span>
+</div>
+<table>
+<thead><tr>
+  <th>Sl</th><th>Emp Code</th><th>Name</th><th>Craft</th><th>Basic Salary</th><th>Allowance</th>
+  <th>Working Days/hr</th><th>Normal OT</th><th>Holiday OT</th>
+  <th>Basic</th><th>Normal OT Pay</th><th>Holiday OT Pay</th><th>Allowance</th><th>Food Allowance</th>
+  <th>Gross Salary</th><th>Balance to Recover</th><th>Deductions</th><th>Deposits</th><th>Net Amount / WPS</th><th>Remark</th>
+</tr></thead>
+<tbody>
+${rows.map(r=>`<tr>
+  <td class="center">${r.sl_no}</td><td>${esc(r.employee_id)}</td><td>${esc(r.name)}</td><td>${esc(r.craft)}</td>
+  <td class="num">${fmt(r.base_basic)}</td><td class="num">${fmt(r.base_allowance)}</td><td class="num">${fmt(r.working_days)}</td>
+  <td class="num">${fmt(r.normal_ot)}</td><td class="num">${fmt(r.holiday_ot)}</td>
+  <td class="num">${fmt(r.basic_pay)}</td><td class="num">${fmt(r.normal_ot_pay)}</td><td class="num">${fmt(r.holiday_ot_pay)}</td>
+  <td class="num">${fmt(r.allowance_pay)}</td><td class="num">${fmt(r.food_allowance)}</td><td class="num">${fmt(r.gross_salary)}</td>
+  <td class="num">${fmt(r.finance_balance_before)}</td><td class="num ded">${r.deduction_total>0?'-':''}${fmt(r.deduction_total)}</td>
+  <td class="num">${fmt(r.finance_deposits)}</td><td class="num net">${fmt(r.net_salary)}</td><td>${esc(r.remarks)}</td>
+</tr>`).join('')}
+<tr class="total">
+  <td colspan="9">TOTAL — ${rows.length} employees</td>
+  <td class="num">${fmt(rows.reduce((s,r)=>s+r.basic_pay,0))}</td>
+  <td class="num">${fmt(rows.reduce((s,r)=>s+r.normal_ot_pay,0))}</td>
+  <td class="num">${fmt(rows.reduce((s,r)=>s+r.holiday_ot_pay,0))}</td>
+  <td class="num">${fmt(rows.reduce((s,r)=>s+r.allowance_pay,0))}</td>
+  <td class="num">${fmt(rows.reduce((s,r)=>s+r.food_allowance,0))}</td>
+  <td class="num">${fmt(totalGross)}</td><td class="num">${fmt(totalBalance)}</td><td class="num">${fmt(totalDed)}</td><td></td><td class="num">${fmt(totalNet)}</td><td></td>
+</tr>
+</tbody></table></body></html>`;
+  };
+
+  const exportSalarySheetPdf = () => {
+    const html = salarySheetHtml();
+    const blob = new Blob([html], { type:'text/html' });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, '_blank');
+    if (win) win.onload = () => { setTimeout(()=>{ win.print(); URL.revokeObjectURL(url); }, 400); };
+  };
+
+  const saveSalarySheet = async () => {
+    const rows = computeSalarySheet();
+    if (!rows.length) return alert('No active WPS employees found.');
+    setSavingSheet(true);
+    const salaryMonth = firstOfMonth(month);
+    const salaryPayload = rows.map(r => ({
+      employee_id:r.employee_id, full_name:r.name, salary_month:salaryMonth, salary_type:r.salary_type,
+      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hours_per_day:r.hours_per_day,
+      working_days:r.working_days, normal_ot_hours:r.normal_ot, holiday_ot_hours:r.holiday_ot,
+      extra_allowance:r.extra_allowance, overtime_amount:r.overtime_amount, food_allowance:r.food_allowance,
+      basic_pay:r.basic_pay, normal_ot_pay:r.normal_ot_pay, holiday_ot_pay:r.holiday_ot_pay,
+      allowance_pay:r.allowance_pay, gross_salary:r.gross_salary,
+      finance_recoverable:r.finance_recoverable, finance_recovered_before:r.finance_recovered_before,
+      finance_deposits:r.finance_deposits, finance_balance_before:r.finance_balance_before,
+      deduction_auto:r.deduction_auto, deduction_manual:r.deduction_manual, deduction_total:r.deduction_total,
+      net_salary:r.net_salary, wps_basic:r.wps_basic, wps_ot_allowance:r.wps_ot_allowance,
+      remarks:r.remarks || null, saved_to_monthly_costs:true, updated_at:new Date().toISOString(),
+    }));
+
+    const monthlyPayload = rows.map(r => ({
+      employee_id:r.employee_id, full_name:r.name, month:salaryMonth,
+      salary_type:'wps_salary_sheet', salary:r.gross_salary,
+      food:0, accommodation:0, transport:0, other:0,
+      remarks:(r.remarks ? r.remarks + ' | ' : '') + 'Saved from WPS Salary Sheet. Net WPS: AED ' + fmt(r.net_salary),
+      salary_deductions:r.deduction_total,
+      hours_worked:0, hourly_rate:0,
+      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hours_per_day:r.hours_per_day,
+      working_days:r.working_days, month_days:daysInMonthFn(...month.split('-').map(Number)),
+      normal_ot_hours:r.normal_ot, holiday_ot_hours:r.holiday_ot,
+      computed_salary:r.gross_salary, manual_override:false, recurring_allowance_total:0,
+    }));
+
+    const s = await db.from('wps_salary_monthly').upsert(salaryPayload, { onConflict:'employee_id,salary_month' });
+    if (s.error) {
+      setSavingSheet(false);
+      if (s.error.code === '42P01' || /wps_salary_monthly/i.test(s.error.message||'')) {
+        setSheetReady(false); setShowSql(true);
+        return alert('WPS monthly salary sheet table is missing. Run the setup SQL shown on this page.');
+      }
+      return alert(s.error.message);
+    }
+    const m = await db.from('employee_monthly_costs').upsert(monthlyPayload, { onConflict:'employee_id,month' });
+    setSavingSheet(false);
+    if (m.error) return alert('Salary sheet saved, but P&L monthly sync failed: ' + m.error.message);
+    await loadMonthlySheet();
+    await loadRecoveryContext();
+    alert('Salary Sheet saved. Monthly deductions are now reflected in P&L recovery balance.');
+  };
+
   // ── Generate Bank Letter (HTML → Print as PDF) ────────────────────────────
   const exportLetter = () => {
     const rows  = computeWps();
@@ -2909,20 +3321,31 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
   // ── Derived ───────────────────────────────────────────────────────────────
   const [y, mo] = month.split('-').map(Number);
   const lastDayOfMonth = daysInMonthFn(y, mo);
+  const salaryRows     = computeSalarySheet();
   const previewRows    = computeWps();
   const total          = grandTotal(previewRows);
   const activeMaster   = master.filter(m => m.active !== false);
   const months         = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const monthLabel     = `${months[mo-1]}-${y}`;
   const missingData    = previewRows.filter(r => !r.labour_card_no || !r.bank_routing || !r.iban);
+  const sheetTotals    = {
+    recoverable: salaryRows.reduce((s,r)=>s+r.finance_recoverable,0),
+    recoveredBefore: salaryRows.reduce((s,r)=>s+r.finance_recovered_before,0),
+    deposits: salaryRows.reduce((s,r)=>s+r.finance_deposits,0),
+    balanceBefore: salaryRows.reduce((s,r)=>s+r.finance_balance_before,0),
+    deduction: salaryRows.reduce((s,r)=>s+r.deduction_total,0),
+    balanceAfter: salaryRows.reduce((s,r)=>s+r.balance_after,0),
+    gross: salaryRows.reduce((s,r)=>s+r.gross_salary,0),
+    net: salaryRows.reduce((s,r)=>s+r.net_salary,0),
+  };
 
   // Table-not-ready banner
-  if (tableReady === false) {
+  if (tableReady === false || sheetReady === false) {
     return (
       <div style={S.card}>
         <div style={{padding:'20px'}}>
           <div style={{fontWeight:800,fontSize:'15px',color:'#0f172a',marginBottom:'4px'}}>📋 WPS Report — One-time Setup Required</div>
-          <div style={{fontSize:'12.5px',color:'#64748b',marginBottom:'14px'}}>The <code>wps_employee_master</code> table doesn't exist yet. Run this SQL once in your <strong>Finance Supabase → SQL Editor</strong>, then refresh.</div>
+          <div style={{fontSize:'12.5px',color:'#64748b',marginBottom:'14px'}}>The <code>wps_employee_master</code> / <code>wps_salary_monthly</code> setup is not complete. Run this SQL once in your <strong>Finance Supabase → SQL Editor</strong>, then refresh.</div>
           <pre style={{background:'#1e293b',color:'#f8fafc',padding:'14px 16px',borderRadius:'8px',fontSize:'11px',overflowX:'auto',whiteSpace:'pre',margin:'0 0 14px'}}>{WPS_SQL}</pre>
           <button style={S.btnPri} onClick={loadMaster}>Check Again</button>
         </div>
@@ -2934,7 +3357,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
     <div>
       {/* Section toggle */}
       <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
-        {[['generate','📋 Generate WPS Report'],['letter','✉️ Bank Letter'],['master','👥 Employee WPS Master']].map(([k,l]) => (
+        {[['generate','📋 Salary Sheet / WPS'],['letter','✉️ Bank Letter'],['master','👥 Employee WPS Master']].map(([k,l]) => (
           <button key={k} onClick={() => setActiveSection(k)}
             style={{padding:'9px 16px',borderRadius:'8px',border:'1px solid '+(activeSection===k?'#0f172a':'#e2e8f0'),
               background:activeSection===k?'#0f172a':'#fff',color:activeSection===k?'#fff':'#475569',fontWeight:700,fontSize:'13px',cursor:'pointer'}}>
@@ -2960,21 +3383,33 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                 <input type="month" value={month} onChange={e => setMonth(e.target.value)}
                   style={{...S.input,width:'170px',fontWeight:700}} />
               </div>
-              <button style={{...S.btnPri,background:'#166534'}} disabled={!!generating} onClick={exportXls}>
-                {generating==='xls'?'Generating…':'⬇ Download XLS'}
+              <button style={{...S.btnPri,background:'#0f766e'}} disabled={savingSheet} onClick={saveSalarySheet}>
+                {savingSheet?'Saving…':'💾 Save Salary Sheet'}
+              </button>
+              <button style={{...S.btnPri,background:'#166534'}} disabled={!!generating} onClick={exportSalarySheetXls}>
+                {generating==='salary_xls'?'Generating…':'⬇ Salary Sheet XLS'}
+              </button>
+              <button style={{...S.btnPri,background:'#475569'}} onClick={exportSalarySheetPdf}>
+                🖨 Salary Sheet PDF
+              </button>
+              <button style={{...S.btnPri,background:'#14532d'}} disabled={!!generating} onClick={exportXls}>
+                {generating==='xls'?'Generating…':'⬇ WPS XLS'}
               </button>
               <button style={{...S.btnPri,background:'#1e40af'}} onClick={exportPdf}>
-                🖨 Print / Save PDF
+                🖨 WPS PDF
               </button>
             </div>
           </div>
 
           {/* Summary banner */}
-          <div style={{padding:'12px 18px',borderBottom:'1px solid #e2e8f0',background:'#f0fdf4',display:'flex',gap:'24px',flexWrap:'wrap',alignItems:'center'}}>
+          <div style={{padding:'12px 18px',borderBottom:'1px solid #e2e8f0',background:'#f0fdf4',display:'flex',gap:'22px',flexWrap:'wrap',alignItems:'center'}}>
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Month</div><div style={{fontSize:'16px',fontWeight:800}}>{monthLabel}</div></div>
-            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Days in Month</div><div style={{fontSize:'16px',fontWeight:800}}>{lastDayOfMonth}</div></div>
-            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Employees</div><div style={{fontSize:'16px',fontWeight:800}}>{previewRows.length}</div></div>
-            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Total WPS Amount</div><div style={{fontSize:'20px',fontWeight:800,color:'#166534'}}>AED {total.toLocaleString()}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Employees</div><div style={{fontSize:'16px',fontWeight:800}}>{salaryRows.length}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Gross Salary Sheet</div><div style={{fontSize:'18px',fontWeight:800}}>AED {fmt(sheetTotals.gross)}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#92400e',textTransform:'uppercase'}}>Total to Recover</div><div style={{fontSize:'18px',fontWeight:800,color:'#92400e'}}>AED {fmt(sheetTotals.balanceBefore)}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Deposits Received</div><div style={{fontSize:'16px',fontWeight:800,color:'#166534'}}>AED {fmt(sheetTotals.deposits)}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#dc2626',textTransform:'uppercase'}}>Deduction This Month</div><div style={{fontSize:'18px',fontWeight:800,color:'#dc2626'}}>AED {fmt(sheetTotals.deduction)}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Net WPS Amount</div><div style={{fontSize:'20px',fontWeight:800,color:'#166534'}}>AED {fmt(sheetTotals.net)}</div></div>
             {missingData.length > 0 && (
               <div style={{marginLeft:'auto',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'6px',padding:'6px 12px',fontSize:'12px',color:'#991b1b',fontWeight:700}}>
                 ⚠️ {missingData.length} employee(s) missing Labour Card / Bank Routing / IBAN
@@ -2982,31 +3417,34 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             )}
           </div>
 
-          {/* Employee table */}
+          <div style={{padding:'8px 18px',borderBottom:'1px solid #e2e8f0',background:'#fff7ed',fontSize:'11.5px',color:'#92400e'}}>
+            Enter working days/hours and this month's deduction here, then click <strong>Save Salary Sheet</strong>. Saved values reload for the same month and sync to Monthly Costs/P&amp;L so the remaining balance carries forward automatically.
+          </div>
+
+          {/* Salary Sheet table */}
           <div style={{overflowX:'auto'}}>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',minWidth:'1900px'}}>
               <thead>
                 <tr style={{background:'#f8fafc'}}>
-                  {['Employee','Labour Card No','Bank Routing','IBAN','Type','Basic (AED)','OT+Allow (AED)','Total (AED)',
-                    'Working Days','Normal OT hrs','Holiday OT hrs','Extra Allow'].map(h => (
-                    <th key={h} style={{...S.th,whiteSpace:'nowrap',fontSize:'11px'}}>{h}</th>
+                  {['Sl','Employee','Craft','Basic Salary','Allowance','Working Days/hr','Normal OT hrs','Holiday OT hrs','Basic','Normal OT Pay','Holiday OT Pay','Allowance Pay','Food Allowance','Gross Salary','Balance to Recover','Deduction This Month','Deposits Received','Balance After','Net WPS','Remarks'].map(h => (
+                    <th key={h} style={{...S.th,whiteSpace:'nowrap',fontSize:'10.5px'}}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                  <tr><td colSpan={20} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 ) : activeMaster.length === 0 ? (
-                  <tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
+                  <tr><td colSpan={20} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
                     No active employees. Go to <strong>Employee WPS Master</strong> and add employees.
                   </td></tr>
-                ) : previewRows.map(r => {
+                ) : salaryRows.map(r => {
                   const ov = overrides[r.employee_id] || {};
                   const isVar = r.salary_type === 'variable';
-                  const rowTotal = r.basic + r.ot_allow;
-                  const missing  = !r.labour_card_no || !r.iban;
+                  const missing  = !r.labour_card_no || !r.bank_routing || !r.iban;
                   return (
                     <tr key={r.employee_id} style={{borderTop:'1px solid #f1f5f9',background:missing?'#fff7f7':'#fff'}} className="hr-row">
+                      <td style={{...S.td,textAlign:'center',fontWeight:700}}>{r.sl_no}</td>
                       <td style={S.td}>
                         <div style={{fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{r.employee_id}</div>
                         <div style={{fontWeight:600,color:'#0f172a',fontSize:'12px'}}>{r.name}</div>
@@ -3014,48 +3452,72 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                           ⚠{!r.labour_card_no?' No Labour Card':''}{!r.bank_routing?' No Bank Routing':''}{!r.iban?' No IBAN':''}
                         </div>}
                       </td>
-                      <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:r.labour_card_no?'#0f172a':'#dc2626'}}>
-                        {r.labour_card_no||'— missing —'}
-                      </td>
-                      <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:r.bank_routing?'#0f172a':'#dc2626'}}>{r.bank_routing||'— missing —'}</td>
-                      <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'10.5px',color:r.iban?'#0f172a':'#dc2626',whiteSpace:'nowrap'}}>
-                        {r.iban||'— missing —'}
+                      <td style={{...S.tdWrap,minWidth:'150px'}}>{r.craft||'—'}</td>
+                      <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{fmt(r.base_basic)}</td>
+                      <td style={{...S.td,textAlign:'right'}}>{fmt(r.base_allowance)}</td>
+                      <td style={S.td}>
+                        <input type="number" value={ov.working_days ?? r.working_days ?? ''} placeholder={lastDayOfMonth}
+                          onChange={e=>setOv(r.employee_id,'working_days',e.target.value)}
+                          style={{...S.input,width:'72px',padding:'3px 5px',fontSize:'11.5px'}}/>
                       </td>
                       <td style={S.td}>
-                        <span style={{background:isVar?'#fdf4ff':'#f0fdf4',color:isVar?'#7e22ce':'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
-                          {isVar?'Variable':'Fixed'}
-                        </span>
+                        <input type="number" value={ov.normal_ot_hours ?? r.normal_ot ?? ''} placeholder="0"
+                          onChange={e=>setOv(r.employee_id,'normal_ot_hours',e.target.value)}
+                          style={{...S.input,width:'72px',padding:'3px 5px',fontSize:'11.5px'}}/>
                       </td>
-                      <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{r.basic.toLocaleString()}</td>
-                      <td style={{...S.td,fontWeight:700,textAlign:'right',color:'#7e22ce'}}>{r.ot_allow.toLocaleString()}</td>
-                      <td style={{...S.td,fontWeight:800,textAlign:'right',color:'#166534'}}>{rowTotal.toLocaleString()}</td>
-                      {isVar ? (
-                        <>
-                          <td style={S.td}><input type="number" value={ov.working_days??''} placeholder={lastDayOfMonth} onChange={e=>setOv(r.employee_id,'working_days',e.target.value)} style={{...S.input,width:'65px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
-                          <td style={S.td}><input type="number" value={ov.normal_ot_hours??''} placeholder="0" onChange={e=>setOv(r.employee_id,'normal_ot_hours',e.target.value)} style={{...S.input,width:'65px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
-                          <td style={S.td}><input type="number" value={ov.holiday_ot_hours??''} placeholder="0" onChange={e=>setOv(r.employee_id,'holiday_ot_hours',e.target.value)} style={{...S.input,width:'65px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
-                          <td style={S.td}><input type="number" value={ov.extra_allowance??''} placeholder="0" onChange={e=>setOv(r.employee_id,'extra_allowance',e.target.value)} style={{...S.input,width:'70px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
-                        </>
-                      ) : (
-                        <>
-                          <td style={{...S.td,color:'#94a3b8',textAlign:'center'}}>—</td>
-                          <td style={{...S.td,color:'#94a3b8',textAlign:'center'}}>—</td>
-                          <td style={{...S.td,color:'#94a3b8',textAlign:'center'}}>—</td>
-                          <td style={S.td}><input type="number" value={ov.overtime_amount??''} placeholder="0" title="One-off OT / extra allowance this month" onChange={e=>setOv(r.employee_id,'overtime_amount',e.target.value)} style={{...S.input,width:'70px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
-                        </>
-                      )}
+                      <td style={S.td}>
+                        <input type="number" value={ov.holiday_ot_hours ?? r.holiday_ot ?? ''} placeholder="0"
+                          onChange={e=>setOv(r.employee_id,'holiday_ot_hours',e.target.value)}
+                          style={{...S.input,width:'72px',padding:'3px 5px',fontSize:'11.5px'}}/>
+                      </td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:700}}>{fmt(r.basic_pay)}</td>
+                      <td style={{...S.td,textAlign:'right'}}>{fmt(r.normal_ot_pay)}</td>
+                      <td style={{...S.td,textAlign:'right'}}>{fmt(r.holiday_ot_pay)}</td>
+                      <td style={{...S.td,textAlign:'right'}}>{fmt(r.allowance_pay)}</td>
+                      <td style={S.td}>
+                        <input type="number" value={ov.food_allowance ?? r.food_allowance ?? ''} placeholder="0"
+                          onChange={e=>setOv(r.employee_id,'food_allowance',e.target.value)}
+                          style={{...S.input,width:'82px',padding:'3px 5px',fontSize:'11.5px'}}/>
+                      </td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:800,color:'#0f172a'}}>{fmt(r.gross_salary)}</td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:800,color:r.finance_balance_before>0?'#92400e':'#94a3b8'}}>
+                        {fmt(r.finance_balance_before)}
+                        {r.finance_recoverable>0 && <div style={{fontSize:'10px',color:'#64748b'}}>Recov. {fmt(r.finance_recoverable)} · Done {fmt(r.finance_recovered_before)}</div>}
+                      </td>
+                      <td style={S.td}>
+                        <input type="number" value={ov.deduction_manual ?? r.deduction_manual ?? ''} placeholder="0"
+                          onChange={e=>setOv(r.employee_id,'deduction_manual',e.target.value)}
+                          style={{...S.input,width:'92px',padding:'3px 5px',fontSize:'11.5px',borderColor:r.deduction_total>0?'#fca5a5':'#cbd5e1',color:'#dc2626',fontWeight:700}}/>
+                        {r.deduction_total>0 && <div style={{fontSize:'10px',color:'#dc2626',fontWeight:700}}>− AED {fmt(r.deduction_total)}</div>}
+                      </td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:700,color:'#166534'}}>{fmt(r.finance_deposits)}</td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:700,color:r.balance_after>0?'#92400e':'#94a3b8'}}>{fmt(r.balance_after)}</td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:900,color:'#166534'}}>{fmt(r.net_salary)}</td>
+                      <td style={S.td}>
+                        <input value={ov.remarks ?? r.remarks ?? ''} placeholder="Remark"
+                          onChange={e=>setOv(r.employee_id,'remarks',e.target.value)}
+                          style={{...S.input,width:'170px',padding:'3px 5px',fontSize:'11.5px'}}/>
+                      </td>
                     </tr>
                   );
                 })}
               </tbody>
-              {previewRows.length > 0 && (
+              {salaryRows.length > 0 && (
                 <tfoot>
                   <tr style={{background:'#0f172a',color:'#fff'}}>
-                    <td style={{padding:'10px 14px',fontWeight:800,fontSize:'12px'}} colSpan={5}>TOTAL — {previewRows.length} employees</td>
-                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{previewRows.reduce((s,r)=>s+r.basic,0).toLocaleString()}</td>
-                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{previewRows.reduce((s,r)=>s+r.ot_allow,0).toLocaleString()}</td>
-                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#86efac',fontSize:'14px'}}>AED {total.toLocaleString()}</td>
-                    <td colSpan={4}></td>
+                    <td style={{padding:'10px 14px',fontWeight:800,fontSize:'12px'}} colSpan={8}>TOTAL — {salaryRows.length} employees</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.basic_pay,0))}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.normal_ot_pay,0))}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.holiday_ot_pay,0))}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.allowance_pay,0))}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.food_allowance,0))}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(sheetTotals.gross)}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#fdba74'}}>{fmt(sheetTotals.balanceBefore)}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#fca5a5'}}>{fmt(sheetTotals.deduction)}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#86efac'}}>{fmt(sheetTotals.deposits)}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#fdba74'}}>{fmt(sheetTotals.balanceAfter)}</td>
+                    <td style={{padding:'10px 14px',fontWeight:900,textAlign:'right',color:'#86efac',fontSize:'14px'}}>AED {fmt(sheetTotals.net)}</td>
+                    <td></td>
                   </tr>
                 </tfoot>
               )}
