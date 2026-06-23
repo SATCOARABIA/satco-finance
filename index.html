@@ -2191,6 +2191,902 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
   );
 }
 
+// ── WPS REPORT TAB ───────────────────────────────────────────────
+// Generates the monthly WPS file for SATCO Arabia (MOL-format XLS / CSV)
+// matching the bank-submission template used in Mar-2026 / May-2026.
+//
+// WPS format (per CBUAE / MoHRE):
+//   EDR row (one per employee):
+//     Col 0: "EDR"
+//     Col 1: Labour Card No (14-digit)
+//     Col 2: Bank Routing Code (9-digit)
+//     Col 3: IBAN
+//     Col 4: Salary From (YYYY-MM-DD)
+//     Col 5: Salary To   (YYYY-MM-DD)
+//     Col 6: No. of Days
+//     Col 7: Basic Salary (AED whole number)
+//     Col 8: OT + Allowance (AED whole number)
+//     Col 9: No. of Leave Days (0)
+//     Col 10: Name
+//   SCR row (summary, one per file):
+//     Col 0: "SCR"
+//     Col 1: Company MOL ID (MOHRE establishment no)
+//     Col 2: Bank Routing Code
+//     Col 3: File Creation Date (DD-MM-YYYY)
+//     Col 4: Time (HH.MM)
+//     Col 5: Salary Month (MMYYYY)
+//     Col 6: Total Employee Count
+//     Col 7: Total Amount (Basic + Allowances, AED)
+//     Col 8: Currency "AED"
+//     Col 9: Company Name
+//
+// Company constants from the actual files:
+const WPS_COMPANY = {
+  mol_id:       '2740739',
+  name:         'SATCO ARABIA GENERAL CONTRACTING - L.L.C - S.P.C',
+  bank_routing: '801120101',  // default ADCB routing; can be overridden per employee
+};
+
+// Bank routing codes observed in actual WPS files
+const BANK_ROUTING_OPTS = [
+  { value:'801120101', label:'801120101 — ADCB' },
+  { value:'600310101', label:'600310101 — FAB (First Abu Dhabi Bank)' },
+  { value:'803510106', label:'803510106 — Emirates NBD' },
+  { value:'802610101', label:'802610101 — Dubai Islamic Bank' },
+  { value:'801010101', label:'801010101 — Al Hilal Bank' },
+];
+
+// Supabase Finance table that stores WPS employee master data (IBAN, Labour Card, etc.)
+// We store this in the FINANCE project (not HR) for simplicity — one record per employee_id.
+// Table DDL (run once in Finance SQL editor):
+const WPS_SQL = `-- Run ONCE in your Finance Supabase project → SQL Editor
+CREATE TABLE IF NOT EXISTS wps_employee_master (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id      text NOT NULL UNIQUE,
+  full_name        text,
+  labour_card_no   text,
+  bank_routing     text DEFAULT '801120101',
+  iban             text,
+  basic_salary     numeric DEFAULT 0,
+  fixed_allowance  numeric DEFAULT 0,
+  salary_type      text DEFAULT 'fixed'  -- 'fixed' or 'variable' (site workers with OT)
+                   CHECK (salary_type IN ('fixed','variable')),
+  remarks          text,
+  active           boolean DEFAULT true,
+  created_at       timestamptz DEFAULT now(),
+  updated_at       timestamptz DEFAULT now()
+);
+ALTER TABLE wps_employee_master ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON wps_employee_master;
+CREATE POLICY "Allow authenticated full access" ON wps_employee_master
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WPS REPORT TAB — Full-featured version
+// Generates: XLS (exact bank format) + PDF + Bank Letter (DOCX)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Company constants
+const WPS_CO = {
+  mol_id:    '2740739',
+  name:      'SATCO ARABIA GENERAL CONTRACTING - L.L.C - S.P.C',
+  bank_rout: '801120101',
+  acct_no:   '90020200014786',
+  bank_name: 'Bank of Baroda',
+  bank_addr: 'Abu Dhabi Branch',
+  signatory: 'Shaik Zaheerudeen',
+  signatory_title: 'Managing Director',
+};
+
+const BANK_ROUTING_OPTS = [
+  { value:'801120101', label:'801120101 — ADCB' },
+  { value:'600310101', label:'600310101 — FAB (First Abu Dhabi Bank)' },
+  { value:'803510106', label:'803510106 — Emirates NBD' },
+  { value:'802610101', label:'802610101 — Dubai Islamic Bank' },
+  { value:'801010101', label:'801010101 — Al Hilal Bank' },
+  { value:'801110101', label:'801110101 — Bank of Baroda' },
+];
+
+const WPS_SQL = `-- Run ONCE in Finance Supabase → SQL Editor
+CREATE TABLE IF NOT EXISTS wps_employee_master (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id      text NOT NULL UNIQUE,
+  full_name        text,
+  labour_card_no   text,
+  bank_routing     text DEFAULT '801120101',
+  iban             text,
+  basic_salary     numeric DEFAULT 0,
+  fixed_allowance  numeric DEFAULT 0,
+  salary_type      text DEFAULT 'fixed' CHECK (salary_type IN ('fixed','variable')),
+  remarks          text,
+  active           boolean DEFAULT true,
+  created_at       timestamptz DEFAULT now(),
+  updated_at       timestamptz DEFAULT now()
+);
+ALTER TABLE wps_employee_master ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON wps_employee_master;
+CREATE POLICY "Allow authenticated full access" ON wps_employee_master
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
+
+// ── Number to words (AED) ────────────────────────────────────────────────────
+function numToWordsAED(n) {
+  const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function chunk(x) {
+    let s = '';
+    if (x >= 100) { s += ones[Math.floor(x/100)] + ' Hundred '; x %= 100; }
+    if (x >= 20)  { s += tens[Math.floor(x/10)] + ' '; x %= 10; }
+    if (x > 0)    { s += ones[x] + ' '; }
+    return s;
+  }
+  const whole = Math.floor(n), fils = Math.round((n - whole) * 100);
+  if (whole === 0 && fils === 0) return 'Zero Dirhams';
+  const scales = ['','Thousand','Million','Billion'];
+  let w = whole, parts = [];
+  if (w === 0) parts.push('Zero');
+  let si = 0;
+  while (w > 0) { const c = w % 1000; if (c) parts.unshift(chunk(c) + scales[si] + ' '); w = Math.floor(w/1000); si++; }
+  let out = parts.join('').trim() + ' Dirhams';
+  if (fils > 0) out += ' and ' + chunk(fils).trim() + ' Fils';
+  return out;
+}
+
+// ── Month helpers ─────────────────────────────────────────────────────────────
+function daysInMonthFn(yyyy, mm) { return new Date(yyyy, mm, 0).getDate(); }
+function fmtDateDDMMYYYY(d) {
+  return String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.' + d.getFullYear();
+}
+
+// ── Main WPS Tab ─────────────────────────────────────────────────────────────
+function WpsReportTab({ employees, empMeta, hrDb }) {
+  const today = new Date();
+  const defMonth = today.toISOString().slice(0,7);
+
+  // State
+  const [activeSection, setActiveSection] = useState('generate');
+  const [month,    setMonth]    = useState(defMonth);
+  const [master,   setMaster]   = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [tableReady, setTableReady] = useState(null);
+  const [draft,    setDraft]    = useState(null);
+  const [showSql,  setShowSql]  = useState(false);
+  const [overrides, setOverrides] = useState({});
+  const [generating, setGenerating] = useState('');
+
+  // Letter state — editable fields
+  const [letterDate, setLetterDate]   = useState(fmtDateDDMMYYYY(today));
+  const [dtdDate,    setDtdDate]      = useState(fmtDateDDMMYYYY(today));
+  const [bankName,   setBankName]     = useState(WPS_CO.bank_name);
+  const [bankAddr,   setBankAddr]     = useState(WPS_CO.bank_addr);
+  const [acctNo,     setAcctNo]       = useState(WPS_CO.acct_no);
+  const [signatory,  setSignatory]    = useState(WPS_CO.signatory);
+  const [sigTitle,   setSigTitle]     = useState(WPS_CO.signatory_title);
+
+  // Load master
+  const loadMaster = async () => {
+    setLoading(true);
+    const { data, error } = await db.from('wps_employee_master').select('*').order('employee_id');
+    if (error) { if (error.code === '42P01') setTableReady(false); setLoading(false); return; }
+    setTableReady(true);
+    setMaster(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { loadMaster(); }, []);
+
+  // Pull IBAN from HR
+  const pullHrIban = async (employeeId) => {
+    if (!employeeId) return null;
+    const { data } = await hrDb.from('employees').select('bank_iban').eq('employee_id', employeeId).single();
+    return data?.bank_iban || null;
+  };
+
+  // Save master row
+  const saveMaster = async () => {
+    if (!draft.employee_id) return alert('Employee ID is required');
+    const clean = {
+      employee_id: draft.employee_id, full_name: draft.full_name || null,
+      labour_card_no: draft.labour_card_no || null,
+      bank_routing: draft.bank_routing || WPS_CO.bank_rout,
+      iban: (draft.iban || '').replace(/\s/g,'').toUpperCase() || null,
+      basic_salary: Number(draft.basic_salary) || 0,
+      fixed_allowance: Number(draft.fixed_allowance) || 0,
+      salary_type: draft.salary_type || 'fixed',
+      remarks: draft.remarks || null,
+      active: draft.active !== false,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = draft.id
+      ? await db.from('wps_employee_master').update(clean).eq('id', draft.id)
+      : await db.from('wps_employee_master').upsert(clean, { onConflict: 'employee_id' });
+    if (error) return alert(error.message);
+    setDraft(null); loadMaster();
+  };
+
+  const removeMaster = async (id) => {
+    if (!window.confirm('Remove this employee from WPS master?')) return;
+    await db.from('wps_employee_master').delete().eq('id', id);
+    loadMaster();
+  };
+
+  // ── Compute WPS rows ──────────────────────────────────────────────────────
+  const computeWps = () => {
+    const [y, mo] = month.split('-').map(Number);
+    const lastDay = daysInMonthFn(y, mo);
+    const salFrom = `${month}-01`;
+    const salTo   = `${month}-${String(lastDay).padStart(2,'0')}`;
+    const active  = master.filter(m => m.active !== false);
+    return active.map(emp => {
+      const ov = overrides[emp.employee_id] || {};
+      const workDays   = Number(ov.working_days)    || lastDay;
+      const normalOT   = Number(ov.normal_ot_hours)  || 0;
+      const holidayOT  = Number(ov.holiday_ot_hours) || 0;
+      const hpd        = Number(ov.hours_per_day)    || 8;
+      const basic      = Number(emp.basic_salary)    || 0;
+      const allowance  = Number(emp.fixed_allowance) || 0;
+      const extraAllow = Number(ov.extra_allowance)  || 0;
+      let basicWps, otAllowWps;
+      if (emp.salary_type === 'variable') {
+        const hBase   = lastDay && hpd ? (basic / lastDay / hpd) : 0;
+        const bPay    = lastDay ? (basic / lastDay * workDays) : basic;
+        const nOTPay  = hBase * normalOT * 1.25;
+        const hOTPay  = hBase * holidayOT * 1.5;
+        const aPay    = lastDay ? (allowance / lastDay * workDays) : allowance;
+        basicWps   = Math.round(bPay);
+        otAllowWps = Math.round(nOTPay + hOTPay + aPay + extraAllow);
+      } else {
+        basicWps   = Math.round(basic);
+        otAllowWps = Math.round(allowance + extraAllow + (Number(ov.overtime_amount)||0));
+      }
+      return {
+        employee_id:    emp.employee_id,
+        name:           emp.full_name || emp.employee_id,
+        labour_card_no: emp.labour_card_no || '',
+        bank_routing:   emp.bank_routing || WPS_CO.bank_rout,
+        iban:           emp.iban || '',
+        sal_from: salFrom, sal_to: salTo, days: lastDay,
+        basic: basicWps, ot_allow: otAllowWps, leave_days: 0,
+        salary_type: emp.salary_type,
+        working_days: workDays, normal_ot: normalOT, holiday_ot: holidayOT,
+      };
+    });
+  };
+
+  const grandTotal = (rows) => rows.reduce((s,r) => s + r.basic + r.ot_allow, 0);
+
+  // ── Export XLS — exactly matching bank template ───────────────────────────
+  const exportXls = () => {
+    setGenerating('xls');
+    try {
+      const rows  = computeWps();
+      const [y, mo] = month.split('-').map(Number);
+      const lastDay = daysInMonthFn(y, mo);
+      const total   = grandTotal(rows);
+      const salMonth = String(mo).padStart(2,'0') + String(y);
+      const now = new Date();
+      const creationDate = String(now.getDate()).padStart(2,'0') + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + now.getFullYear();
+      const timeStr = String(now.getHours()).padStart(2,'0') + '.' + String(now.getMinutes()).padStart(2,'0');
+
+      // Header rows (row 0 = labels, row 1 = arrows)
+      const HDR = ['Record Type','Employee  LABOUR CARD NO 14 digit','Bank Routing Code','Employee  IBAN No.','Salary From','Salary To','No. of Days','Basic','Over Time+ Allowance','No. of Leave days','Name'];
+      const ARR = HDR.map(() => '↓');
+      // EDR rows
+      const EDR = rows.map(r => ['EDR', r.labour_card_no, r.bank_routing, r.iban, r.sal_from, r.sal_to, lastDay, r.basic, r.ot_allow, 0, r.name]);
+      // Blank separator
+      const BLK = new Array(11).fill(null);
+      // SCR row
+      const SCR = ['SCR', WPS_CO.mol_id, WPS_CO.bank_rout, creationDate, timeStr, salMonth, rows.length, total, 'AED', WPS_CO.name, null];
+      // SCR label rows (arrows up + labels)
+      const AU  = SCR.map(() => '↑');
+      const SLB = ['Record Type','COMP MOL ID','Bank Routing code','File Creation date','Time HHMM','Salary month MMYYYY','Total EMP Count','Total Amount Basic+Allow','Currency','Company Name', null];
+
+      const wsData = [HDR, ARR, ...EDR, BLK, SCR, AU, SLB];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      ws['!cols'] = [{wch:12},{wch:24},{wch:18},{wch:28},{wch:12},{wch:12},{wch:10},{wch:14},{wch:20},{wch:18},{wch:38}];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'WPS');
+      XLSX.writeFile(wb, `WPS_FILE_-${String(mo).padStart(2,'0')}-${y}.xls`);
+    } catch(e) { alert('XLS export failed: ' + e.message); }
+    setGenerating('');
+  };
+
+  // ── Export PDF via print ──────────────────────────────────────────────────
+  const exportPdf = () => {
+    const rows  = computeWps();
+    const [y, mo] = month.split('-').map(Number);
+    const lastDay = daysInMonthFn(y, mo);
+    const total   = grandTotal(rows);
+    const salMonth = String(mo).padStart(2,'0') + String(y);
+    const now = new Date();
+    const creationDate = String(now.getDate()).padStart(2,'0') + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + now.getFullYear();
+    const timeStr = String(now.getHours()).padStart(2,'0') + '.' + String(now.getMinutes()).padStart(2,'0');
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const monthLabel = `${months[mo-1]}-${y}`;
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>WPS_FILE_${salMonth}</title>
+<style>
+  @page { size: A4 landscape; margin: 12mm 8mm; }
+  body { font-family: Arial, sans-serif; font-size: 7.5pt; }
+  h3 { text-align:center; font-size:9pt; margin:0 0 6px; }
+  table { border-collapse:collapse; width:100%; }
+  th { background:#1e293b; color:#fff; padding:4px 5px; font-size:7pt; text-align:center; border:1px solid #555; }
+  td { padding:3px 5px; border:1px solid #cbd5e1; }
+  .arrow { text-align:center; color:#64748b; font-size:7pt; background:#f8fafc; }
+  .edr td { background:#fff; }
+  .scr td { background:#f0fdf4; font-weight:bold; }
+  .label td { background:#f1f5f9; color:#64748b; font-size:6.5pt; text-align:center; }
+  .blank td { border:none; }
+  .num { text-align:right; font-family:monospace; }
+  .center { text-align:center; }
+  .company { font-size:11pt; font-weight:bold; margin-bottom:2px; }
+  .summary { border:1px solid #94a3b8; padding:6px 10px; margin-bottom:8px; display:flex; gap:20px; }
+  .summary span { font-size:8pt; }
+  .summary .big { font-size:10pt; font-weight:bold; color:#166534; }
+</style></head><body>
+<div class="company">SATCO ARABIA GENERAL CONTRACTING - L.L.C - S.P.C</div>
+<div class="summary">
+  <span>Salary Month: <strong>${monthLabel}</strong></span>
+  <span>Employees: <strong>${rows.length}</strong></span>
+  <span>Total: <span class="big">AED ${total.toLocaleString()}</span></span>
+  <span>MOL ID: ${WPS_CO.mol_id}</span>
+  <span>Created: ${creationDate} ${timeStr}</span>
+</div>
+<table>
+<thead><tr>
+  <th>Record Type</th><th>Labour Card No (14 digit)</th><th>Bank Routing Code</th>
+  <th>Employee IBAN No.</th><th>Salary From</th><th>Salary To</th>
+  <th>No. of Days</th><th>Basic</th><th>OT + Allowance</th><th>Leave Days</th><th>Name</th>
+</tr></thead>
+<tbody>
+<tr class="arrow"><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td class="center">↓</td><td></td></tr>
+${rows.map(r => `<tr class="edr">
+  <td class="center">EDR</td>
+  <td class="center">${r.labour_card_no}</td>
+  <td class="center">${r.bank_routing}</td>
+  <td>${r.iban}</td>
+  <td class="center">${r.sal_from}</td>
+  <td class="center">${r.sal_to}</td>
+  <td class="center">${lastDay}</td>
+  <td class="num">${r.basic.toLocaleString()}</td>
+  <td class="num">${r.ot_allow.toLocaleString()}</td>
+  <td class="center">0</td>
+  <td>${r.name}</td>
+</tr>`).join('')}
+<tr class="blank"><td colspan="11">&nbsp;</td></tr>
+<tr class="scr">
+  <td class="center">SCR</td>
+  <td class="center">${WPS_CO.mol_id}</td>
+  <td class="center">${WPS_CO.bank_rout}</td>
+  <td class="center">${creationDate}</td>
+  <td class="center">${timeStr}</td>
+  <td class="center">${salMonth}</td>
+  <td class="num">${rows.length}</td>
+  <td class="num">${total.toLocaleString()}</td>
+  <td class="center">AED</td>
+  <td colspan="2">${WPS_CO.name}</td>
+</tr>
+<tr class="arrow"><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td class="center">↑</td><td></td></tr>
+<tr class="label">
+  <td>Record Type</td><td>COMP MOL ID</td><td>Bank Routing code</td>
+  <td>File Creation date</td><td>Time HHMM</td><td>Salary month MMYYYY</td>
+  <td>Total EMP Count</td><td>Total Amount Basic+Allow</td><td>Currency</td><td colspan="2">Company Name</td>
+</tr>
+</tbody>
+</table>
+</body></html>`;
+    const blob = new Blob([html], { type:'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const win  = window.open(url, '_blank');
+    if (win) {
+      win.onload = () => { setTimeout(() => { win.print(); URL.revokeObjectURL(url); }, 400); };
+    }
+  };
+
+  // ── Generate Bank Letter (HTML → Print as PDF) ────────────────────────────
+  const exportLetter = () => {
+    const rows  = computeWps();
+    const [y, mo] = month.split('-').map(Number);
+    const total = grandTotal(rows);
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const monthLong = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const monthLabel = `${months[mo-1]}-${y}`;
+    const monthFull  = `${monthLong[mo-1]}-${y}`;
+    const wordsAmount = numToWordsAED(total);
+    // Format total as comma-separated
+    const fmtTotal = total.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>WPS Letter ${monthLabel}</title>
+<style>
+  @page { size: A4 portrait; margin: 20mm 20mm 15mm 20mm; }
+  body { font-family: Arial, sans-serif; font-size: 11pt; color: #000; line-height: 1.6; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 30px; border-bottom: 2px solid #1a3a6b; padding-bottom: 10px; }
+  .logo-text { font-size: 18pt; font-weight: bold; color: #1a3a6b; }
+  .logo-sub  { font-size: 8pt; color: #555; letter-spacing: 1px; }
+  .arabic    { text-align: right; font-size: 12pt; color: #1a3a6b; direction: rtl; }
+  .date-line { text-align: right; margin-bottom: 20px; }
+  .addr-block p { margin: 2px 0; }
+  .subject { text-align: center; font-weight: bold; text-decoration: underline; margin: 25px 0 15px; font-size: 11.5pt; }
+  .body-para { margin-bottom: 14px; text-align: justify; }
+  .sign-block { margin-top: 50px; }
+  .sign-line  { border-bottom: 1px solid #000; width: 180px; margin-bottom: 4px; height: 40px; }
+  .footer-rule { border-top: 1px solid #aaa; margin-top: 40px; padding-top: 6px; font-size: 7.5pt; color: #555; text-align: center; }
+  strong.underline { text-decoration: underline; }
+</style>
+</head><body>
+<div class="header">
+  <div>
+    <div class="logo-text">SATCO Arabia<span style="font-size:8pt;font-weight:normal;color:#555"> General Contracting - L.L.C - S.P.C</span></div>
+    <div class="logo-sub">INFINITE POSSIBILITIES</div>
+  </div>
+  <div class="arabic">
+    ساتكـو العـربيـه<br>
+    <span style="font-size:9pt">للمقاولات العامة - ذ.م.م - ش.ش.و</span>
+  </div>
+</div>
+
+<div class="date-line">Date: ${letterDate}</div>
+
+<div class="addr-block">
+  <p>The Asst. General Manager,</p>
+  <p>${bankName},</p>
+  <p>${bankAddr}</p>
+</div>
+
+<p>Dear Sir,</p>
+
+<div class="subject">Subject: &nbsp; WPS Salary Transfer for the Month of ${monthFull}</div>
+
+<div class="body-para">
+Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – ${wordsAmount})</strong> to ${rows.length.toString().padStart(2,'0')} Employees account as per attached list on <strong class="underline">DTD ${dtdDate}</strong> from debit of our Company's account <strong class="underline">${acctNo}.</strong>
+</div>
+
+<div class="sign-block">
+  <p>Yours faithfully,</p>
+  <div class="sign-line"></div>
+  <p><strong>${signatory}</strong></p>
+  <p>(${sigTitle})</p>
+</div>
+
+<div class="footer-rule">
+  Tel.: 02 551 9162, Fax: 02 551 9163, P.O. Box: 92654, Abu Dhabi - U.A.E &nbsp;&nbsp; أبوظبي – أ.ع.م
+</div>
+</body></html>`;
+    const blob = new Blob([html], { type:'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const win  = window.open(url, '_blank');
+    if (win) {
+      win.onload = () => { setTimeout(() => { win.print(); URL.revokeObjectURL(url); }, 400); };
+    }
+  };
+
+  // ── Override setter ───────────────────────────────────────────────────────
+  const setOv = (empId, key, val) =>
+    setOverrides(prev => ({ ...prev, [empId]: { ...(prev[empId]||{}), [key]: val } }));
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const [y, mo] = month.split('-').map(Number);
+  const lastDayOfMonth = daysInMonthFn(y, mo);
+  const previewRows    = computeWps();
+  const total          = grandTotal(previewRows);
+  const activeMaster   = master.filter(m => m.active !== false);
+  const months         = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthLabel     = `${months[mo-1]}-${y}`;
+  const missingData    = previewRows.filter(r => !r.labour_card_no || !r.iban);
+
+  // Table-not-ready banner
+  if (tableReady === false) {
+    return (
+      <div style={S.card}>
+        <div style={{padding:'20px'}}>
+          <div style={{fontWeight:800,fontSize:'15px',color:'#0f172a',marginBottom:'4px'}}>📋 WPS Report — One-time Setup Required</div>
+          <div style={{fontSize:'12.5px',color:'#64748b',marginBottom:'14px'}}>The <code>wps_employee_master</code> table doesn't exist yet. Run this SQL once in your <strong>Finance Supabase → SQL Editor</strong>, then refresh.</div>
+          <pre style={{background:'#1e293b',color:'#f8fafc',padding:'14px 16px',borderRadius:'8px',fontSize:'11px',overflowX:'auto',whiteSpace:'pre',margin:'0 0 14px'}}>{WPS_SQL}</pre>
+          <button style={S.btnPri} onClick={loadMaster}>Check Again</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Section toggle */}
+      <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
+        {[['generate','📋 Generate WPS Report'],['letter','✉️ Bank Letter'],['master','👥 Employee WPS Master']].map(([k,l]) => (
+          <button key={k} onClick={() => setActiveSection(k)}
+            style={{padding:'9px 16px',borderRadius:'8px',border:'1px solid '+(activeSection===k?'#0f172a':'#e2e8f0'),
+              background:activeSection===k?'#0f172a':'#fff',color:activeSection===k?'#fff':'#475569',fontWeight:700,fontSize:'13px',cursor:'pointer'}}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {/* SECTION A: GENERATE WPS REPORT                                      */}
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {activeSection === 'generate' && (
+        <div style={S.card}>
+          {/* Header row */}
+          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:'10px'}}>
+            <div>
+              <div style={{fontWeight:800,fontSize:'14px'}}>{WPS_CO.name}</div>
+              <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>MOL ID: {WPS_CO.mol_id} · {activeMaster.length} active employees</div>
+            </div>
+            <div style={{display:'flex',gap:'8px',alignItems:'flex-end',flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:'3px'}}>Salary Month</div>
+                <input type="month" value={month} onChange={e => setMonth(e.target.value)}
+                  style={{...S.input,width:'170px',fontWeight:700}} />
+              </div>
+              <button style={{...S.btnPri,background:'#166534'}} disabled={!!generating} onClick={exportXls}>
+                {generating==='xls'?'Generating…':'⬇ Download XLS'}
+              </button>
+              <button style={{...S.btnPri,background:'#1e40af'}} onClick={exportPdf}>
+                🖨 Print / Save PDF
+              </button>
+            </div>
+          </div>
+
+          {/* Summary banner */}
+          <div style={{padding:'12px 18px',borderBottom:'1px solid #e2e8f0',background:'#f0fdf4',display:'flex',gap:'24px',flexWrap:'wrap',alignItems:'center'}}>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Month</div><div style={{fontSize:'16px',fontWeight:800}}>{monthLabel}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Days in Month</div><div style={{fontSize:'16px',fontWeight:800}}>{lastDayOfMonth}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Employees</div><div style={{fontSize:'16px',fontWeight:800}}>{previewRows.length}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Total WPS Amount</div><div style={{fontSize:'20px',fontWeight:800,color:'#166534'}}>AED {total.toLocaleString()}</div></div>
+            {missingData.length > 0 && (
+              <div style={{marginLeft:'auto',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'6px',padding:'6px 12px',fontSize:'12px',color:'#991b1b',fontWeight:700}}>
+                ⚠️ {missingData.length} employee(s) missing Labour Card / IBAN
+              </div>
+            )}
+          </div>
+
+          {/* Employee table */}
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+              <thead>
+                <tr style={{background:'#f8fafc'}}>
+                  {['Employee','Labour Card No','Bank Routing','IBAN','Type','Basic (AED)','OT+Allow (AED)','Total (AED)',
+                    'Working Days','Normal OT hrs','Holiday OT hrs','Extra Allow'].map(h => (
+                    <th key={h} style={{...S.th,whiteSpace:'nowrap',fontSize:'11px'}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ) : activeMaster.length === 0 ? (
+                  <tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
+                    No active employees. Go to <strong>Employee WPS Master</strong> and add employees.
+                  </td></tr>
+                ) : previewRows.map(r => {
+                  const ov = overrides[r.employee_id] || {};
+                  const isVar = r.salary_type === 'variable';
+                  const rowTotal = r.basic + r.ot_allow;
+                  const missing  = !r.labour_card_no || !r.iban;
+                  return (
+                    <tr key={r.employee_id} style={{borderTop:'1px solid #f1f5f9',background:missing?'#fff7f7':'#fff'}} className="hr-row">
+                      <td style={S.td}>
+                        <div style={{fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{r.employee_id}</div>
+                        <div style={{fontWeight:600,color:'#0f172a',fontSize:'12px'}}>{r.name}</div>
+                        {missing && <div style={{fontSize:'10px',color:'#dc2626',fontWeight:700}}>
+                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.iban?' No IBAN':''}
+                        </div>}
+                      </td>
+                      <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:r.labour_card_no?'#0f172a':'#dc2626'}}>
+                        {r.labour_card_no||'— missing —'}
+                      </td>
+                      <td style={{...S.td,fontSize:'11px'}}>{r.bank_routing}</td>
+                      <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'10.5px',color:r.iban?'#0f172a':'#dc2626',whiteSpace:'nowrap'}}>
+                        {r.iban||'— missing —'}
+                      </td>
+                      <td style={S.td}>
+                        <span style={{background:isVar?'#fdf4ff':'#f0fdf4',color:isVar?'#7e22ce':'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
+                          {isVar?'Variable':'Fixed'}
+                        </span>
+                      </td>
+                      <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{r.basic.toLocaleString()}</td>
+                      <td style={{...S.td,fontWeight:700,textAlign:'right',color:'#7e22ce'}}>{r.ot_allow.toLocaleString()}</td>
+                      <td style={{...S.td,fontWeight:800,textAlign:'right',color:'#166534'}}>{rowTotal.toLocaleString()}</td>
+                      {isVar ? (
+                        <>
+                          <td style={S.td}><input type="number" value={ov.working_days??''} placeholder={lastDayOfMonth} onChange={e=>setOv(r.employee_id,'working_days',e.target.value)} style={{...S.input,width:'65px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
+                          <td style={S.td}><input type="number" value={ov.normal_ot_hours??''} placeholder="0" onChange={e=>setOv(r.employee_id,'normal_ot_hours',e.target.value)} style={{...S.input,width:'65px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
+                          <td style={S.td}><input type="number" value={ov.holiday_ot_hours??''} placeholder="0" onChange={e=>setOv(r.employee_id,'holiday_ot_hours',e.target.value)} style={{...S.input,width:'65px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
+                          <td style={S.td}><input type="number" value={ov.extra_allowance??''} placeholder="0" onChange={e=>setOv(r.employee_id,'extra_allowance',e.target.value)} style={{...S.input,width:'70px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
+                        </>
+                      ) : (
+                        <>
+                          <td style={{...S.td,color:'#94a3b8',textAlign:'center'}}>—</td>
+                          <td style={{...S.td,color:'#94a3b8',textAlign:'center'}}>—</td>
+                          <td style={{...S.td,color:'#94a3b8',textAlign:'center'}}>—</td>
+                          <td style={S.td}><input type="number" value={ov.overtime_amount??''} placeholder="0" title="One-off OT / extra allowance this month" onChange={e=>setOv(r.employee_id,'overtime_amount',e.target.value)} style={{...S.input,width:'70px',padding:'3px 5px',fontSize:'11.5px'}}/></td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {previewRows.length > 0 && (
+                <tfoot>
+                  <tr style={{background:'#0f172a',color:'#fff'}}>
+                    <td style={{padding:'10px 14px',fontWeight:800,fontSize:'12px'}} colSpan={5}>TOTAL — {previewRows.length} employees</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{previewRows.reduce((s,r)=>s+r.basic,0).toLocaleString()}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{previewRows.reduce((s,r)=>s+r.ot_allow,0).toLocaleString()}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#86efac',fontSize:'14px'}}>AED {total.toLocaleString()}</td>
+                    <td colSpan={4}></td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+
+          {/* SCR preview */}
+          {previewRows.length > 0 && (
+            <div style={{padding:'10px 18px',borderTop:'2px solid #e2e8f0',background:'#f8fafc',fontSize:'11.5px',color:'#334155',display:'flex',gap:'18px',flexWrap:'wrap'}}>
+              <span><strong>SCR — Salary Month:</strong> {String(mo).padStart(2,'0')}{y}</span>
+              <span><strong>Emp Count:</strong> {previewRows.length}</span>
+              <span><strong>Total:</strong> AED {total.toLocaleString()}</span>
+              <span><strong>Currency:</strong> AED</span>
+              <span><strong>MOL ID:</strong> {WPS_CO.mol_id}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {/* SECTION B: BANK LETTER                                              */}
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {activeSection === 'letter' && (
+        <div style={S.card}>
+          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'10px'}}>
+            <div>
+              <div style={{fontWeight:800,fontSize:'14px'}}>✉️ WPS Bank Letter</div>
+              <div style={{fontSize:'12px',color:'#64748b'}}>Edit fields below, then print / save as PDF</div>
+            </div>
+            <button style={{...S.btnPri,background:'#1e40af'}} onClick={exportLetter}>🖨 Print / Save PDF</button>
+          </div>
+
+          {/* Editable fields */}
+          <div style={{padding:'16px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+            <div style={{fontWeight:800,fontSize:'12.5px',color:'#92400e',marginBottom:'12px'}}>Letter Details — edit before printing</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'10px'}}>
+              <div>
+                <label style={S.label}>Letter Date</label>
+                <input value={letterDate} onChange={e=>setLetterDate(e.target.value)} placeholder="DD.MM.YYYY" style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>DTD Date (Transfer Date)</label>
+                <input value={dtdDate} onChange={e=>setDtdDate(e.target.value)} placeholder="DD.MM.YYYY" style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Bank Name</label>
+                <input value={bankName} onChange={e=>setBankName(e.target.value)} style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Bank Branch</label>
+                <input value={bankAddr} onChange={e=>setBankAddr(e.target.value)} style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Company Account No</label>
+                <input value={acctNo} onChange={e=>setAcctNo(e.target.value)} style={{...S.input,width:'100%',fontFamily:'ui-monospace,monospace'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Signatory Name</label>
+                <input value={signatory} onChange={e=>setSignatory(e.target.value)} style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Signatory Title</label>
+                <input value={sigTitle} onChange={e=>setSigTitle(e.target.value)} style={{...S.input,width:'100%'}}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Letter preview */}
+          {(() => {
+            const rows  = computeWps();
+            const [ly, lmo] = month.split('-').map(Number);
+            const total = grandTotal(rows);
+            const monthLong = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+            const monthFull  = `${monthLong[lmo-1]}-${ly}`;
+            const fmtTotal = total.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
+            const wordsAmount = numToWordsAED(total);
+            return (
+              <div style={{padding:'24px 32px',maxWidth:'680px',margin:'20px auto',border:'1px solid #cbd5e1',borderRadius:'8px',fontFamily:'Arial,sans-serif',fontSize:'11pt',lineHeight:'1.6',background:'#fff'}}>
+                {/* Header */}
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'20px',paddingBottom:'10px',borderBottom:'2px solid #1a3a6b'}}>
+                  <div>
+                    <div style={{fontSize:'15pt',fontWeight:'bold',color:'#1a3a6b'}}>SATCO Arabia <span style={{fontSize:'7pt',fontWeight:'normal',color:'#555'}}>General Contracting - L.L.C - S.P.C</span></div>
+                    <div style={{fontSize:'7pt',color:'#555',letterSpacing:'1px'}}>INFINITE POSSIBILITIES</div>
+                  </div>
+                  <div style={{textAlign:'right',direction:'rtl',fontSize:'10pt',color:'#1a3a6b'}}>
+                    ساتكـو العـربيـه<br/><span style={{fontSize:'8pt'}}>للمقاولات العامة - ذ.م.م - ش.ش.و</span>
+                  </div>
+                </div>
+                <div style={{textAlign:'right',marginBottom:'18px'}}>Date: {letterDate}</div>
+                <div style={{marginBottom:'16px',lineHeight:'1.8'}}>
+                  <div>The Asst. General Manager,</div>
+                  <div>{bankName},</div>
+                  <div>{bankAddr}</div>
+                </div>
+                <div>Dear Sir,</div>
+                <div style={{textAlign:'center',fontWeight:'bold',textDecoration:'underline',margin:'18px 0 14px',fontSize:'11.5pt'}}>
+                  Subject: - &nbsp; WPS Salary Transfer for the Month of {monthFull}
+                </div>
+                <div style={{textAlign:'justify',marginBottom:'14px'}}>
+                  Kindly arrange to transfer the Sum of <strong>AED &nbsp; {fmtTotal}/- (AED – {wordsAmount})</strong> to {String(rows.length).padStart(2,'0')} Employees account as per attached list on <strong style={{textDecoration:'underline'}}>DTD {dtdDate}</strong> from debit of our Company's account <strong style={{textDecoration:'underline'}}>{acctNo}.</strong>
+                </div>
+                <div style={{marginTop:'40px'}}>
+                  <div>Yours faithfully,</div>
+                  <div style={{height:'50px',borderBottom:'1px solid #000',width:'180px',margin:'10px 0 4px'}}></div>
+                  <div><strong>{signatory}</strong></div>
+                  <div>({sigTitle})</div>
+                </div>
+                <div style={{borderTop:'1px solid #aaa',marginTop:'30px',paddingTop:'5px',fontSize:'7.5pt',color:'#555',textAlign:'center'}}>
+                  Tel.: 02 551 9162, Fax: 02 551 9163, P.O. Box: 92654, Abu Dhabi - U.A.E
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {/* SECTION C: EMPLOYEE WPS MASTER                                      */}
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {activeSection === 'master' && (
+        <div style={S.card}>
+          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'10px'}}>
+            <div>
+              <div style={{fontWeight:800,fontSize:'14px'}}>👥 Employee WPS Master</div>
+              <div style={{fontSize:'12px',color:'#64748b'}}>{activeMaster.length} active · {master.filter(m=>m.active===false).length} inactive</div>
+            </div>
+            <div style={{display:'flex',gap:'8px'}}>
+              <button style={S.btnExp} onClick={() => setShowSql(v => !v)}>{showSql?'Hide SQL':'📋 Show Setup SQL'}</button>
+              <button style={S.btnPri} onClick={() => setDraft({
+                employee_id:'', full_name:'', labour_card_no:'',
+                bank_routing: WPS_CO.bank_rout, iban:'',
+                basic_salary:'', fixed_allowance:'', salary_type:'fixed', remarks:'', active:true,
+              })}>+ Add Employee</button>
+            </div>
+          </div>
+
+          {showSql && (
+            <div style={{padding:'14px 18px',background:'#fffbeb',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:'11.5px',color:'#92400e',marginBottom:'8px',fontWeight:700}}>Run once in Finance Supabase → SQL Editor:</div>
+              <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11px',overflowX:'auto',whiteSpace:'pre',margin:0}}>{WPS_SQL}</pre>
+            </div>
+          )}
+
+          {/* Editor */}
+          {draft && (
+            <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+              <div style={{fontWeight:800,fontSize:'13px',marginBottom:'12px',color:'#92400e'}}>
+                {draft.id ? `Edit — ${draft.full_name||draft.employee_id}` : 'Add Employee to WPS Master'}
+              </div>
+              <div style={{marginBottom:'10px'}}>
+                <label style={S.label}>Employee</label>
+                <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+                  <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+                    onChange={async (id,name) => {
+                      const iban = await pullHrIban(id);
+                      setDraft(d => ({...d, employee_id:id, full_name:name||d.full_name, iban: d.iban || iban || ''}));
+                    }} />
+                  {draft.employee_id && !draft.iban && (
+                    <button style={{...S.btnExp,fontSize:'11px',padding:'4px 10px',color:'#0369a1'}}
+                      onClick={async()=>{ const ib=await pullHrIban(draft.employee_id); if(ib) setDraft(d=>({...d,iban:ib})); else alert('No IBAN found in HR portal.'); }}>
+                      Pull IBAN from HR
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+                <div>
+                  <label style={S.label}>Labour Card No (14-digit)</label>
+                  <input value={draft.labour_card_no||''} onChange={e=>setDraft(d=>({...d,labour_card_no:e.target.value}))}
+                    placeholder="10007087491888"
+                    style={{...S.input,width:'100%',fontFamily:'ui-monospace,monospace',fontWeight:700,letterSpacing:'.05em'}} />
+                </div>
+                <div>
+                  <label style={S.label}>Bank Routing Code</label>
+                  <select value={draft.bank_routing||WPS_CO.bank_rout} onChange={e=>setDraft(d=>({...d,bank_routing:e.target.value}))} style={{...S.input,width:'100%'}}>
+                    {BANK_ROUTING_OPTS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>IBAN</label>
+                  <input value={draft.iban||''} onChange={e=>setDraft(d=>({...d,iban:e.target.value.replace(/\s/g,'').toUpperCase()}))}
+                    placeholder="AE220030000774574141001"
+                    style={{...S.input,width:'100%',fontFamily:'ui-monospace,monospace',fontWeight:700,letterSpacing:'.04em'}} />
+                </div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+                <div>
+                  <label style={S.label}>Salary Type</label>
+                  <select value={draft.salary_type||'fixed'} onChange={e=>setDraft(d=>({...d,salary_type:e.target.value}))} style={{...S.input,width:'100%'}}>
+                    <option value="fixed">Fixed — same every month</option>
+                    <option value="variable">Variable — site workers (OT + prorated)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Basic Salary (AED/month)</label>
+                  <input type="number" value={draft.basic_salary||''} onChange={e=>setDraft(d=>({...d,basic_salary:e.target.value}))} style={{...S.input,width:'100%'}} />
+                </div>
+                <div>
+                  <label style={S.label}>Fixed Allowance (AED/month)</label>
+                  <input type="number" value={draft.fixed_allowance||''} onChange={e=>setDraft(d=>({...d,fixed_allowance:e.target.value}))} style={{...S.input,width:'100%'}} />
+                </div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:'10px',marginBottom:'12px',alignItems:'end'}}>
+                <div>
+                  <label style={S.label}>Remarks</label>
+                  <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="e.g. Work permit holder" />
+                </div>
+                <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',fontWeight:700,fontSize:'12.5px',paddingBottom:'9px'}}>
+                  <input type="checkbox" checked={draft.active!==false} onChange={e=>setDraft(d=>({...d,active:e.target.checked}))} />
+                  Include in WPS
+                </label>
+              </div>
+              <div style={{display:'flex',gap:'8px'}}>
+                <button style={S.btnPri} onClick={saveMaster}>Save</button>
+                <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {/* Table */}
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+              <thead>
+                <tr style={{background:'#f8fafc'}}>
+                  {['Emp ID','Name','Labour Card No','Bank','IBAN','Type','Basic','Allowance','Remarks',''].map(h=>(
+                    <th key={h} style={S.th}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={10} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ) : master.length === 0 ? (
+                  <tr><td colSpan={10} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No employees yet. Click <strong>+ Add Employee</strong>.</td></tr>
+                ) : master.map(emp => (
+                  <tr key={emp.id} style={{borderTop:'1px solid #f1f5f9',opacity:emp.active===false?0.5:1}} className="hr-row">
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{emp.employee_id}</td>
+                    <td style={{...S.td,fontWeight:600}}>{emp.full_name||'—'}</td>
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:emp.labour_card_no?'#0f172a':'#dc2626'}}>
+                      {emp.labour_card_no||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
+                    </td>
+                    <td style={{...S.td,fontSize:'11px'}}>{(BANK_ROUTING_OPTS.find(o=>o.value===emp.bank_routing)||{label:emp.bank_routing||'—'}).label.split('—')[0].trim()}</td>
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'10.5px',color:emp.iban?'#0f172a':'#dc2626'}}>
+                      {emp.iban||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
+                    </td>
+                    <td style={S.td}>
+                      <span style={{background:emp.salary_type==='variable'?'#fdf4ff':'#f0fdf4',color:emp.salary_type==='variable'?'#7e22ce':'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
+                        {emp.salary_type==='variable'?'Variable':'Fixed'}
+                      </span>
+                    </td>
+                    <td style={{...S.td,fontWeight:700,textAlign:'right'}}>{Number(emp.basic_salary||0).toLocaleString()}</td>
+                    <td style={{...S.td,textAlign:'right'}}>{Number(emp.fixed_allowance||0).toLocaleString()}</td>
+                    <td style={{...S.tdWrap,fontSize:'11px',color:'#64748b'}}>{emp.remarks||'—'}</td>
+                    <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                      <button style={S.iconBtn} onClick={()=>setDraft({...emp})}>&#9998;</button>
+                      <button style={S.iconBtn} onClick={()=>removeMaster(emp.id)}>&#128465;</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{padding:'12px 18px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',fontSize:'11.5px',color:'#64748b'}}>
+            <strong style={{color:'#0f172a'}}>Tip:</strong> Add each employee once. For <strong>Variable</strong> employees (site workers), enter OT hours and working days each month in the Generate tab. For <strong>Fixed</strong> employees, the same Basic + Allowance is used every month automatically.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── P&L DASHBOARD ─────────────────────────────────────────────────
 function PnlDashboard({ empMeta, onOpenEmployee }) {
   const [summary,      setSummary]      = useState([]);
@@ -2872,7 +3768,7 @@ function App() {
       });
   },[]);
 
-  const tabs=[['dashboard','P&L Dashboard'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)']];
+  const tabs=[['dashboard','P&L Dashboard'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)'],['wps','📋 WPS Report']];
 
   if (session===undefined) return null;
   if (!session) return <LoginScreen onLogin={setSession} />;
@@ -2921,6 +3817,7 @@ function App() {
           {tab==='monthly'   && <MonthlyCostsTable employees={employees} empMeta={empMeta} />}
           {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
           {tab==='billing'    && <ClientBillingTab employees={employees} />}
+          {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} />}
         </>
       )}
     </div>
