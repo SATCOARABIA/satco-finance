@@ -261,13 +261,52 @@ CREATE TABLE IF NOT EXISTS employee_allowances (
 ALTER TABLE employee_allowances ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_allowances;
 CREATE POLICY "Allow authenticated full access" ON employee_allowances
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+-- v6: Salary Profiles — one row per employee; stores the agreed basic salary + fixed allowance
+-- so Finance doesn't need to re-enter it every month. Monthly Costs auto-fills from this.
+CREATE TABLE IF NOT EXISTS employee_salary_profiles (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id text NOT NULL UNIQUE,
+  full_name text,
+  basic_salary numeric NOT NULL DEFAULT 0,
+  fixed_allowance numeric NOT NULL DEFAULT 0,
+  effective_date date,
+  remarks text,
+  updated_at timestamptz DEFAULT now(),
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE employee_salary_profiles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_salary_profiles;
+CREATE POLICY "Allow authenticated full access" ON employee_salary_profiles
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+-- v6: Deduction Ledger — HR logs per-employee deductions (visa recovery, deposit, advance etc.)
+-- that should be deducted from future salaries. Finance sees this as read-only context.
+CREATE TABLE IF NOT EXISTS employee_deduction_ledger (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id text NOT NULL,
+  full_name text,
+  deduction_type text NOT NULL DEFAULT 'visa_recovery'
+    CHECK (deduction_type IN ('visa_recovery','security_deposit_recovery','salary_advance_recovery','flight_recovery','training_recovery','other')),
+  amount numeric NOT NULL DEFAULT 0,
+  approved_by text,
+  effective_month date,
+  notes text,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','applied','waived')),
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+ALTER TABLE employee_deduction_ledger ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_deduction_ledger;
+CREATE POLICY "Allow authenticated full access" ON employee_deduction_ledger
   FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>One-time Database Migration Required (fixes "Onboarding & Misc Costs" save error + adds Recurring Site Allowances)</div>
-      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run, it skips columns/policies that already exist):</div>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v6 Required — adds Salary Profiles + Deduction Ledger</div>
+      <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
-      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss</button>
+      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v6)</button>
     </div>
   );
 }
@@ -659,6 +698,8 @@ function MonthlyCostsTable({ employees, empMeta, initialFilter, hideEmpFilter, h
   const [allowLoading, setAllowLoading]   = useState(true);
   const [allowDraft, setAllowDraft]       = useState(null); // editor for a single recurring allowance row
   const [showAllowMgr, setShowAllowMgr]   = useState(false);
+  const [salaryProfiles, setSalaryProfiles] = useState({}); // { employee_id: { basic_salary, fixed_allowance } }
+  const [pendingDeductions, setPendingDeductions] = useState({}); // { employee_id: [deduction rows] }
   useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
   const load = async () => {
@@ -676,6 +717,23 @@ function MonthlyCostsTable({ employees, empMeta, initialFilter, hideEmpFilter, h
     setAllowLoading(false);
   };
   useEffect(()=>{loadAllowances();},[]);
+
+  // Load salary profiles so Monthly Costs can auto-fill basic salary + allowance
+  useEffect(()=>{
+    db.from('employee_salary_profiles').select('employee_id,basic_salary,fixed_allowance').then(({data})=>{
+      if (!data) return;
+      const m = {};
+      data.forEach(p=>{ m[p.employee_id]=p; });
+      setSalaryProfiles(m);
+    });
+    // Load pending deductions so Finance can see what HR expects to be deducted
+    db.from('employee_deduction_ledger').select('*').eq('status','pending').then(({data})=>{
+      if (!data) return;
+      const m = {};
+      data.forEach(d=>{ (m[d.employee_id]=m[d.employee_id]||[]).push(d); });
+      setPendingDeductions(m);
+    });
+  },[]);
 
   // HR demobilization date for whichever employee is currently selected in the draft / filters,
   // used to pro-rate and alert on recurring allowances.
@@ -717,10 +775,16 @@ function MonthlyCostsTable({ employees, empMeta, initialFilter, hideEmpFilter, h
     manual_override:false,
   });
 
-  // Basic salary / allowance / hours-per-day rarely change month to month — carry them forward
-  // from this employee's most recent "Calculated" entry so they don't need retyping every time.
+  // Prefill basic salary + allowance from Salary Profile (source of truth) first,
+  // then fall back to most recent Monthly Cost entry, then leave blank.
   const prefillFromHistory = (employeeId, d) => {
     if (!employeeId || d.basic_salary) return d;
+    // 1. Try Salary Profile
+    const profile = salaryProfiles[employeeId];
+    if (profile && (Number(profile.basic_salary)||0) > 0) {
+      return {...d, basic_salary:profile.basic_salary||'', fixed_allowance:profile.fixed_allowance||0, hours_per_day:d.hours_per_day||8};
+    }
+    // 2. Fall back to last Monthly Costs entry
     const last = rows.filter(r=>r.employee_id===employeeId && r.salary_type==='prorated' && r.basic_salary)
       .sort((a,b)=> (a.month<b.month?1:a.month>b.month?-1:0))[0];
     if (!last) return d;
@@ -804,7 +868,14 @@ function MonthlyCostsTable({ employees, empMeta, initialFilter, hideEmpFilter, h
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Costs (Salary, Food, Accommodation, Transport)</div>
-          <div style={{fontSize:'12px',color:'#64748b'}}>One row per employee per month</div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>
+            One row per employee per month.
+            {Object.keys(salaryProfiles).length > 0 && (
+              <span style={{marginLeft:'8px',background:'#dcfce7',color:'#166534',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'6px'}}>
+                ✅ {Object.keys(salaryProfiles).length} salary profiles loaded — salary auto-fills on selection
+              </span>
+            )}
+          </div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
           {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered,'monthly_costs',csvCols)}>Export CSV</button>}
@@ -941,6 +1012,26 @@ function MonthlyCostsTable({ employees, empMeta, initialFilter, hideEmpFilter, h
                   ⚠️ This employee demobilized on {draftDemobDate} — the allowance below is set to auto-stop on demob and was pro-rated up to that date for this month. Confirm it shouldn't continue into next month's WPS run.
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ── HR Deduction Alert ── show pending deductions HR expects to be applied this month */}
+          {draft.employee_id && (pendingDeductions[draft.employee_id]||[]).length > 0 && (
+            <div style={{background:'#fff7ed',border:'2px solid #fed7aa',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
+              <div style={{fontWeight:800,color:'#9a3412',marginBottom:'6px'}}>⚠️ HR Pending Deductions — apply in "Salary Deductions" field below</div>
+              {(pendingDeductions[draft.employee_id]||[]).map(d=>(
+                <div key={d.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'4px'}}>
+                  <span style={{color:'#7c2d12'}}>
+                    {{'visa_recovery':'Visa Recovery','security_deposit_recovery':'Security Deposit','salary_advance_recovery':'Salary Advance','flight_recovery':'Flight Recovery','training_recovery':'Training Cost','other':'Other'}[d.deduction_type]||d.deduction_type}
+                    {d.effective_month ? ` (${d.effective_month.slice(0,7)})` : ''}
+                    {d.notes ? ` — ${d.notes}` : ''}
+                  </span>
+                  <strong style={{color:'#dc2626',marginLeft:'12px',whiteSpace:'nowrap'}}>AED {fmt(d.amount)}</strong>
+                </div>
+              ))}
+              <div style={{marginTop:'6px',paddingTop:'6px',borderTop:'1px dashed #fed7aa',color:'#9a3412',fontWeight:700,fontSize:'11.5px'}}>
+                Total pending: AED {fmt((pendingDeductions[draft.employee_id]||[]).reduce((s,d)=>s+(Number(d.amount)||0),0))} — enter this in "Salary Deductions" below. Mark as Applied in the Deduction Ledger tab after processing.
+              </div>
             </div>
           )}
 
@@ -3658,6 +3749,434 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, onBa
   );
 }
 
+// ── SALARY PROFILES TAB ──────────────────────────────────────────
+// One row per employee: basic salary + fixed allowance, set once and correctable.
+// Monthly Costs auto-fills from this so Finance doesn't re-enter each month.
+function SalaryProfilesTab({ employees, empMeta }) {
+  const [profiles,   setProfiles]   = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [draft,      setDraft]      = useState(null); // null = closed, {} = editing/adding
+  const [saving,     setSaving]     = useState(false);
+  const [search,     setSearch]     = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    const { data } = await db.from('employee_salary_profiles').select('*').order('employee_id');
+    setProfiles(data || []);
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  // Index by employee_id for quick lookup
+  const profileByEmp = useMemo(()=>{
+    const m = {};
+    profiles.forEach(p=>{ m[p.employee_id]=p; });
+    return m;
+  },[profiles]);
+
+  // All employees + enriched with HR meta + existing profile
+  const rows = useMemo(()=>{
+    return employees
+      .filter(e=>!e.is_temp)
+      .filter(e=>{
+        if (!search) return true;
+        const q = search.toLowerCase();
+        return e.employee_id.toLowerCase().includes(q) || (e.full_name||'').toLowerCase().includes(q);
+      })
+      .map(e=>({
+        ...e,
+        meta: empMeta[e.employee_id]||{},
+        profile: profileByEmp[e.employee_id]||null,
+      }));
+  },[employees, empMeta, profileByEmp, search]);
+
+  const openEdit = (row) => {
+    setDraft({
+      employee_id: row.employee_id,
+      full_name:   row.full_name,
+      basic_salary:    row.profile ? row.profile.basic_salary : '',
+      fixed_allowance: row.profile ? row.profile.fixed_allowance : '',
+      effective_date:  row.profile ? (row.profile.effective_date||'') : '',
+      remarks:         row.profile ? (row.profile.remarks||'') : '',
+      _existing_id:    row.profile ? row.profile.id : null,
+    });
+  };
+
+  const save = async () => {
+    if (!draft.employee_id) return alert('No employee selected.');
+    const basic = Number(draft.basic_salary)||0;
+    const allow = Number(draft.fixed_allowance)||0;
+    if (basic < 0 || allow < 0) return alert('Amounts cannot be negative.');
+    setSaving(true);
+    const payload = {
+      employee_id:     draft.employee_id,
+      full_name:       draft.full_name||null,
+      basic_salary:    basic,
+      fixed_allowance: allow,
+      effective_date:  draft.effective_date||null,
+      remarks:         draft.remarks||null,
+      updated_at:      new Date().toISOString(),
+    };
+    if (draft._existing_id) {
+      await db.from('employee_salary_profiles').update(payload).eq('id', draft._existing_id);
+    } else {
+      await db.from('employee_salary_profiles').insert(payload);
+    }
+    setSaving(false);
+    setDraft(null);
+    load();
+  };
+
+  const del = async (id) => {
+    if (!window.confirm('Remove salary profile for this employee?')) return;
+    await db.from('employee_salary_profiles').delete().eq('id', id);
+    load();
+  };
+
+  const totalBasic = profiles.reduce((s,p)=>s+(Number(p.basic_salary)||0),0);
+  const totalAllow = profiles.reduce((s,p)=>s+(Number(p.fixed_allowance)||0),0);
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'14px',flexWrap:'wrap',gap:'10px'}}>
+        <div>
+          <h2 style={{margin:0,fontSize:'17px',fontWeight:800}}>💼 Salary Profiles</h2>
+          <div style={{fontSize:'12px',color:'#64748b',marginTop:'3px'}}>
+            Set each employee's basic salary &amp; fixed allowance once. Monthly Costs will auto-fill these values — you can still override per month.
+          </div>
+        </div>
+        <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+          <input placeholder="Search employee…" value={search} onChange={e=>setSearch(e.target.value)}
+            style={{padding:'7px 12px',borderRadius:'8px',border:'1px solid #e2e8f0',fontSize:'13px',width:'200px'}} />
+        </div>
+      </div>
+
+      {/* Summary bar */}
+      <div style={{display:'flex',gap:'12px',marginBottom:'14px',flexWrap:'wrap'}}>
+        {[
+          ['Profiles Set', profiles.length, '#2563eb'],
+          ['Total Basic Salary / Mo', 'AED '+fmt(totalBasic), '#166534'],
+          ['Total Fixed Allowance / Mo', 'AED '+fmt(totalAllow), '#7c3aed'],
+          ['Total WPS Payroll / Mo', 'AED '+fmt(totalBasic+totalAllow), '#b45309'],
+        ].map(([lbl,val,col])=>(
+          <div key={lbl} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'10px 16px',minWidth:'160px'}}>
+            <div style={{fontSize:'11px',color:'#64748b',fontWeight:600}}>{lbl}</div>
+            <div style={{fontSize:'17px',fontWeight:800,color:col,marginTop:'2px'}}>{val}</div>
+          </div>
+        ))}
+      </div>
+
+      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loading…</div> : (
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
+            <thead>
+              <tr style={{background:'#f8fafc'}}>
+                {['Emp ID','Name','Position','Basic Salary (AED)','Fixed Allowance (AED)','Total / Mo','Effective Date','Remarks',''].map(h=>(
+                  <th key={h} style={{...S.th,textAlign:h===''?'center':'left'}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row=>{
+                const p = row.profile;
+                const total = p ? (Number(p.basic_salary)||0)+(Number(p.fixed_allowance)||0) : null;
+                return (
+                  <tr key={row.employee_id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{row.employee_id}</td>
+                    <td style={S.td}>{row.full_name}</td>
+                    <td style={{...S.td,color:'#64748b',fontSize:'12px'}}>{row.meta.position||'—'}</td>
+                    <td style={{...S.td,textAlign:'right',fontWeight:p?700:400,color:p?'#166534':'#94a3b8'}}>
+                      {p ? 'AED '+fmt(p.basic_salary) : <span style={{fontSize:'11px',color:'#94a3b8',fontStyle:'italic'}}>not set</span>}
+                    </td>
+                    <td style={{...S.td,textAlign:'right',fontWeight:p?600:400,color:p?'#7c3aed':'#94a3b8'}}>
+                      {p ? 'AED '+fmt(p.fixed_allowance) : '—'}
+                    </td>
+                    <td style={{...S.td,textAlign:'right',fontWeight:700,color:p?'#b45309':'#94a3b8'}}>
+                      {p ? 'AED '+fmt(total) : '—'}
+                    </td>
+                    <td style={{...S.td,fontSize:'12px',color:'#64748b'}}>{p&&p.effective_date||'—'}</td>
+                    <td style={{...S.td,fontSize:'12px',color:'#64748b',maxWidth:'200px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p&&p.remarks||'—'}</td>
+                    <td style={{...S.td,textAlign:'center'}}>
+                      <div style={{display:'flex',gap:'6px',justifyContent:'center'}}>
+                        <button onClick={()=>openEdit(row)} style={{...S.btnPri,padding:'4px 12px',fontSize:'12px',background:'#2563eb'}}>
+                          {p ? '✏️ Edit' : '+ Set'}
+                        </button>
+                        {p && <button onClick={()=>del(p.id)} style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>🗑</button>}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Edit / Add drawer */}
+      {draft && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <div style={{background:'#fff',borderRadius:'14px',padding:'28px',width:'420px',maxWidth:'95vw',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+            <h3 style={{margin:'0 0 4px',fontSize:'16px',fontWeight:800}}>
+              {draft._existing_id ? '✏️ Edit Salary Profile' : '+ Set Salary Profile'}
+            </h3>
+            <div style={{fontSize:'12px',color:'#64748b',marginBottom:'18px'}}>
+              {draft.employee_id} — {draft.full_name}
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px',marginBottom:'14px'}}>
+              <div>
+                <label style={S.label}>Basic Salary (AED) *</label>
+                <input type="number" value={draft.basic_salary} onChange={e=>setDraft(d=>({...d,basic_salary:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="e.g. 3000" min="0" />
+              </div>
+              <div>
+                <label style={S.label}>Fixed Monthly Allowance (AED)</label>
+                <input type="number" value={draft.fixed_allowance} onChange={e=>setDraft(d=>({...d,fixed_allowance:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="e.g. 500" min="0" />
+              </div>
+            </div>
+            {(Number(draft.basic_salary)||0)+(Number(draft.fixed_allowance)||0) > 0 && (
+              <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'8px',padding:'10px 14px',marginBottom:'14px',fontSize:'13px'}}>
+                💰 Monthly WPS total: <strong>AED {fmt((Number(draft.basic_salary)||0)+(Number(draft.fixed_allowance)||0))}</strong>
+              </div>
+            )}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px',marginBottom:'14px'}}>
+              <div>
+                <label style={S.label}>Effective From (optional)</label>
+                <input type="date" value={draft.effective_date} onChange={e=>setDraft(d=>({...d,effective_date:e.target.value}))} style={{...S.input,width:'100%'}} />
+              </div>
+              <div>
+                <label style={S.label}>Remarks</label>
+                <input type="text" value={draft.remarks} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="e.g. revised Apr 2025" />
+              </div>
+            </div>
+            <div style={{display:'flex',gap:'10px',justifyContent:'flex-end'}}>
+              <button onClick={()=>setDraft(null)} style={S.btnSec}>Cancel</button>
+              <button onClick={save} disabled={saving} style={{...S.btnPri,opacity:saving?0.6:1}}>
+                {saving ? 'Saving…' : 'Save Profile'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── DEDUCTION LEDGER TAB ──────────────────────────────────────────
+// HR uses this to log approved deductions (visa recovery, deposit, advance, etc.)
+// Finance sees it as read-only context when deciding what to put in Monthly Costs → Deductions.
+function DeductionLedgerTab({ employees, empMeta }) {
+  const [rows,    setRows]    = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft,   setDraft]   = useState(null);
+  const [saving,  setSaving]  = useState(false);
+  const [filter,  setFilter]  = useState('');
+
+  const TYPES = [
+    {value:'visa_recovery',              label:'Visa Cost Recovery'},
+    {value:'security_deposit_recovery',  label:'Security Deposit Recovery'},
+    {value:'salary_advance_recovery',    label:'Salary Advance Recovery'},
+    {value:'flight_recovery',            label:'Flight Ticket Recovery'},
+    {value:'training_recovery',          label:'Training Cost Recovery'},
+    {value:'other',                      label:'Other Deduction'},
+  ];
+
+  const load = async () => {
+    setLoading(true);
+    const { data } = await db.from('employee_deduction_ledger').select('*').order('created_at',{ascending:false});
+    setRows(data||[]);
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const blank = () => setDraft({
+    employee_id:'', full_name:'', deduction_type:'visa_recovery',
+    amount:'', approved_by:'', effective_month:'', notes:'', status:'pending',
+  });
+
+  const save = async () => {
+    if (!draft.employee_id) return alert('Employee required.');
+    if (!(Number(draft.amount)>0)) return alert('Amount must be > 0.');
+    setSaving(true);
+    const payload = {
+      employee_id:   draft.employee_id,
+      full_name:     draft.full_name||null,
+      deduction_type: draft.deduction_type,
+      amount:        Number(draft.amount),
+      approved_by:   draft.approved_by||null,
+      effective_month: draft.effective_month||null,
+      notes:         draft.notes||null,
+      status:        draft.status||'pending',
+      updated_at:    new Date().toISOString(),
+    };
+    if (draft.id) {
+      await db.from('employee_deduction_ledger').update(payload).eq('id', draft.id);
+    } else {
+      await db.from('employee_deduction_ledger').insert(payload);
+    }
+    setSaving(false);
+    setDraft(null);
+    load();
+  };
+
+  const del = async (id) => {
+    if (!window.confirm('Delete this deduction entry?')) return;
+    await db.from('employee_deduction_ledger').delete().eq('id', id);
+    load();
+  };
+
+  const STATUS_COLOR = { pending:'#92400e', applied:'#166534', waived:'#64748b' };
+  const STATUS_BG    = { pending:'#fef3c7', applied:'#dcfce7', waived:'#f1f5f9' };
+
+  const filtered = rows.filter(r=>{
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return (r.employee_id||'').toLowerCase().includes(q)||(r.full_name||'').toLowerCase().includes(q);
+  });
+
+  const pending = rows.filter(r=>r.status==='pending').reduce((s,r)=>s+(Number(r.amount)||0),0);
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'14px',flexWrap:'wrap',gap:'10px'}}>
+        <div>
+          <h2 style={{margin:0,fontSize:'17px',fontWeight:800}}>📋 Deduction Ledger (HR)</h2>
+          <div style={{fontSize:'12px',color:'#64748b',marginTop:'3px'}}>
+            HR logs approved deductions here. Finance uses this as reference when entering "Deductions" in Monthly Costs.
+          </div>
+        </div>
+        <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+          <input placeholder="Filter by employee…" value={filter} onChange={e=>setFilter(e.target.value)}
+            style={{padding:'7px 12px',borderRadius:'8px',border:'1px solid #e2e8f0',fontSize:'13px',width:'190px'}} />
+          <button onClick={blank} style={S.btnPri}>+ Add Entry</button>
+        </div>
+      </div>
+
+      {/* Summary */}
+      <div style={{display:'flex',gap:'12px',marginBottom:'14px',flexWrap:'wrap'}}>
+        {[
+          ['Total Entries',rows.length,'#2563eb'],
+          ['⏳ Pending Recovery','AED '+fmt(pending),'#b45309'],
+          ['✅ Applied',rows.filter(r=>r.status==='applied').length+' entries','#166534'],
+          ['🚫 Waived',rows.filter(r=>r.status==='waived').length+' entries','#64748b'],
+        ].map(([lbl,val,col])=>(
+          <div key={lbl} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'10px 16px',minWidth:'140px'}}>
+            <div style={{fontSize:'11px',color:'#64748b',fontWeight:600}}>{lbl}</div>
+            <div style={{fontSize:'16px',fontWeight:800,color:col,marginTop:'2px'}}>{val}</div>
+          </div>
+        ))}
+      </div>
+
+      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loading…</div> : (
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
+            <thead>
+              <tr style={{background:'#f8fafc'}}>
+                {['Emp ID','Name','Deduction Type','Amount (AED)','Effective Month','Approved By','Notes','Status',''].map(h=>(
+                  <th key={h} style={{...S.th}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length===0 && (
+                <tr><td colSpan={9} style={{...S.td,textAlign:'center',color:'#94a3b8',padding:'30px'}}>No deduction entries. HR adds entries here when recovery is approved.</td></tr>
+              )}
+              {filtered.map(r=>(
+                <tr key={r.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                  <td style={S.td}>{r.full_name}</td>
+                  <td style={S.td}>{TYPES.find(t=>t.value===r.deduction_type)?.label||r.deduction_type}</td>
+                  <td style={{...S.td,textAlign:'right',fontWeight:700,color:'#dc2626'}}>AED {fmt(r.amount)}</td>
+                  <td style={{...S.td,fontSize:'12px',color:'#64748b'}}>{r.effective_month||'—'}</td>
+                  <td style={{...S.td,fontSize:'12px'}}>{r.approved_by||'—'}</td>
+                  <td style={{...S.td,fontSize:'12px',color:'#64748b',maxWidth:'180px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.notes||'—'}</td>
+                  <td style={S.td}>
+                    <span style={{background:STATUS_BG[r.status]||'#f1f5f9',color:STATUS_COLOR[r.status]||'#475569',fontSize:'11px',fontWeight:700,padding:'3px 10px',borderRadius:'10px'}}>
+                      {r.status}
+                    </span>
+                  </td>
+                  <td style={{...S.td,textAlign:'center'}}>
+                    <div style={{display:'flex',gap:'6px',justifyContent:'center'}}>
+                      <button onClick={()=>setDraft({...r,effective_month:r.effective_month?r.effective_month.slice(0,7):''})}
+                        style={{...S.btnSec,padding:'4px 10px',fontSize:'12px'}}>✏️</button>
+                      <button onClick={()=>del(r.id)}
+                        style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>🗑</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Add/Edit modal */}
+      {draft && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <div style={{background:'#fff',borderRadius:'14px',padding:'28px',width:'460px',maxWidth:'95vw',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+            <h3 style={{margin:'0 0 16px',fontSize:'16px',fontWeight:800}}>
+              {draft.id ? '✏️ Edit Deduction Entry' : '+ New Deduction Entry'}
+            </h3>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'12px'}}>
+              <div style={{gridColumn:'1/-1'}}>
+                <label style={S.label}>Employee *</label>
+                <select value={draft.employee_id}
+                  onChange={e=>{ const emp=employees.find(x=>x.employee_id===e.target.value); setDraft(d=>({...d,employee_id:e.target.value,full_name:emp?.full_name||''})); }}
+                  style={{...S.input,width:'100%'}}>
+                  <option value="">— select employee —</option>
+                  {employees.filter(e=>!e.is_temp).map(e=>(
+                    <option key={e.employee_id} value={e.employee_id}>{e.employee_id} — {e.full_name}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{gridColumn:'1/-1'}}>
+                <label style={S.label}>Deduction Type *</label>
+                <select value={draft.deduction_type} onChange={e=>setDraft(d=>({...d,deduction_type:e.target.value}))} style={{...S.input,width:'100%'}}>
+                  {TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={S.label}>Amount (AED) *</label>
+                <input type="number" value={draft.amount} onChange={e=>setDraft(d=>({...d,amount:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="0.00" min="0" />
+              </div>
+              <div>
+                <label style={S.label}>Effective Month</label>
+                <input type="month" value={draft.effective_month||''} onChange={e=>setDraft(d=>({...d,effective_month:e.target.value}))} style={{...S.input,width:'100%'}} />
+              </div>
+              <div>
+                <label style={S.label}>Approved By</label>
+                <input type="text" value={draft.approved_by||''} onChange={e=>setDraft(d=>({...d,approved_by:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="e.g. SHAIK / HR Manager" />
+              </div>
+              <div>
+                <label style={S.label}>Status</label>
+                <select value={draft.status} onChange={e=>setDraft(d=>({...d,status:e.target.value}))} style={{...S.input,width:'100%'}}>
+                  <option value="pending">⏳ Pending</option>
+                  <option value="applied">✅ Applied</option>
+                  <option value="waived">🚫 Waived</option>
+                </select>
+              </div>
+              <div style={{gridColumn:'1/-1'}}>
+                <label style={S.label}>Notes</label>
+                <input type="text" value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))}
+                  style={{...S.input,width:'100%'}} placeholder="e.g. Visa cost AED 2,500 — to recover over 3 months" />
+              </div>
+            </div>
+            <div style={{display:'flex',gap:'10px',justifyContent:'flex-end'}}>
+              <button onClick={()=>setDraft(null)} style={S.btnSec}>Cancel</button>
+              <button onClick={save} disabled={saving} style={{...S.btnPri,opacity:saving?0.6:1}}>
+                {saving?'Saving…':'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────
 function App() {
   const [session,   setSession]   = useState(undefined);
@@ -3665,7 +4184,7 @@ function App() {
   const [employees, setEmployees] = useState([]);
   const [tempCandError, setTempCandError] = useState(null); // surfaces hiring_pipeline pull failures (RLS, schema, etc) instead of failing silently
   const [empMeta,   setEmpMeta]   = useState({});
-  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v5')!=='done');
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v6')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
   useEffect(()=>{
@@ -3725,7 +4244,7 @@ function App() {
       });
   },[]);
 
-  const tabs=[['dashboard','P&L Dashboard'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)'],['wps','📋 WPS Report']];
+  const tabs=[['dashboard','P&L Dashboard'],['salary_profiles','💼 Salary Profiles'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['deductions','📋 Deduction Ledger (HR)'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)'],['wps','📋 WPS Report']];
 
   if (session===undefined) return null;
   if (!session) return <LoginScreen onLogin={setSession} />;
@@ -3740,7 +4259,7 @@ function App() {
         <button onClick={()=>db.auth.signOut()} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12px',cursor:'pointer'}}>Sign Out</button>
       </div>
 
-      {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v5','done');setShowMig(false);}} />}
+      {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v6','done');setShowMig(false);}} />}
       {tempCandError && (
         <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'8px',padding:'10px 16px',margin:'0 0 14px',color:'#991b1b',fontSize:'12.5px'}}>
           ⚠️ Couldn't load in-process candidates (Temp Employee IDs) from HR — they won't appear in the Employee ID picker until this is fixed. Error: <code>{tempCandError}</code>
@@ -3763,7 +4282,9 @@ function App() {
         <EmployeeDetailPage employeeId={detailEmp.id} employeeName={detailEmp.name} employees={employees} empMeta={empMeta} onBack={()=>setDetailEmp(null)} />
       ) : (
         <>
-          {tab==='dashboard' && <PnlDashboard empMeta={empMeta} onOpenEmployee={(id,name)=>setDetailEmp({id,name})} />}
+          {tab==='dashboard'       && <PnlDashboard empMeta={empMeta} onOpenEmployee={(id,name)=>setDetailEmp({id,name})} />}
+          {tab==='salary_profiles' && <SalaryProfilesTab employees={employees} empMeta={empMeta} />}
+          {tab==='deductions'      && <DeductionLedgerTab employees={employees} empMeta={empMeta} />}
           {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date" recoverableSupport
             fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
           {tab==='flights'   && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date" recoverableSupport
