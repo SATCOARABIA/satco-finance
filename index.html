@@ -43,19 +43,69 @@ const hrDb = supabase.createClient(HR_URL, HR_KEY);
 // the HR employees table. If HR RLS blocks it, the portal shows the exact error
 // and keeps Finance's local salary profile sheet editable.
 const HR_SALARY_VIEW = 'v_finance_employee_salary';
-const HR_SALARY_VIEW_SQL = `-- Run in HR Supabase SQL Editor if Finance gets 401 on HR salary pull
--- Adjust column names if your HR employees table uses different names.
-CREATE OR REPLACE VIEW public.v_finance_employee_salary AS
-SELECT
-  employee_id,
-  full_name,
-  position,
-  bank_iban AS iban,
-  basic_salary,
-  fixed_allowance
-FROM public.employees;
+const HR_SALARY_VIEW_SQL = `-- SATCO HR → Finance bridge setup
+-- Run this in the HR Supabase SQL Editor, not the Finance project.
+-- Fixes: ERROR 42P16: cannot drop columns from view
+-- This drops only the Finance bridge views. It does NOT drop employee data/tables.
 
-GRANT SELECT ON public.v_finance_employee_salary TO anon, authenticated;`;
+DROP VIEW IF EXISTS public.v_temp_candidates CASCADE;
+DROP VIEW IF EXISTS public.v_finance_employee_mob_demob CASCADE;
+DROP VIEW IF EXISTS public.v_finance_employee_salary CASCADE;
+
+-- Salary / WPS safe bridge for Finance portal
+CREATE VIEW public.v_finance_employee_salary AS
+SELECT
+  e.employee_id,
+  e.full_name,
+  e.position,
+  e.nationality,
+  e.joining_date,
+  e.hired_from,
+  e.supplier_name,
+  e.status,
+  e.visa_trade,
+  e.department,
+  e.bank_iban AS iban,
+  e.basic_salary,
+  e.allowance AS fixed_allowance
+FROM public.employees e
+WHERE e.employee_id IS NOT NULL;
+
+-- Current/latest mobilization bridge for Finance portal
+CREATE VIEW public.v_finance_employee_mob_demob AS
+SELECT DISTINCT ON (m.employee_id)
+  m.employee_id,
+  m.mobilization_date,
+  m.demobilization_date,
+  m.location,
+  m.supply
+FROM public.mob_demob m
+WHERE m.employee_id IS NOT NULL
+ORDER BY m.employee_id, (m.demobilization_date IS NULL) DESC, m.mobilization_date DESC NULLS LAST;
+
+-- Temporary candidate bridge for Finance deposits/advances before final employee ID
+CREATE VIEW public.v_temp_candidates AS
+SELECT
+  h.temp_employee_id,
+  h.candidate_name,
+  COALESCE(h.position_selected, h.position) AS position_display,
+  h.status
+FROM public.hiring_pipeline h
+WHERE h.temp_employee_id IS NOT NULL;
+
+-- Finance portal uses HR anon key, therefore anon SELECT is required for these limited views.
+-- If later you move Finance-to-HR access behind logged-in/authenticated users, remove anon grant.
+GRANT SELECT ON public.v_finance_employee_salary TO anon, authenticated;
+GRANT SELECT ON public.v_finance_employee_mob_demob TO anon, authenticated;
+GRANT SELECT ON public.v_temp_candidates TO anon, authenticated;
+
+-- Refresh Supabase/PostgREST schema cache so the browser stops showing 404/schema-cache errors.
+NOTIFY pgrst, 'reload schema';
+
+-- Quick test queries. Run after setup if needed:
+-- SELECT * FROM public.v_finance_employee_salary LIMIT 5;
+-- SELECT * FROM public.v_finance_employee_mob_demob LIMIT 5;
+-- SELECT * FROM public.v_temp_candidates LIMIT 5;`
 
 function toMoneyNumber(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -96,39 +146,26 @@ function salaryMapFromRows(rows) {
   return m;
 }
 async function loadHrSalaryRows() {
-  const attempts = [
-    { label:'HR salary view '+HR_SALARY_VIEW, run:()=>hrDb.from(HR_SALARY_VIEW).select('*').order('employee_id',{ascending:true}) },
-    { label:'HR employees table', run:()=>hrDb.from('employees').select('*').order('employee_id',{ascending:true}) },
-  ];
-  const errors = [];
-  for (const a of attempts) {
-    try {
-      const { data, error } = await a.run();
-      if (!error && Array.isArray(data)) {
-        const rows = data.map(extractHrSalary).filter(r=>r.employee_id);
-        return { rows, source:a.label, error:null };
-      }
-      if (error) errors.push(`${a.label}: ${humanDbError(error)}`);
-    } catch (e) {
-      errors.push(`${a.label}: ${e.message || String(e)}`);
+  // Important: do NOT fall back to hrDb.from('employees') here.
+  // HR employees is intentionally protected by RLS; Finance should read only
+  // the narrow bridge view created by HR. This removes the repeated 401 errors.
+  try {
+    const { data, error } = await hrDb.from(HR_SALARY_VIEW).select('*').order('employee_id',{ascending:true});
+    if (!error && Array.isArray(data)) {
+      const rows = data.map(extractHrSalary).filter(r=>r.employee_id);
+      return { rows, source:'HR bridge view '+HR_SALARY_VIEW, error:null };
     }
+    return { rows:[], source:null, error:`${HR_SALARY_VIEW}: ${humanDbError(error)}` };
+  } catch (e) {
+    return { rows:[], source:null, error:`${HR_SALARY_VIEW}: ${e.message || String(e)}` };
   }
-  return { rows:[], source:null, error:errors.join(' | ') || 'Unable to read HR salary data' };
 }
 async function pullHrFinanceEmployee(employeeId) {
   const id = String(employeeId||'').trim();
   if (!id) return { row:null, error:'Employee ID required' };
-  const attempts = [
-    { label:HR_SALARY_VIEW, run:()=>hrDb.from(HR_SALARY_VIEW).select('*').eq('employee_id', id).maybeSingle() },
-    { label:'employees', run:()=>hrDb.from('employees').select('*').eq('employee_id', id).maybeSingle() },
-  ];
-  const errors = [];
-  for (const a of attempts) {
-    const { data, error } = await a.run();
-    if (!error && data) return { row:extractHrSalary(data), error:null, source:a.label };
-    if (error) errors.push(`${a.label}: ${humanDbError(error)}`);
-  }
-  return { row:null, error:errors.join(' | ') || 'No HR salary/IBAN record found' };
+  const { data, error } = await hrDb.from(HR_SALARY_VIEW).select('*').eq('employee_id', id).maybeSingle();
+  if (!error && data) return { row:extractHrSalary(data), error:null, source:HR_SALARY_VIEW };
+  return { row:null, error:`${HR_SALARY_VIEW}: ${humanDbError(error) || 'No HR salary/IBAN record found'}` };
 }
 
 // ── SATCO LETTERHEAD (base64 PNG, embedded for invoice document generation) ──
@@ -4407,74 +4444,78 @@ function App() {
   },[]);
 
 
+
   useEffect(()=>{
-    loadHrSalaryRows().then(({rows,source,error})=>{
+    let alive = true;
+
+    const localFinanceEmployees = async () => {
+      const [sp, wm, pnl] = await Promise.all([
+        db.from('employee_salary_profiles').select('employee_id,full_name,basic_salary,fixed_allowance'),
+        db.from('wps_employee_master').select('employee_id,full_name,basic_salary,fixed_allowance'),
+        db.from('employee_pnl_summary').select('employee_id,full_name'),
+      ]);
+      const map = {};
+      const add = (r) => {
+        if (!r || !r.employee_id) return;
+        if (!map[r.employee_id]) map[r.employee_id] = { employee_id:r.employee_id, full_name:r.full_name || r.employee_id };
+        else if (!map[r.employee_id].full_name && r.full_name) map[r.employee_id].full_name = r.full_name;
+      };
+      (sp.data||[]).forEach(add);
+      (wm.data||[]).forEach(add);
+      (pnl.data||[]).forEach(add);
+      return Object.values(map).sort((a,b)=>String(a.employee_id).localeCompare(String(b.employee_id)));
+    };
+
+    const loadFinancePeople = async () => {
+      const { rows, source, error } = await loadHrSalaryRows();
+      if (!alive) return;
       setHrSalaryRows(rows||[]);
       setHrSalaryStatus({source:source||null,error:error||null});
-      if (error) console.warn('HR salary bridge failed:', error);
-    });
-  },[]);
 
+      let baseEmployees = [];
+      const meta = {};
+      if (rows && rows.length) {
+        baseEmployees = rows.map(r=>({ employee_id:r.employee_id, full_name:r.full_name || r.employee_id }));
+        rows.forEach(r=>{ meta[r.employee_id] = { ...r, bank_iban:r.iban, allowance:r.fixed_allowance }; });
+      } else {
+        baseEmployees = await localFinanceEmployees();
+        baseEmployees.forEach(e=>{ meta[e.employee_id] = { ...e }; });
+      }
 
-  useEffect(()=>{
-    if (employees.length===0 && hrSalaryRows.length>0) {
-      setEmployees(hrSalaryRows.map(r=>({employee_id:r.employee_id, full_name:r.full_name||r.employee_id})));
-    }
-  },[hrSalaryRows, employees.length]);
+      // If HR has created the optional assignment bridge, enrich empMeta.
+      // Missing/blocked bridge should not break the Finance portal.
+      try {
+        const { data:md } = await hrDb.from('v_finance_employee_mob_demob').select('*');
+        if (alive && md) md.forEach(m=>{ if (meta[m.employee_id]) meta[m.employee_id] = { ...meta[m.employee_id], ...m }; });
+      } catch (_) {}
 
-  useEffect(()=>{
-    hrDb.from('employees').select('employee_id,full_name,position,nationality,joining_date,hired_from,supplier_name,status,visa_trade,department').order('employee_id')
-      .then(({data,error})=>{
-        if (error||!data) {
-          console.error('HR employee master pull failed:', error);
-          setTempCandError(error ? (error.message || String(error)) : 'No HR employee data returned');
-          return;
-        }
-        let baseEmployees = data.map(e=>({employee_id:e.employee_id,full_name:e.full_name}));
-        // Pull in-process candidates (Visa Processing started, not yet Joined) that have a Temp
-        // Employee ID — lets Finance log a security deposit/advance against them via the same
-        // EmployeePicker, before they exist in the real `employees` table. They're tagged
-        // is_temp:true purely for UI distinction; nothing downstream (WPS, P&L) reads this flag,
-        // so they never get pulled into payroll by accident.
-        hrDb.from('v_temp_candidates').select('temp_employee_id,candidate_name,status')
+      // Optional pending Temp IDs from HR hiring pipeline.
+      try {
+        const { data:tempCands, error:tcErr } = await hrDb.from('v_temp_candidates')
+          .select('temp_employee_id,candidate_name,status')
           .not('temp_employee_id','is',null)
-          .neq('status','Joined')
-          .then(({data:tempCands,error:tcErr})=>{
-            if (tcErr) {
-              console.error('Temp candidate pull failed (v_temp_candidates):', tcErr);
-              setTempCandError(tcErr.message || String(tcErr));
-              setEmployees(baseEmployees);
-              return;
-            }
-            setTempCandError(null);
-            if (tempCands && tempCands.length) {
-              const tempEntries = tempCands
-                .filter(t=>t.temp_employee_id)
-                .map(t=>({ employee_id:t.temp_employee_id, full_name:(t.candidate_name||'')+' (pending)', is_temp:true }));
-              setEmployees([...baseEmployees, ...tempEntries]);
-            } else {
-              setEmployees(baseEmployees);
-            }
-          });
-        const meta={};
-        data.forEach(e=>{meta[e.employee_id]={...e};});
-        hrDb.from('mob_demob').select('employee_id,mobilization_date,demobilization_date,location,supply')
-          .then(({data:md,error:mdErr})=>{
-            if (!mdErr&&md) {
-              // mob_demob can have multiple rows per employee (one per assignment/site).
-              // Pick the ACTIVE assignment: prefer a row with no demobilization_date (currently on site);
-              // if every row is closed, fall back to the most recently mobilized one.
-              const byEmp = {};
-              md.forEach(m=>{ (byEmp[m.employee_id] = byEmp[m.employee_id]||[]).push(m); });
-              Object.keys(byEmp).forEach(empId=>{
-                const rowsForEmp = byEmp[empId].slice().sort((a,b)=> (a.mobilization_date||'') < (b.mobilization_date||'') ? 1 : -1);
-                const activeRow = rowsForEmp.find(r=>!r.demobilization_date) || rowsForEmp[0];
-                if (meta[empId]) meta[empId] = {...meta[empId], ...activeRow, assignment_history: rowsForEmp};
-              });
-            }
-            setEmpMeta(meta);
-          });
-      });
+          .neq('status','Joined');
+        if (!alive) return;
+        if (tcErr) {
+          setTempCandError(tcErr.message || String(tcErr));
+          setEmployees(baseEmployees);
+        } else {
+          setTempCandError(null);
+          const tempEntries = (tempCands||[])
+            .filter(t=>t.temp_employee_id)
+            .map(t=>({ employee_id:t.temp_employee_id, full_name:(t.candidate_name||'')+' (pending)', is_temp:true }));
+          setEmployees([...baseEmployees, ...tempEntries]);
+        }
+      } catch (e) {
+        if (!alive) return;
+        setTempCandError(e.message || String(e));
+        setEmployees(baseEmployees);
+      }
+      setEmpMeta(meta);
+    };
+
+    loadFinancePeople();
+    return ()=>{ alive = false; };
   },[]);
 
   const tabs=[['dashboard','P&L Dashboard'],['salary_profiles','💼 Salary Master'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['deductions','📋 Deduction Ledger (HR)'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)'],['wps','📋 WPS Report']];
