@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SATCO — Employee Finance & P&L v15</title>
+<title>SATCO — Employee Finance & P&L v17</title>
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
@@ -339,13 +339,15 @@ ALTER TABLE employee_monthly_costs
   ADD COLUMN IF NOT EXISTS basic_salary numeric,
   ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8,
+  ADD COLUMN IF NOT EXISTS contract_days_per_week numeric DEFAULT 6,
   ADD COLUMN IF NOT EXISTS working_days numeric,
   ADD COLUMN IF NOT EXISTS month_days numeric,
   ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS holiday_ot_hours numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS computed_salary numeric,
   ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false,
-  ADD COLUMN IF NOT EXISTS recurring_allowance_total numeric DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS recurring_allowance_total numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS food_allowance_pay numeric DEFAULT 0;
 
 ALTER TABLE employee_other_costs
   ADD COLUMN IF NOT EXISTS original_currency text,
@@ -2327,12 +2329,12 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
             <thead><tr>{(hideEmpFilter?['Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']:['Emp ID','Name','Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']).map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={hideEmpFilter?11:13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ? <tr><td colSpan={hideEmpFilter?11:12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : grouped.length===0
-                  ? <tr><td colSpan={hideEmpFilter?11:13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No invoices yet — click "+ New Invoice / Month" to start.</td></tr>
+                  ? <tr><td colSpan={hideEmpFilter?11:12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No invoices yet — click "+ New Invoice / Month" to start.</td></tr>
                   : grouped.map(g=>(
                     <React.Fragment key={g.month}>
-                      {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={13} />}
+                      {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={12} />}
                       {g.rows.map(inv=>{
                         const lns = linesMap[inv.id]||[];
                         const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
@@ -2378,7 +2380,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                             </tr>
                             {expandedId===inv.id && (
                               <tr>
-                                <td colSpan={hideEmpFilter?11:13} style={{padding:'12px 18px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+                                <td colSpan={hideEmpFilter?11:12} style={{padding:'12px 18px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
                                   <div style={{fontWeight:700,fontSize:'12px',marginBottom:'8px',color:'#475569'}}>Progressive WPS Recovery — {inv.full_name}</div>
                                   <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',marginBottom:'8px'}}>
                                     <thead><tr><th style={S.th}>Recovery Month</th><th style={S.th}>Amount (AED)</th><th style={S.th}>Remarks</th><th style={S.th}></th></tr></thead>
@@ -2479,7 +2481,7 @@ const BANK_ROUTING_OPTS = [
 const WPS_SQL = `-- Run ONCE in Finance Supabase → SQL Editor
 -- Creates/updates WPS Employee Master + Monthly Salary Sheet tables.
 -- Safe to re-run. It does NOT delete salary or employee data.
--- v7 adds Excel-style salary calculation for basic-salary employees and master Hours/Day for OT.
+-- v8 adds prorated allowance/food allowance and master Contract Hours/Day + Contract Days/Week.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -2495,6 +2497,7 @@ CREATE TABLE IF NOT EXISTS public.wps_employee_master (
   salary_type      text DEFAULT 'fixed',
   hourly_rate      numeric DEFAULT 0,
   hours_per_day    numeric DEFAULT 8,
+  contract_days_per_week numeric DEFAULT 6,
   remarks          text,
   active           boolean DEFAULT true,
   created_at       timestamptz DEFAULT now(),
@@ -2510,6 +2513,7 @@ ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS fixed_allowance 
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS salary_type text DEFAULT 'fixed';
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8;
+ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS contract_days_per_week numeric DEFAULT 6;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS remarks text;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS active boolean DEFAULT true;
 ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
@@ -2517,6 +2521,7 @@ ALTER TABLE public.wps_employee_master ADD COLUMN IF NOT EXISTS updated_at times
 ALTER TABLE public.wps_employee_master ALTER COLUMN bank_routing DROP DEFAULT;
 ALTER TABLE public.wps_employee_master ALTER COLUMN hourly_rate SET DEFAULT 0;
 ALTER TABLE public.wps_employee_master ALTER COLUMN hours_per_day SET DEFAULT 8;
+ALTER TABLE public.wps_employee_master ALTER COLUMN contract_days_per_week SET DEFAULT 6;
 
 ALTER TABLE public.wps_employee_master DROP CONSTRAINT IF EXISTS wps_employee_master_salary_type_check;
 ALTER TABLE public.wps_employee_master
@@ -2536,6 +2541,7 @@ CREATE TABLE IF NOT EXISTS public.wps_salary_monthly (
   fixed_allowance          numeric DEFAULT 0,
   hourly_rate              numeric DEFAULT 0,
   hours_per_day            numeric DEFAULT 8,
+  contract_days_per_week   numeric DEFAULT 6,
   working_days             numeric DEFAULT 0,
   hours_worked             numeric DEFAULT 0,
   normal_ot_hours          numeric DEFAULT 0,
@@ -2543,6 +2549,7 @@ CREATE TABLE IF NOT EXISTS public.wps_salary_monthly (
   extra_allowance          numeric DEFAULT 0,
   overtime_amount          numeric DEFAULT 0,
   food_allowance           numeric DEFAULT 0,
+  food_allowance_pay       numeric DEFAULT 0,
   hourly_pay               numeric DEFAULT 0,
   basic_pay                numeric DEFAULT 0,
   normal_ot_pay            numeric DEFAULT 0,
@@ -2575,6 +2582,7 @@ ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS basic_salary nume
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS contract_days_per_week numeric DEFAULT 6;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS working_days numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hours_worked numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0;
@@ -2582,6 +2590,7 @@ ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS holiday_ot_hours 
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS extra_allowance numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS overtime_amount numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS food_allowance numeric DEFAULT 0;
+ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS food_allowance_pay numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS hourly_pay numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS basic_pay numeric DEFAULT 0;
 ALTER TABLE public.wps_salary_monthly ADD COLUMN IF NOT EXISTS normal_ot_pay numeric DEFAULT 0;
@@ -2614,6 +2623,7 @@ ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS man
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS basic_salary numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS fixed_allowance numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS hours_per_day numeric DEFAULT 8;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS contract_days_per_week numeric DEFAULT 6;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS working_days numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS month_days numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS normal_ot_hours numeric DEFAULT 0;
@@ -2622,6 +2632,7 @@ ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS sal
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS hours_worked numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS food numeric DEFAULT 0;
+ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS food_allowance_pay numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS accommodation numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS transport numeric DEFAULT 0;
 ALTER TABLE IF EXISTS public.employee_monthly_costs ADD COLUMN IF NOT EXISTS other numeric DEFAULT 0;
@@ -2874,6 +2885,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       salary_type: (Number(draft.hourly_rate) || 0) > 0 ? 'hourly' : (draft.salary_type || 'fixed'),
       hourly_rate: Number(draft.hourly_rate) || 0,
       hours_per_day: Number(draft.hours_per_day) || 8,
+      contract_days_per_week: Number(draft.contract_days_per_week) || 6,
       remarks: draft.remarks || null,
       active: draft.active !== false,
       updated_at: new Date().toISOString(),
@@ -2900,7 +2912,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     await loadMaster();
     await loadMonthlySheet();
     alert(wasCorrection
-      ? 'WPS Employee Master corrected. The corrected Labour Card / Bank Routing / IBAN / Salary / Hourly Rate / Hours-Day values will be used for future salary sheets. For the current open month, click Save Salary Sheet once to update the monthly snapshot.'
+      ? 'WPS Employee Master corrected. The corrected Labour Card / Bank Routing / IBAN / Salary / Hourly Rate / Contract Hours-Day / Days-Week values will be used for future salary sheets. For the current open month, click Save Salary Sheet once to update the monthly snapshot.'
       : 'Employee added to WPS Master. These values will be reused every salary month.');
   };
 
@@ -2934,8 +2946,12 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const isVar = salaryType === 'variable';
       const isHourly = salaryType === 'hourly';
       const hpd = Number(pick('hours_per_day', emp.hours_per_day || 8)) || 8;
-      const workDays = Number(pick('working_days', isHourly ? 0 : lastDay)) || 0;
+      const contractDaysPerWeek = Number(pick('contract_days_per_week', emp.contract_days_per_week || 6)) || 6;
       const hoursWorked = isHourly ? (Number(pick('hours_worked', 0)) || 0) : 0;
+      const rawWorkDays = Number(pick('working_days', isHourly ? 0 : lastDay)) || 0;
+      // For hourly employees, regular hours drive salary; equivalent worked days are used only for prorating allowance/food.
+      const prorataDays = isHourly ? Math.min(lastDay, (hpd ? (hoursWorked / hpd) : 0)) : rawWorkDays;
+      const workDays = isHourly ? prorataDays : rawWorkDays;
       const normalOT = Number(pick('normal_ot_hours', 0)) || 0;
       const holidayOT = Number(pick('holiday_ot_hours', 0)) || 0;
       const extraAllowance = Number(pick('extra_allowance', 0)) || 0;
@@ -2949,28 +2965,33 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const hourlyRate = hourlyRateMaster;
       const craft = (empMeta && empMeta[emp.employee_id] && (empMeta[emp.employee_id].position || empMeta[emp.employee_id].trade)) || emp.remarks || '';
 
-      let basicPay, normalOTPay, holidayOTPay, allowancePay, hourlyPay;
+      let basicPay, normalOTPay, holidayOTPay, allowancePay, foodAllowancePay, extraAllowancePay, hourlyPay;
       if (isHourly) {
         hourlyPay = hourlyRate * hoursWorked;
         basicPay = hourlyPay;
         normalOTPay = hourlyRate * normalOT * 1.25;
         holidayOTPay = hourlyRate * holidayOT * 1.5;
-        allowancePay = baseAllow;
+        allowancePay = lastDay ? (baseAllow / lastDay * prorataDays) : baseAllow;
+        foodAllowancePay = lastDay ? (foodAllowance / lastDay * prorataDays) : foodAllowance;
+        extraAllowancePay = lastDay ? (extraAllowance / lastDay * prorataDays) : extraAllowance;
       } else {
         // Excel salary sheet formula for all non-hourly employees:
         // Basic Pay      = Basic Salary / Month Days × Working Days
         // Normal OT Pay  = Basic Salary / Month Days / Hours Per Day × Normal OT Hours × 1.25
         // Holiday OT Pay = Basic Salary / Month Days / Hours Per Day × Holiday OT Hours × 1.5
         // Allowance Pay  = Allowance / Month Days × Working Days
+        // Food Allowance = Monthly Food Allowance / Month Days × Working Days
         const hourlyBase = (lastDay && hpd) ? (baseBasic / lastDay / hpd) : 0;
         hourlyPay = 0;
         basicPay = lastDay ? (baseBasic / lastDay * workDays) : baseBasic;
         normalOTPay = hourlyBase * normalOT * 1.25;
         holidayOTPay = hourlyBase * holidayOT * 1.5;
         allowancePay = lastDay ? (baseAllow / lastDay * workDays) : baseAllow;
+        foodAllowancePay = lastDay ? (foodAllowance / lastDay * workDays) : foodAllowance;
+        extraAllowancePay = lastDay ? (extraAllowance / lastDay * workDays) : extraAllowance;
       }
 
-      const gross = money(basicPay + normalOTPay + holidayOTPay + allowancePay + extraAllowance + foodAllowance);
+      const gross = money(basicPay + normalOTPay + holidayOTPay + allowancePay + extraAllowancePay + foodAllowancePay);
       const deductionTotal = Math.min(gross, money(deductionAuto + deductionManual));
       const net = money(gross - deductionTotal);
       const rec = recoveryCtx[emp.employee_id] || { recoverable:0, recoveredBefore:0, deposits:0, balanceBefore:0 };
@@ -2999,6 +3020,8 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
         base_allowance: baseAllow,
         hourly_rate: hourlyRate,
         working_days: workDays,
+        contract_days_per_week: contractDaysPerWeek,
+        prorata_days: prorataDays,
         hours_worked: hoursWorked,
         normal_ot: normalOT,
         holiday_ot: holidayOT,
@@ -3006,11 +3029,13 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
         extra_allowance: extraAllowance,
         overtime_amount: overtimeAmount,
         food_allowance: foodAllowance,
+        food_allowance_pay: money(foodAllowancePay),
+        extra_allowance_pay: money(extraAllowancePay),
         hourly_pay: money(hourlyPay),
         basic_pay: money(basicPay),
         normal_ot_pay: money(normalOTPay),
         holiday_ot_pay: money(holidayOTPay),
-        allowance_pay: money(allowancePay + extraAllowance),
+        allowance_pay: money(allowancePay + extraAllowancePay),
         gross_salary: gross,
         finance_recoverable: money(rec.recoverable),
         finance_recovered_before: money(rec.recoveredBefore),
@@ -3192,9 +3217,9 @@ ${rows.map(r => `<tr class="edr">
       ['Month:', new Date(y, mo-1, 1), 'Month Days', lastDay, '', '', '', '', '', '', '', '', '', '', '', 'TOTAL TO RECOVER', totalBalance, 'DEDUCTION THIS MONTH', totalDed, 'NET WPS', totalNet],
       [],
       ['', '', '', '', '', '', '', 'WORKING DAYS/HOURS', '', '', 'TOTAL AMOUNT', '', '', '', '', '', 'FINANCE RECOVERY', '', '', '', 'Remark'],
-      ['Sl no.','EMP CODE','Name of Employee','Craft','Basic Salary','ALLOWANCE','Hourly Rate','Working days / Hours Worked','Hours/Day','NORMAL OT HRS','HOLIDAYS OT','BASIC / HOURLY PAY','NORMAL OVERTIME (X1.25)','HOLIDAY OVERTIME (X1.5)','ALLOWANCE','Food Allowance','GROSS SALARY','Balance to Recover','Cash Advance & Deductions','Deposits Received','Net Amount / WPS','Remark'],
-      ...rows.map(r => [r.sl_no, r.employee_id, r.name, r.craft, r.base_basic, r.base_allowance, r.hourly_rate, r.is_hourly ? r.hours_worked : r.working_days, r.is_hourly ? '' : r.hours_per_day, r.normal_ot, r.holiday_ot, r.basic_pay, r.normal_ot_pay, r.holiday_ot_pay, r.allowance_pay, r.food_allowance, r.gross_salary, r.finance_balance_before, r.deduction_total, r.finance_deposits, r.net_salary, r.remarks]),
-      ['Total Salaries','','','','','','','','','','', rows.reduce((s,r)=>s+r.basic_pay,0), rows.reduce((s,r)=>s+r.normal_ot_pay,0), rows.reduce((s,r)=>s+r.holiday_ot_pay,0), rows.reduce((s,r)=>s+r.allowance_pay,0), rows.reduce((s,r)=>s+r.food_allowance,0), totalGross, totalBalance, totalDed, totalDeposits, totalNet, ''],
+      ['Sl no.','EMP CODE','Name of Employee','Craft','Basic Salary','ALLOWANCE','Hourly Rate','Working days / Hours Worked','Contract Hrs/Day','Contract Days/Week','NORMAL OT HRS','HOLIDAYS OT','BASIC / HOURLY PAY','NORMAL OVERTIME (X1.25)','HOLIDAY OVERTIME (X1.5)','ALLOWANCE PAY','Monthly Food Allowance','Food Allowance Pay','GROSS SALARY','Balance to Recover','Cash Advance & Deductions','Deposits Received','Net Amount / WPS','Remark'],
+      ...rows.map(r => [r.sl_no, r.employee_id, r.name, r.craft, r.base_basic, r.base_allowance, r.hourly_rate, r.is_hourly ? r.hours_worked : r.working_days, r.hours_per_day, r.contract_days_per_week, r.normal_ot, r.holiday_ot, r.basic_pay, r.normal_ot_pay, r.holiday_ot_pay, r.allowance_pay, r.food_allowance, r.food_allowance_pay, r.gross_salary, r.finance_balance_before, r.deduction_total, r.finance_deposits, r.net_salary, r.remarks]),
+      ['Total Salaries','','','','','','','','','','','', rows.reduce((s,r)=>s+r.basic_pay,0), rows.reduce((s,r)=>s+r.normal_ot_pay,0), rows.reduce((s,r)=>s+r.holiday_ot_pay,0), rows.reduce((s,r)=>s+r.allowance_pay,0), rows.reduce((s,r)=>s+r.food_allowance,0), rows.reduce((s,r)=>s+r.food_allowance_pay,0), totalGross, totalBalance, totalDed, totalDeposits, totalNet, ''],
       [],
       ['', '', 'Summary', WPS_CO.name],
       ['', '', 'Gross Salary with Allowances', totalGross],
@@ -3212,7 +3237,7 @@ ${rows.map(r => `<tr class="edr">
       const ws = XLSXLib.utils.aoa_to_sheet(salarySheetAoa());
       ws['!cols'] = [
         {wch:8},{wch:12},{wch:28},{wch:22},{wch:14},{wch:14},{wch:12},{wch:18},{wch:10},{wch:14},{wch:14},
-        {wch:18},{wch:18},{wch:18},{wch:14},{wch:14},{wch:14},{wch:18},{wch:18},{wch:16},{wch:16},{wch:30}
+        {wch:18},{wch:12},{wch:12},{wch:18},{wch:18},{wch:18},{wch:14},{wch:16},{wch:16},{wch:14},{wch:18},{wch:18},{wch:16},{wch:16},{wch:30}
       ];
       const wb = XLSXLib.utils.book_new();
       XLSXLib.utils.book_append_sheet(wb, ws, 'Salary Sheet');
@@ -3260,27 +3285,28 @@ ${rows.map(r => `<tr class="edr">
 <table>
 <thead><tr>
   <th>Sl</th><th>Emp Code</th><th>Name</th><th>Craft</th><th>Basic Salary</th><th>Allowance</th><th>Hourly Rate</th>
-  <th>Working Days / Hours</th><th>Hours/Day</th><th>Normal OT</th><th>Holiday OT</th>
-  <th>Basic</th><th>Normal OT Pay</th><th>Holiday OT Pay</th><th>Allowance</th><th>Food Allowance</th>
+  <th>Working Days / Hours</th><th>Contract Hrs/Day</th><th>Days/Week</th><th>Normal OT</th><th>Holiday OT</th>
+  <th>Basic</th><th>Normal OT Pay</th><th>Holiday OT Pay</th><th>Allowance Pay</th><th>Monthly Food</th><th>Food Pay</th>
   <th>Gross Salary</th><th>Balance to Recover</th><th>Deductions</th><th>Deposits</th><th>Net Amount / WPS</th><th>Remark</th>
 </tr></thead>
 <tbody>
 ${rows.map(r=>`<tr>
   <td class="center">${r.sl_no}</td><td>${esc(r.employee_id)}</td><td>${esc(r.name)}</td><td>${esc(r.craft)}</td>
-  <td class="num">${fmt(r.base_basic)}</td><td class="num">${fmt(r.base_allowance)}</td><td class="num">${fmt(r.hourly_rate)}</td><td class="num">${fmt(r.is_hourly ? r.hours_worked : r.working_days)}</td><td class="num">${r.is_hourly ? '—' : fmt(r.hours_per_day)}</td>
+  <td class="num">${fmt(r.base_basic)}</td><td class="num">${fmt(r.base_allowance)}</td><td class="num">${fmt(r.hourly_rate)}</td><td class="num">${fmt(r.is_hourly ? r.hours_worked : r.working_days)}</td><td class="num">${fmt(r.hours_per_day)}</td><td class="num">${fmt(r.contract_days_per_week)}</td>
   <td class="num">${fmt(r.normal_ot)}</td><td class="num">${fmt(r.holiday_ot)}</td>
   <td class="num">${fmt(r.basic_pay)}</td><td class="num">${fmt(r.normal_ot_pay)}</td><td class="num">${fmt(r.holiday_ot_pay)}</td>
-  <td class="num">${fmt(r.allowance_pay)}</td><td class="num">${fmt(r.food_allowance)}</td><td class="num">${fmt(r.gross_salary)}</td>
+  <td class="num">${fmt(r.allowance_pay)}</td><td class="num">${fmt(r.food_allowance)}</td><td class="num">${fmt(r.food_allowance_pay)}</td><td class="num">${fmt(r.gross_salary)}</td>
   <td class="num">${fmt(r.finance_balance_before)}</td><td class="num ded">${r.deduction_total>0?'-':''}${fmt(r.deduction_total)}</td>
   <td class="num">${fmt(r.finance_deposits)}</td><td class="num net">${fmt(r.net_salary)}</td><td>${esc(r.remarks)}</td>
 </tr>`).join('')}
 <tr class="total">
-  <td colspan="11">TOTAL — ${rows.length} employees</td>
+  <td colspan="12">TOTAL — ${rows.length} employees</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.basic_pay,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.normal_ot_pay,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.holiday_ot_pay,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.allowance_pay,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.food_allowance,0))}</td>
+  <td class="num">${fmt(rows.reduce((s,r)=>s+r.food_allowance_pay,0))}</td>
   <td class="num">${fmt(totalGross)}</td><td class="num">${fmt(totalBalance)}</td><td class="num">${fmt(totalDed)}</td><td></td><td class="num">${fmt(totalNet)}</td><td></td>
 </tr>
 </tbody></table></body></html>`;
@@ -3301,9 +3327,9 @@ ${rows.map(r=>`<tr>
     const salaryMonth = firstOfMonth(month);
     const salaryPayload = rows.map(r => ({
       employee_id:r.employee_id, full_name:r.name, labour_card_no:r.labour_card_no, bank_routing:r.bank_routing, iban:r.iban, salary_month:salaryMonth, salary_type:r.salary_type,
-      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hourly_rate:r.hourly_rate, hours_per_day:r.hours_per_day,
+      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hourly_rate:r.hourly_rate, hours_per_day:r.hours_per_day, contract_days_per_week:r.contract_days_per_week,
       working_days:r.working_days, hours_worked:r.hours_worked, normal_ot_hours:r.normal_ot, holiday_ot_hours:r.holiday_ot,
-      extra_allowance:r.extra_allowance, overtime_amount:r.overtime_amount, food_allowance:r.food_allowance,
+      extra_allowance:r.extra_allowance, overtime_amount:r.overtime_amount, food_allowance:r.food_allowance, food_allowance_pay:r.food_allowance_pay,
       hourly_pay:r.hourly_pay, basic_pay:r.basic_pay, normal_ot_pay:r.normal_ot_pay, holiday_ot_pay:r.holiday_ot_pay,
       allowance_pay:r.allowance_pay, gross_salary:r.gross_salary,
       finance_recoverable:r.finance_recoverable, finance_recovered_before:r.finance_recovered_before,
@@ -3316,11 +3342,11 @@ ${rows.map(r=>`<tr>
     const monthlyPayload = rows.map(r => ({
       employee_id:r.employee_id, full_name:r.name, month:salaryMonth,
       salary_type:'wps_salary_sheet', salary:r.gross_salary,
-      food:0, accommodation:0, transport:0, other:0,
+      food:r.food_allowance_pay || 0, food_allowance_pay:r.food_allowance_pay || 0, accommodation:0, transport:0, other:0,
       remarks:(r.remarks ? r.remarks + ' | ' : '') + 'Saved from WPS Salary Sheet. Net WPS: AED ' + fmt(r.net_salary),
       salary_deductions:r.deduction_total,
       hours_worked:r.hours_worked || 0, hourly_rate:r.hourly_rate || 0,
-      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hours_per_day:r.hours_per_day,
+      basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hours_per_day:r.hours_per_day, contract_days_per_week:r.contract_days_per_week,
       working_days:r.working_days, month_days:daysInMonthFn(...month.split('-').map(Number)),
       normal_ot_hours:r.normal_ot, holiday_ot_hours:r.holiday_ot,
       computed_salary:r.gross_salary, manual_override:false, recurring_allowance_total:0,
@@ -3531,7 +3557,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
           </div>
 
           <div style={{padding:'8px 18px',borderBottom:'1px solid #e2e8f0',background:'#fff7ed',fontSize:'11.5px',color:'#92400e'}}>
-            Master data such as Labour Card, Bank Routing, IBAN, Basic Salary, Allowance and Hourly Rate is taken from <strong>Employee WPS Master</strong> and reused every month. If <strong>Hourly Rate</strong> is entered, salary is calculated by <strong>Hourly Rate × actual regular hours worked</strong>; Basic Salary is shown only as a contractual / WPS dummy value. For all other employees, the sheet follows the Excel formula: <strong>Basic ÷ month days × working days</strong> and OT at <strong>Basic ÷ month days ÷ hours/day × OT × 1.25/1.5</strong>. If any master entry is wrong, click <strong>Correct Master</strong>, edit it once, then save the salary sheet again for this month. Only monthly values such as days/hours worked, OT, food allowance, deduction and remarks are entered here. {hasUnsavedDraft && <strong style={{marginLeft:'8px',color:'#dc2626'}}>Unsaved entries are temporarily kept on this browser — click Save Salary Sheet to store in database.</strong>}
+            Master data such as Labour Card, Bank Routing, IBAN, Basic Salary, Allowance, Hourly Rate, Contract Hours/Day and Contract Days/Week is taken from <strong>Employee WPS Master</strong> and reused every month. If <strong>Hourly Rate</strong> is entered, salary is calculated by <strong>Hourly Rate × actual regular hours worked</strong>; Basic Salary is shown only as a contractual / WPS dummy value. For all other employees, the sheet follows the Excel formula: <strong>Basic ÷ month days × working days</strong>, allowance/food are prorated by working days, and OT uses <strong>Basic ÷ month days ÷ contract hours/day × OT × 1.25/1.5</strong>. Set Engineers/Staff as 10 hours/day and workers as 8 hours/day in WPS Master. If any master entry is wrong, click <strong>Correct Master</strong>, edit it once, then save the salary sheet again for this month. Only monthly values such as days/hours worked, OT, monthly food allowance, deduction and remarks are entered here. {hasUnsavedDraft && <strong style={{marginLeft:'8px',color:'#dc2626'}}>Unsaved entries are temporarily kept on this browser — click Save Salary Sheet to store in database.</strong>}
           </div>
 
           {/* Salary Sheet table */}
@@ -3539,16 +3565,16 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',minWidth:'2180px'}}>
               <thead>
                 <tr style={{background:'#f8fafc'}}>
-                  {['Sl','Employee','Craft','Basic Salary','Allowance','Hourly Rate','Working Days / Hours','Hrs/Day','Normal OT hrs','Holiday OT hrs','Basic / Hourly Pay','Normal OT Pay','Holiday OT Pay','Allowance Pay','Food Allowance','Gross Salary','Balance to Recover','Deduction This Month','Deposits Received','Balance After','Net WPS','Remarks'].map(h => (
+                  {['Sl','Employee','Craft','Basic Salary','Allowance','Hourly Rate','Working Days / Hours','Contract Hrs/Day','Days/Wk','Normal OT hrs','Holiday OT hrs','Basic / Hourly Pay','Normal OT Pay','Holiday OT Pay','Allowance Pay','Monthly Food Allow.','Food Allow. Pay','Gross Salary','Balance to Recover','Deduction This Month','Deposits Received','Balance After','Net WPS','Remarks'].map(h => (
                     <th key={h} style={{...S.th,whiteSpace:'nowrap',fontSize:'10.5px'}}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={22} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                  <tr><td colSpan={24} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 ) : activeMaster.length === 0 ? (
-                  <tr><td colSpan={22} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
+                  <tr><td colSpan={24} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
                     No active employees. Go to <strong>Employee WPS Master</strong> and add employees.
                   </td></tr>
                 ) : salaryRows.map(r => {
@@ -3582,16 +3608,16 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                         <div style={{fontSize:'10px',color:'#64748b'}}>{isHourly ? 'regular hrs' : 'days'}</div>
                       </td>
                       <td style={S.td}>
-                        {isHourly ? (
-                          <span style={{fontSize:'11px',color:'#94a3b8'}}>—</span>
-                        ) : (
-                          <>
-                            <input type="number" step="0.5" value={ov.hours_per_day ?? r.hours_per_day ?? 8} placeholder="8"
-                              onChange={e=>setOv(r.employee_id,'hours_per_day',e.target.value)}
-                              style={{...S.input,width:'62px',padding:'3px 5px',fontSize:'11.5px'}}/>
-                            <div style={{fontSize:'10px',color:'#64748b'}}>OT divisor</div>
-                          </>
-                        )}
+                        <input type="number" step="0.5" value={ov.hours_per_day ?? r.hours_per_day ?? 8} placeholder="8"
+                          onChange={e=>setOv(r.employee_id,'hours_per_day',e.target.value)}
+                          style={{...S.input,width:'70px',padding:'3px 5px',fontSize:'11.5px',borderColor:isHourly?'#7dd3fc':'#cbd5e1'}}/>
+                        <div style={{fontSize:'10px',color:'#64748b'}}>contract hrs/day</div>
+                      </td>
+                      <td style={S.td}>
+                        <input type="number" step="0.5" value={ov.contract_days_per_week ?? r.contract_days_per_week ?? 6} placeholder="6"
+                          onChange={e=>setOv(r.employee_id,'contract_days_per_week',e.target.value)}
+                          style={{...S.input,width:'62px',padding:'3px 5px',fontSize:'11.5px'}}/>
+                        <div style={{fontSize:'10px',color:'#64748b'}}>days/week</div>
                       </td>
                       <td style={S.td}>
                         <input type="number" value={ov.normal_ot_hours ?? r.normal_ot ?? ''} placeholder="0"
@@ -3611,7 +3637,9 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                         <input type="number" value={ov.food_allowance ?? r.food_allowance ?? ''} placeholder="0"
                           onChange={e=>setOv(r.employee_id,'food_allowance',e.target.value)}
                           style={{...S.input,width:'82px',padding:'3px 5px',fontSize:'11.5px'}}/>
+                        <div style={{fontSize:'10px',color:'#64748b'}}>monthly amount</div>
                       </td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:700}}>{fmt(r.food_allowance_pay)}</td>
                       <td style={{...S.td,textAlign:'right',fontWeight:800,color:'#0f172a'}}>{fmt(r.gross_salary)}</td>
                       <td style={{...S.td,textAlign:'right',fontWeight:800,color:r.finance_balance_before>0?'#92400e':'#94a3b8'}}>
                         {fmt(r.finance_balance_before)}
@@ -3638,12 +3666,13 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
               {salaryRows.length > 0 && (
                 <tfoot>
                   <tr style={{background:'#0f172a',color:'#fff'}}>
-                    <td style={{padding:'10px 14px',fontWeight:800,fontSize:'12px'}} colSpan={10}>TOTAL — {salaryRows.length} employees</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,fontSize:'12px'}} colSpan={11}>TOTAL — {salaryRows.length} employees</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.basic_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.normal_ot_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.holiday_ot_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.allowance_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.food_allowance,0))}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.food_allowance_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(sheetTotals.gross)}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#fdba74'}}>{fmt(sheetTotals.balanceBefore)}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#fca5a5'}}>{fmt(sheetTotals.deduction)}</td>
@@ -3782,7 +3811,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
               <button style={S.btnPri} onClick={() => setDraft({
                 employee_id:'', full_name:'', labour_card_no:'',
                 bank_routing: '', iban:'',
-                basic_salary:'', fixed_allowance:'', salary_type:'fixed', hourly_rate:'', hours_per_day:'8', remarks:'', active:true,
+                basic_salary:'', fixed_allowance:'', salary_type:'fixed', hourly_rate:'', hours_per_day:'8', contract_days_per_week:'6', remarks:'', active:true,
               })}>+ Add Employee</button>
             </div>
           </div>
@@ -3808,7 +3837,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
               </div>
               {draft.id && (
                 <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',color:'#1e40af',borderRadius:'8px',padding:'8px 10px',fontSize:'11.5px',fontWeight:700,marginBottom:'10px'}}>
-                  Correction mode: update the wrong Labour Card No, Bank Routing Code, IBAN, Basic Salary, Allowance, Hourly Rate or Hours/Day here. Once saved, this master value will be reused every month. For the open salary month, click Save Salary Sheet again to refresh the monthly snapshot.
+                  Correction mode: update the wrong Labour Card No, Bank Routing Code, IBAN, Basic Salary, Allowance, Hourly Rate, Contract Hours/Day or Contract Days/Week here. Once saved, this master value will be reused every month. For the open salary month, click Save Salary Sheet again to refresh the monthly snapshot.
                 </div>
               )}
               <div style={{marginBottom:'10px'}}>
@@ -3879,9 +3908,14 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                   <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>If entered, this employee is treated as Hourly Contract automatically. Basic Salary remains dummy/reference only.</div>
                 </div>
                 <div>
-                  <label style={S.label}>Hours/Day for OT Formula</label>
+                  <label style={S.label}>Contract Hours/Day</label>
                   <input type="number" step="0.5" value={draft.hours_per_day||8} onChange={e=>setDraft(d=>({...d,hours_per_day:e.target.value}))} placeholder="8" style={{...S.input,width:'100%'}} />
-                  <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>Used for basic-salary OT formula: Basic ÷ month days ÷ hours/day × OT.</div>
+                  <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>Used for OT divisor and hourly-employee prorata. Engineers/Staff: 10 hrs/day. Workers: 8 hrs/day.</div>
+                </div>
+                <div>
+                  <label style={S.label}>Contract Days/Week</label>
+                  <input type="number" step="0.5" value={draft.contract_days_per_week||6} onChange={e=>setDraft(d=>({...d,contract_days_per_week:e.target.value}))} placeholder="6" style={{...S.input,width:'100%'}} />
+                  <div style={{fontSize:'10.5px',color:'#64748b',marginTop:'4px'}}>Usually 6 days/week. Saved in WPS Master and shown in salary sheet.</div>
                 </div>
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:'10px',marginBottom:'12px',alignItems:'end'}}>
@@ -3906,16 +3940,16 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
               <thead>
                 <tr style={{background:'#f8fafc'}}>
-                  {['Emp ID','Name','Labour Card No','Bank Routing','IBAN','Type','Basic','Allowance','Hourly Rate','Hrs/Day','Remarks','Action'].map(h=>(
+                  {['Emp ID','Name','Labour Card No','Bank Routing','IBAN','Type','Basic','Allowance','Hourly Rate','Hrs/Day','Days/Wk','Remarks','Action'].map(h=>(
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                  <tr><td colSpan={13} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 ) : master.length === 0 ? (
-                  <tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No employees yet. Click <strong>+ Add Employee</strong>.</td></tr>
+                  <tr><td colSpan={13} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No employees yet. Click <strong>+ Add Employee</strong>.</td></tr>
                 ) : master.map(emp => (
                   <tr key={emp.id} style={{borderTop:'1px solid #f1f5f9',opacity:emp.active===false?0.5:1}} className="hr-row">
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{emp.employee_id}</td>
@@ -3938,6 +3972,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                     <td style={{...S.td,textAlign:'right'}}>{Number(emp.fixed_allowance||0).toLocaleString()}</td>
                     <td style={{...S.td,textAlign:'right',fontWeight:(Number(emp.hourly_rate)||0)>0?800:500,color:(Number(emp.hourly_rate)||0)>0?'#0369a1':'#94a3b8'}}>{(Number(emp.hourly_rate)||0)>0 ? Number(emp.hourly_rate||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
                     <td style={{...S.td,textAlign:'right'}}>{Number(emp.hours_per_day||8).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+                    <td style={{...S.td,textAlign:'right'}}>{Number(emp.contract_days_per_week||6).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
                     <td style={{...S.tdWrap,fontSize:'11px',color:'#64748b'}}>{emp.remarks||'—'}</td>
                     <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
                       <button style={{...S.iconBtn,width:'auto',padding:'4px 8px',fontWeight:800,color:'#1d4ed8'}} onClick={()=>setDraft({...emp})}>✎ Correct</button>
@@ -3950,7 +3985,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
           </div>
 
           <div style={{padding:'12px 18px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',fontSize:'11.5px',color:'#64748b'}}>
-            <strong style={{color:'#0f172a'}}>Tip:</strong> Add each employee once only. If any Labour Card, manual Bank Routing Code, IBAN, Basic Salary, Allowance or Hourly Rate or Hours/Day is wrong, click <strong>Correct</strong>, edit it, and save. The corrected master data will be reused for every future salary month. For <strong>Variable</strong> employees, enter monthly working days / OT. For <strong>Hourly Contract</strong> employees, enter actual regular hours worked; salary is calculated as hourly rate × hours worked plus OT/allowances. For other employees, salary follows your Excel formula with Basic/Allowance prorated by working days and OT calculated using Hours/Day.
+            <strong style={{color:'#0f172a'}}>Tip:</strong> Add each employee once only. If any Labour Card, manual Bank Routing Code, IBAN, Basic Salary, Allowance, Hourly Rate, Contract Hours/Day or Days/Week is wrong, click <strong>Correct</strong>, edit it, and save. The corrected master data will be reused for every future salary month. For <strong>Variable</strong> employees, enter monthly working days / OT. For <strong>Hourly Contract</strong> employees, enter actual regular hours worked; salary is calculated as hourly rate × hours worked plus OT/allowances. For other employees, salary follows your Excel formula with Basic/Allowance/Food prorated by working days and OT calculated using Contract Hours/Day.
           </div>
         </div>
       )}
@@ -4744,7 +4779,7 @@ function SalaryProfilesTab({ employees, empMeta, hrSalaryRows=[], hrSalaryStatus
               </tr>
             </thead>
             <tbody>
-              {rows.length===0 && <tr><td colSpan={12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No employees found.</td></tr>}
+              {rows.length===0 && <tr><td colSpan={11} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No employees found.</td></tr>}
               {rows.map(row=>{
                 const p = row.profile;
                 const hr = row.hr;
