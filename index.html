@@ -96,6 +96,10 @@ WHERE h.temp_employee_id IS NOT NULL;
 
 -- Finance portal uses HR anon key, therefore anon SELECT is required for these limited views.
 -- If later you move Finance-to-HR access behind logged-in/authenticated users, remove anon grant.
+-- IMPORTANT: The views read from public.employees — anon must have SELECT on that base table too.
+GRANT SELECT ON public.employees TO anon, authenticated;
+GRANT SELECT ON public.mob_demob TO anon, authenticated;
+GRANT SELECT ON public.hiring_pipeline TO anon, authenticated;
 GRANT SELECT ON public.v_finance_employee_salary TO anon, authenticated;
 GRANT SELECT ON public.v_finance_employee_mob_demob TO anon, authenticated;
 GRANT SELECT ON public.v_temp_candidates TO anon, authenticated;
@@ -427,12 +431,38 @@ CREATE TABLE IF NOT EXISTS employee_deduction_ledger (
     CHECK (deduction_type IN ('visa_recovery','security_deposit_recovery','salary_advance_recovery','flight_recovery','training_recovery','other')),
   amount numeric NOT NULL DEFAULT 0,
   approved_by text,
+  advance_date date,
   effective_month date,
+  deducted_month date,
   notes text,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','applied','waived')),
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );
+-- Migration: add advance_date and deducted_month columns if they don't exist
+ALTER TABLE employee_deduction_ledger ADD COLUMN IF NOT EXISTS advance_date date;
+ALTER TABLE employee_deduction_ledger ADD COLUMN IF NOT EXISTS deducted_month date;
+ALTER TABLE employee_monthly_costs ADD COLUMN IF NOT EXISTS arrears numeric DEFAULT 0;
+ALTER TABLE employee_monthly_costs ADD COLUMN IF NOT EXISTS arrears_for_month date;
+ALTER TABLE employee_monthly_costs ADD COLUMN IF NOT EXISTS arrears_reason text;
+
+-- Idle Days tracking table (employees deployed but idle at site)
+CREATE TABLE IF NOT EXISTS employee_idle_days (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id text NOT NULL,
+  full_name text,
+  month date NOT NULL,
+  day_number integer NOT NULL CHECK (day_number BETWEEN 1 AND 31),
+  reason text,
+  client_agreed boolean DEFAULT false,
+  created_at timestamptz DEFAULT now(),
+  UNIQUE(employee_id, month, day_number)
+);
+ALTER TABLE employee_idle_days ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_idle_days;
+CREATE POLICY "Allow authenticated full access" ON employee_idle_days
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE, DELETE ON employee_idle_days TO authenticated;
 ALTER TABLE employee_deduction_ledger ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_deduction_ledger;
 CREATE POLICY "Allow authenticated full access" ON employee_deduction_ledger
@@ -946,11 +976,18 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
       : isHourly ? hourlyGross + recurring.total
       : (Number(draft.salary)||0) + recurring.total;
 
+    const arrearsAmt = Number(draft.arrears)||0;
+    const finalSalaryWithArrears = Math.round((finalSalary + arrearsAmt)*100)/100;
+    const arrearsRemark = arrearsAmt > 0
+      ? `[Arrears AED ${arrearsAmt.toFixed(2)} for ${draft.arrears_for_month||'?'}${draft.arrears_reason ? ': '+draft.arrears_reason : ''}]`
+      : '';
+    const combinedRemarks = [draft.remarks||'', arrearsRemark].filter(Boolean).join(' | ') || null;
+
     const clean = {
       employee_id:draft.employee_id, full_name:draft.full_name, month:firstOfMonth(draft.month),
-      salary_type:type, salary:Math.round(finalSalary*100)/100,
+      salary_type:type, salary:finalSalaryWithArrears,
       food:Number(draft.food)||0, accommodation:Number(draft.accommodation)||0,
-      transport:Number(draft.transport)||0, other:Number(draft.other)||0, remarks:draft.remarks||null,
+      transport:Number(draft.transport)||0, other:Number(draft.other)||0, remarks:combinedRemarks,
       salary_deductions:Number(draft.salary_deductions)||0,
       hours_worked:Number(draft.hours_worked)||0, hourly_rate:Number(draft.hourly_rate)||0,
       basic_salary:      isProrated ? (Number(draft.basic_salary)||0) : null,
@@ -1182,6 +1219,36 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
             <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation||''} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Transport</label><input type="number" value={draft.transport||''} onChange={e=>setDraft(d=>({...d,transport:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Other</label><input type="number" value={draft.other||''} onChange={e=>setDraft(d=>({...d,other:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+          </div>
+
+          {/* ── Arrears block ── pending payment from a previous month */}
+          <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap'}}>
+              <span style={{fontSize:'11px',fontWeight:800,color:'#1d4ed8',textTransform:'uppercase',letterSpacing:'.04em'}}>💰 Arrears — Pending Payment from Previous Month</span>
+              <span style={{fontSize:'11px',color:'#3b82f6'}}>add any salary/allowance owed but not paid in a prior month</span>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+              <div>
+                <label style={S.label}>Arrears Amount (AED)</label>
+                <input type="number" value={draft.arrears||''} placeholder="0.00"
+                  onChange={e=>setDraft(d=>({...d,arrears:e.target.value}))} style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>For Month (original due month)</label>
+                <input type="month" value={draft.arrears_for_month||''}
+                  onChange={e=>setDraft(d=>({...d,arrears_for_month:e.target.value}))} style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Arrears Reason</label>
+                <input type="text" value={draft.arrears_reason||''} placeholder="e.g. Salary not processed in May"
+                  onChange={e=>setDraft(d=>({...d,arrears_reason:e.target.value}))} style={{...S.input,width:'100%'}}/>
+              </div>
+            </div>
+            {(Number(draft.arrears)||0) > 0 && (
+              <div style={{marginTop:'6px',fontSize:'11.5px',color:'#1d4ed8',fontWeight:700}}>
+                ✅ Arrears AED {fmt(draft.arrears)} for {draft.arrears_for_month||'?'} will be added to this month's net total.
+              </div>
+            )}
           </div>
 
           <div style={{marginBottom:'10px'}}>
@@ -4046,6 +4113,27 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
         }];
       });
     }
+    // Fix 1: Also show employees that exist only in Finance (WPS master / salary profiles)
+    // even if they have no HR record and are not in employee_pnl_summary.
+    try {
+      const [spFinance, wmFinance] = await Promise.all([
+        db.from('employee_salary_profiles').select('employee_id,full_name'),
+        db.from('wps_employee_master').select('employee_id,full_name'),
+      ]);
+      const realIds = new Set(summaryRows.map(r => r.employee_id));
+      const financeOnly = {};
+      (spFinance.data||[]).forEach(r=>{ if (r.employee_id && !realIds.has(r.employee_id)) financeOnly[r.employee_id]=r.full_name||r.employee_id; });
+      (wmFinance.data||[]).forEach(r=>{ if (r.employee_id && !realIds.has(r.employee_id)) financeOnly[r.employee_id]=r.full_name||financeOnly[r.employee_id]||r.employee_id; });
+      Object.entries(financeOnly).forEach(([id,name])=>{
+        summaryRows = [...summaryRows, {
+          employee_id:id, full_name:name,
+          lifetime_income:0, lifetime_expense:0, lifetime_net:0,
+          lifetime_onboarding_cost:0, advance_outstanding:0, idle_months:0,
+          is_finance_only: true,
+        }];
+      });
+    } catch(_){}
+
     if (summaryRows) setSummary(summaryRows);
     if (m.data) setMonthly(m.data);
     if (d.data) setDeposits(d.data);
@@ -4256,7 +4344,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                           <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:r.is_temp?'#0f766e':'#2563eb',cursor:'pointer',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
                           <td style={{...S.td,fontWeight:700,color:'#2563eb',cursor:'pointer',textDecoration:'underline',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.full_name}</td>
                           <td style={{...S.td,padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}}>{(meta&&meta.position)||(tcMeta&&tcMeta.position)||'—'}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{r.is_temp?<span style={{background:'#f0fdfa',color:'#0f766e',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>pending</span>:((meta&&meta.joining_date)||'—')}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{r.is_temp?<span style={{background:'#f0fdfa',color:'#0f766e',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>pending</span>:r.is_finance_only?<span style={{background:'#faf5ff',color:'#7c3aed',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Finance only</span>:((meta&&meta.joining_date)||'—')}</td>
                           <td style={{...S.td,padding:'7px 6px',color:'#166534'}}>{cat.income>0?fmt(cat.income):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>{fmt(adjExpense)}</td>
@@ -4741,9 +4829,19 @@ function SalaryProfilesTab({ employees, empMeta, hrSalaryRows=[], hrSalaryStatus
       {hrSalaryStatus.error ? (
         <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'10px',padding:'12px 16px',marginBottom:'14px',fontSize:'12px',color:'#991b1b'}}>
           <div style={{fontWeight:800,marginBottom:'4px'}}>⚠️ HR salary pull is blocked or the HR view is missing.</div>
-          <div>{hrSalaryStatus.error}</div>
-          <details style={{marginTop:'8px'}}>
-            <summary style={{cursor:'pointer',fontWeight:700}}>Show recommended HR SQL view</summary>
+          <div style={{marginBottom:'6px'}}>{hrSalaryStatus.error}</div>
+          {hrSalaryStatus.error && hrSalaryStatus.error.includes('permission denied') && (
+            <div style={{background:'#fff3cd',border:'1px solid #ffc107',borderRadius:'6px',padding:'8px 12px',marginBottom:'8px',color:'#856404',fontWeight:700,fontSize:'11.5px'}}>
+              🔧 <strong>Fix:</strong> The HR Supabase view reads from <code>public.employees</code> but the <code>anon</code> role lacks SELECT permission on that base table.
+              Run the SQL below in the <strong>HR Supabase SQL Editor</strong> (project: oaerqjrkdpuhiproppaz) to fix:
+              <pre style={{background:'#1e293b',color:'#f8fafc',padding:'8px 10px',borderRadius:'6px',fontSize:'11px',marginTop:'6px',overflowX:'auto',whiteSpace:'pre'}}>GRANT SELECT ON public.employees TO anon, authenticated;
+GRANT SELECT ON public.mob_demob TO anon, authenticated;
+GRANT SELECT ON public.hiring_pipeline TO anon, authenticated;
+NOTIFY pgrst, 'reload schema';</pre>
+            </div>
+          )}
+          <details style={{marginTop:'4px'}}>
+            <summary style={{cursor:'pointer',fontWeight:700}}>Show full HR bridge SQL (run in HR Supabase SQL Editor)</summary>
             <pre style={{background:'#1e293b',color:'#f8fafc',padding:'10px 12px',borderRadius:'8px',fontSize:'11px',overflowX:'auto',whiteSpace:'pre',marginTop:'8px'}}>{HR_SALARY_VIEW_SQL}</pre>
           </details>
         </div>
@@ -4816,7 +4914,7 @@ function SalaryProfilesTab({ employees, empMeta, hrSalaryRows=[], hrSalaryStatus
 
       {draft && (
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
-          <div style={{background:'#fff',borderRadius:'14px',padding:'28px',width:'460px',maxWidth:'95vw',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          <div style={{background:'#fff',borderRadius:'14px',padding:'28px',width:'560px',maxWidth:'95vw',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',maxHeight:'90vh',overflowY:'auto'}}>
             <h3 style={{margin:'0 0 4px',fontSize:'16px',fontWeight:800}}>
               {draft._existing_id ? '✏️ Correct Salary Profile' : '+ Set Salary Profile'}
             </h3>
@@ -4901,7 +4999,7 @@ function DeductionLedgerTab({ employees, empMeta }) {
 
   const blank = () => setDraft({
     employee_id:'', full_name:'', deduction_type:'visa_recovery',
-    amount:'', approved_by:'', effective_month:'', notes:'', status:'pending',
+    amount:'', approved_by:'', advance_date:'', effective_month:'', deducted_month:'', notes:'', status:'pending',
   });
 
   const save = async () => {
@@ -4914,7 +5012,9 @@ function DeductionLedgerTab({ employees, empMeta }) {
       deduction_type: draft.deduction_type,
       amount:        Number(draft.amount),
       approved_by:   draft.approved_by||null,
+      advance_date:  draft.advance_date||null,
       effective_month: draft.effective_month||null,
+      deducted_month: draft.status==='applied' ? (draft.deducted_month||draft.effective_month||null) : null,
       notes:         draft.notes||null,
       status:        draft.status||'pending',
       updated_at:    new Date().toISOString(),
@@ -4937,8 +5037,8 @@ function DeductionLedgerTab({ employees, empMeta }) {
 
   const createFromFinanceReview = (r) => setDraft({
     employee_id:r.employee_id||'', full_name:r.full_name||'', deduction_type:r.suggested_type||'other',
-    amount:r.review_amount||'', approved_by:'', effective_month:monthStr(r.cost_date||r.month)||'',
-    notes:`From Finance review: ${r.review_type}${r.notes?' — '+r.notes:''}`, status:'pending',
+    amount:r.review_amount||'', approved_by:'', advance_date:'', effective_month:monthStr(r.cost_date||r.month)||'',
+    deducted_month:'', notes:`From Finance review: ${r.review_type}${r.notes?' — '+r.notes:''}`, status:'pending',
   });
 
   const STATUS_COLOR = { pending:'#92400e', applied:'#166534', waived:'#64748b' };
@@ -5011,48 +5111,82 @@ function DeductionLedgerTab({ employees, empMeta }) {
         </div>
       </div>
 
-      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loading…</div> : (
+      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loading…</div> : (() => {
+        // Group by effective_month for per-month view
+        const grouped = {};
+        filtered.forEach(r => {
+          const key = r.effective_month ? r.effective_month.slice(0,7) : 'No Month';
+          if (!grouped[key]) grouped[key] = [];
+          grouped[key].push(r);
+        });
+        const sortedMonths = Object.keys(grouped).sort((a,b)=>b.localeCompare(a));
+        return (
         <div style={{overflowX:'auto'}}>
-          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
-            <thead>
-              <tr style={{background:'#f8fafc'}}>
-                {['Emp ID','Name','Deduction Type','Amount (AED)','Effective Month','Approved By','Notes','Status',''].map(h=>(
-                  <th key={h} style={{...S.th}}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length===0 && (
-                <tr><td colSpan={9} style={{...S.td,textAlign:'center',color:'#94a3b8',padding:'30px'}}>No deduction entries. HR adds entries here when recovery is approved.</td></tr>
-              )}
-              {filtered.map(r=>(
-                <tr key={r.id} style={{borderBottom:'1px solid #f1f5f9'}}>
-                  <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
-                  <td style={S.td}>{r.full_name}</td>
-                  <td style={S.td}>{TYPES.find(t=>t.value===r.deduction_type)?.label||r.deduction_type}</td>
-                  <td style={{...S.td,textAlign:'right',fontWeight:700,color:'#dc2626'}}>AED {fmt(r.amount)}</td>
-                  <td style={{...S.td,fontSize:'12px',color:'#64748b'}}>{r.effective_month||'—'}</td>
-                  <td style={{...S.td,fontSize:'12px'}}>{r.approved_by||'—'}</td>
-                  <td style={{...S.td,fontSize:'12px',color:'#64748b',maxWidth:'180px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.notes||'—'}</td>
-                  <td style={S.td}>
-                    <span style={{background:STATUS_BG[r.status]||'#f1f5f9',color:STATUS_COLOR[r.status]||'#475569',fontSize:'11px',fontWeight:700,padding:'3px 10px',borderRadius:'10px'}}>
-                      {r.status}
-                    </span>
-                  </td>
-                  <td style={{...S.td,textAlign:'center'}}>
-                    <div style={{display:'flex',gap:'6px',justifyContent:'center'}}>
-                      <button onClick={()=>setDraft({...r,effective_month:r.effective_month?r.effective_month.slice(0,7):''})}
-                        style={{...S.btnSec,padding:'4px 10px',fontSize:'12px'}}>✏️</button>
-                      <button onClick={()=>del(r.id)}
-                        style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>🗑</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {sortedMonths.map(month=>(
+            <div key={month} style={{marginBottom:'18px'}}>
+              <div style={{fontWeight:800,fontSize:'12px',color:'#475569',textTransform:'uppercase',letterSpacing:'.05em',
+                padding:'6px 12px',background:'#f1f5f9',borderRadius:'6px',marginBottom:'4px',borderLeft:'3px solid #7c3aed'}}>
+                📅 {month==='No Month' ? 'No Month Assigned' : month}
+                <span style={{fontWeight:400,color:'#94a3b8',marginLeft:'8px'}}>{grouped[month].length} entr{grouped[month].length===1?'y':'ies'}</span>
+              </div>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+                <thead>
+                  <tr style={{background:'#f8fafc'}}>
+                    {['Emp ID','Name','Deduction Type','Amount (AED)','Advance Date','Approved By','Notes','Status','Deducted In',''].map(h=>(
+                      <th key={h} style={{...S.th,fontSize:'11.5px'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {grouped[month].map(r=>{
+                    const isDeducted = r.status==='applied';
+                    return (
+                    <tr key={r.id} style={{borderBottom:'1px solid #f1f5f9',
+                      background:isDeducted?'#f0fdf4':'#fff',
+                      opacity:isDeducted?0.85:1}}>
+                      <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                      <td style={S.td}>{r.full_name}</td>
+                      <td style={S.td}>{TYPES.find(t=>t.value===r.deduction_type)?.label||r.deduction_type}</td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:700,color:isDeducted?'#166534':'#dc2626'}}>
+                        AED {fmt(r.amount)}
+                        {isDeducted && <span style={{fontSize:'10px',display:'block',color:'#166534',fontWeight:600}}>✅ deducted</span>}
+                      </td>
+                      <td style={{...S.td,fontSize:'11.5px',color:'#64748b'}}>{r.advance_date?r.advance_date.slice(0,10):'—'}</td>
+                      <td style={{...S.td,fontSize:'11.5px'}}>{r.approved_by||'—'}</td>
+                      <td style={{...S.td,fontSize:'11.5px',color:'#64748b',maxWidth:'160px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.notes||'—'}</td>
+                      <td style={S.td}>
+                        <span style={{background:STATUS_BG[r.status]||'#f1f5f9',color:STATUS_COLOR[r.status]||'#475569',fontSize:'11px',fontWeight:700,padding:'3px 10px',borderRadius:'10px'}}>
+                          {r.status}
+                        </span>
+                      </td>
+                      <td style={{...S.td,fontSize:'11px',color:isDeducted?'#166534':'#94a3b8'}}>
+                        {isDeducted ? (r.deducted_month?r.deducted_month.slice(0,7):'✅ Applied') : '—'}
+                      </td>
+                      <td style={{...S.td,textAlign:'center'}}>
+                        <div style={{display:'flex',gap:'6px',justifyContent:'center'}}>
+                          <button onClick={()=>setDraft({...r,
+                            effective_month:r.effective_month?r.effective_month.slice(0,7):'',
+                            advance_date:r.advance_date?r.advance_date.slice(0,10):'',
+                            deducted_month:r.deducted_month?r.deducted_month.slice(0,7):'',
+                          })}
+                            style={{...S.btnSec,padding:'4px 10px',fontSize:'12px'}}>✏️</button>
+                          <button onClick={()=>del(r.id)}
+                            style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>🗑</button>
+                        </div>
+                      </td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+          {sortedMonths.length===0 && (
+            <div style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No deduction entries. HR adds entries here when recovery is approved.</div>
+          )}
         </div>
-      )}
+        );
+      })()}
 
       {/* Add/Edit modal */}
       {draft && (
@@ -5071,6 +5205,13 @@ function DeductionLedgerTab({ employees, empMeta }) {
                   {employees.filter(e=>!e.is_temp).map(e=>(
                     <option key={e.employee_id} value={e.employee_id}>{e.employee_id} — {e.full_name}</option>
                   ))}
+                  {employees.filter(e=>e.is_temp).length>0 && (
+                    <optgroup label="── Pending / Pre-joining (Temp IDs) ──">
+                      {employees.filter(e=>e.is_temp).map(e=>(
+                        <option key={e.employee_id} value={e.employee_id}>{e.employee_id} — {e.full_name}</option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </div>
               <div style={{gridColumn:'1/-1'}}>
@@ -5085,7 +5226,12 @@ function DeductionLedgerTab({ employees, empMeta }) {
                   style={{...S.input,width:'100%'}} placeholder="0.00" min="0" />
               </div>
               <div>
-                <label style={S.label}>Effective Month</label>
+                <label style={S.label}>Advance Given Date</label>
+                <input type="date" value={draft.advance_date||''} onChange={e=>setDraft(d=>({...d,advance_date:e.target.value}))} style={{...S.input,width:'100%'}}
+                  title="Date on which the advance was actually given to the employee" />
+              </div>
+              <div>
+                <label style={S.label}>Effective Month (recovery due)</label>
                 <input type="month" value={draft.effective_month||''} onChange={e=>setDraft(d=>({...d,effective_month:e.target.value}))} style={{...S.input,width:'100%'}} />
               </div>
               <div>
@@ -5101,12 +5247,24 @@ function DeductionLedgerTab({ employees, empMeta }) {
                   <option value="waived">🚫 Waived</option>
                 </select>
               </div>
+              {draft.status==='applied' && (
+                <div>
+                  <label style={S.label}>Deducted in Month</label>
+                  <input type="month" value={draft.deducted_month||''} onChange={e=>setDraft(d=>({...d,deducted_month:e.target.value}))} style={{...S.input,width:'100%'}}
+                    placeholder="Month when deduction was applied" />
+                </div>
+              )}
               <div style={{gridColumn:'1/-1'}}>
                 <label style={S.label}>Notes</label>
                 <input type="text" value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))}
                   style={{...S.input,width:'100%'}} placeholder="e.g. Visa cost AED 2,500 — to recover over 3 months" />
               </div>
             </div>
+            {draft.status==='applied' && (
+              <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'8px 12px',marginBottom:'12px',fontSize:'12px',color:'#166534',fontWeight:700}}>
+                ✅ This entry will be marked as <strong>Applied</strong> and shown with a green "deducted" badge in the ledger table. The deducted month will be recorded for reference.
+              </div>
+            )}
             <div style={{display:'flex',gap:'10px',justifyContent:'flex-end'}}>
               <button onClick={()=>setDraft(null)} style={S.btnSec}>Cancel</button>
               <button onClick={save} disabled={saving} style={{...S.btnPri,opacity:saving?0.6:1}}>
@@ -5119,6 +5277,988 @@ function DeductionLedgerTab({ employees, empMeta }) {
     </div>
   );
 }
+
+
+
+// ── SALARY PIPELINE TAB (v2) ──────────────────────────────────────
+// Features:
+// A) Month Calendar — mark Sundays (auto) + Public Holidays (manual)
+// B) Idle Days Tracker — employees deployed but idle (waiting certs etc.)
+// C) Bulk PDF Timesheet OCR — AI reads all employees in one pass
+// D) Name fuzzy-match review screen
+// E) Salary calculation respecting holidays, idle days, OT
+
+const CLAUDE_PROXY = 'https://satco-hr.vercel.app/api/claude';
+
+// ── Fuzzy name matching ──────────────────────────────────────────
+function normalizeName(n) {
+  return (n||'').toLowerCase().replace(/[^a-z\s]/g,'').replace(/\s+/g,' ').trim();
+}
+function nameSimilarity(a, b) {
+  const na = normalizeName(a), nb = normalizeName(b);
+  if (!na||!nb) return 0;
+  if (na===nb) return 1;
+  const wa = na.split(' '), wb = nb.split(' ');
+  let m = 0;
+  wa.forEach(w=>{ if (w.length>2 && wb.some(x=>x.includes(w)||w.includes(x))) m++; });
+  return m / Math.max(wa.length, wb.length);
+}
+function bestMatch(clientName, empList) {
+  let best=null, bestScore=0;
+  empList.forEach(e=>{
+    const s = nameSimilarity(clientName, e.full_name);
+    if (s>bestScore) { bestScore=s; best=e; }
+  });
+  return { emp: best, score: bestScore };
+}
+
+// ── PDF/Image → base64 ───────────────────────────────────────────
+async function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ── Month calendar helpers ────────────────────────────────────────
+// Returns array of day numbers that are Sundays in a given YYYY-MM
+function getSundaysInMonth(yearMonth) {
+  const [y, m] = yearMonth.split('-').map(Number);
+  const days = new Date(y, m, 0).getDate();
+  const sundays = [];
+  for (let d = 1; d <= days; d++) {
+    if (new Date(y, m-1, d).getDay() === 5) sundays.push(d); // Friday = UAE weekend
+  }
+  return sundays;
+}
+function getDayOfWeek(yearMonth, day) {
+  const [y, m] = yearMonth.split('-').map(Number);
+  return new Date(y, m-1, day).getDay(); // 0=Sun,5=Fri,6=Sat
+}
+function getDayName(dayIndex) {
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dayIndex];
+}
+function totalDaysInMonth(yearMonth) {
+  const [y, m] = yearMonth.split('-').map(Number);
+  return new Date(y, m, 0).getDate();
+}
+
+// Storage key for month calendar data
+function calendarKey(yearMonth) { return `satco_cal_${yearMonth}`; }
+function loadCalendar(yearMonth) {
+  try {
+    const raw = localStorage.getItem(calendarKey(yearMonth));
+    if (raw) return JSON.parse(raw);
+  } catch(_) {}
+  return { publicHolidays: [], weekendDay: 5 }; // UAE: Friday = 5 weekend
+}
+function saveCalendar(yearMonth, data) {
+  try { localStorage.setItem(calendarKey(yearMonth), JSON.stringify(data)); } catch(_) {}
+}
+
+// ── MonthCalendarPanel ────────────────────────────────────────────
+function MonthCalendarPanel({ yearMonth, onClose }) {
+  const [cal, setCal] = React.useState(()=>loadCalendar(yearMonth));
+  const [weekendDay, setWeekendDay] = React.useState(cal.weekendDay ?? 5);
+  const [holidayInput, setHolidayInput] = React.useState('');
+  const [holidayName, setHolidayName] = React.useState('');
+
+  const totalDays = totalDaysInMonth(yearMonth);
+  const days = Array.from({length: totalDays}, (_, i) => i+1);
+
+  const isWeekend = (d) => getDayOfWeek(yearMonth, d) === weekendDay;
+  const isHoliday = (d) => (cal.publicHolidays||[]).some(h=>h.day===d);
+  const getHolidayName = (d) => (cal.publicHolidays||[]).find(h=>h.day===d)?.name || '';
+
+  const toggleHoliday = (d) => {
+    const existing = (cal.publicHolidays||[]).find(h=>h.day===d);
+    let updated;
+    if (existing) {
+      updated = (cal.publicHolidays||[]).filter(h=>h.day!==d);
+    } else {
+      const name = window.prompt(`Public holiday name for Day ${d}?`, '');
+      if (name===null) return;
+      updated = [...(cal.publicHolidays||[]), {day:d, name: name||`Holiday Day ${d}`}];
+    }
+    const newCal = {...cal, publicHolidays: updated, weekendDay};
+    setCal(newCal);
+    saveCalendar(yearMonth, newCal);
+  };
+
+  const updateWeekend = (wd) => {
+    setWeekendDay(wd);
+    const newCal = {...cal, weekendDay: wd};
+    setCal(newCal);
+    saveCalendar(yearMonth, newCal);
+  };
+
+  const [y, m] = yearMonth.split('-');
+  const monthName = new Date(Number(y), Number(m)-1, 1).toLocaleString('default',{month:'long'});
+
+  const holidayCount = (cal.publicHolidays||[]).length;
+  const weekendCount = days.filter(d=>isWeekend(d)).length;
+  const workingDays = totalDays - weekendCount - holidayCount;
+
+  return (
+    <div style={{background:'#fff',border:'2px solid #2563eb',borderRadius:'12px',padding:'20px'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'16px',flexWrap:'wrap',gap:'10px'}}>
+        <div>
+          <div style={{fontWeight:800,fontSize:'16px'}}>📅 {monthName} {y} — Month Calendar</div>
+          <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>
+            Mark public holidays. Weekends auto-calculated. These apply to all timesheet and idle day calculations this month.
+          </div>
+        </div>
+        <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+          <div style={{fontSize:'12.5px',background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'6px 12px'}}>
+            <strong style={{color:'#166534'}}>{workingDays}</strong> <span style={{color:'#64748b'}}>working days</span>
+            <span style={{margin:'0 8px',color:'#e2e8f0'}}>|</span>
+            <strong style={{color:'#d97706'}}>{weekendCount}</strong> <span style={{color:'#64748b'}}>weekends</span>
+            <span style={{margin:'0 8px',color:'#e2e8f0'}}>|</span>
+            <strong style={{color:'#7c3aed'}}>{holidayCount}</strong> <span style={{color:'#64748b'}}>public holidays</span>
+          </div>
+          {onClose && <button onClick={onClose} style={{...S.btnSec}}>✓ Done</button>}
+        </div>
+      </div>
+
+      {/* Weekend day selector */}
+      <div style={{marginBottom:'14px',display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
+        <span style={{fontSize:'12.5px',fontWeight:700,color:'#475569'}}>Weekend / Rest day:</span>
+        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((nm,i)=>(
+          <label key={i} style={{display:'flex',alignItems:'center',gap:'4px',cursor:'pointer',fontSize:'12.5px',
+            background:weekendDay===i?'#7c3aed':'#f8fafc',color:weekendDay===i?'#fff':'#475569',
+            padding:'4px 10px',borderRadius:'6px',border:'1px solid '+(weekendDay===i?'#7c3aed':'#e2e8f0'),fontWeight:weekendDay===i?700:400}}>
+            <input type="radio" name="weekend" style={{display:'none'}} checked={weekendDay===i} onChange={()=>updateWeekend(i)}/>
+            {nm}
+          </label>
+        ))}
+        <span style={{fontSize:'11.5px',color:'#94a3b8'}}>(UAE standard: Friday)</span>
+      </div>
+
+      {/* Calendar grid */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'4px',marginBottom:'14px'}}>
+        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>(
+          <div key={d} style={{textAlign:'center',fontSize:'10px',fontWeight:700,color:'#94a3b8',padding:'4px 0'}}>{d}</div>
+        ))}
+        {/* Empty cells for offset */}
+        {Array.from({length: getDayOfWeek(yearMonth, 1)}, (_, i)=>(
+          <div key={`e${i}`}/>
+        ))}
+        {days.map(d=>{
+          const wd = isWeekend(d);
+          const ph = isHoliday(d);
+          const phName = getHolidayName(d);
+          return (
+            <div key={d} onClick={()=>!wd && toggleHoliday(d)}
+              title={wd ? `Weekend (${getDayName(getDayOfWeek(yearMonth,d))})` : ph ? `Public Holiday: ${phName} (click to remove)` : 'Click to mark as public holiday'}
+              style={{
+                textAlign:'center',padding:'6px 2px',borderRadius:'6px',cursor:wd?'default':'pointer',
+                border:'1px solid '+(ph?'#7c3aed':wd?'#e2e8f0':'#e2e8f0'),
+                background: ph?'#f3e8ff' : wd?'#fef3c7':'#fff',
+                position:'relative',
+              }}>
+              <div style={{fontWeight:700,fontSize:'13px',color:ph?'#7c3aed':wd?'#d97706':'#0f172a'}}>{d}</div>
+              <div style={{fontSize:'9px',color:ph?'#7c3aed':wd?'#d97706':'#94a3b8',lineHeight:'1.1',marginTop:'1px'}}>
+                {ph ? phName.slice(0,8) : getDayName(getDayOfWeek(yearMonth,d))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div style={{display:'flex',gap:'12px',fontSize:'11.5px',flexWrap:'wrap'}}>
+        {[['#fff','#0f172a','Regular working day (click to mark as holiday)'],
+          ['#fef3c7','#d97706','Weekend / Rest day (auto-calculated)'],
+          ['#f3e8ff','#7c3aed','Public Holiday (click to remove)']].map(([bg,c,label])=>(
+          <div key={label} style={{display:'flex',alignItems:'center',gap:'6px'}}>
+            <div style={{width:'14px',height:'14px',borderRadius:'3px',background:bg,border:'1px solid '+c+'88'}}/>
+            <span style={{color:'#64748b'}}>{label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Holidays list */}
+      {(cal.publicHolidays||[]).length > 0 && (
+        <div style={{marginTop:'14px',paddingTop:'14px',borderTop:'1px solid #e2e8f0'}}>
+          <div style={{fontWeight:700,fontSize:'12.5px',color:'#7c3aed',marginBottom:'8px'}}>
+            🗓 Public Holidays this month:
+          </div>
+          <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+            {[...(cal.publicHolidays||[])].sort((a,b)=>a.day-b.day).map(h=>(
+              <div key={h.day} style={{background:'#f3e8ff',border:'1px solid #c4b5fd',borderRadius:'8px',padding:'4px 12px',fontSize:'12px'}}>
+                <strong style={{color:'#7c3aed'}}>Day {h.day}</strong>
+                <span style={{color:'#6d28d9',marginLeft:'6px'}}>{h.name}</span>
+                <button onClick={()=>toggleHoliday(h.day)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',marginLeft:'6px',fontSize:'11px',padding:'0'}}>✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── IdleDaysPanel ─────────────────────────────────────────────────
+function IdleDaysPanel({ yearMonth, employees, hrSalaryRows, onClose }) {
+  const [idleData, setIdleData] = React.useState({}); // {empId: [{day, reason, clientAgreed}]}
+  const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [selectedEmp, setSelectedEmp] = React.useState(null);
+  const [search, setSearch] = React.useState('');
+
+  const totalDays = totalDaysInMonth(yearMonth);
+  const days = Array.from({length:totalDays},(_,i)=>i+1);
+  const cal = loadCalendar(yearMonth);
+  const isWeekend = (d) => getDayOfWeek(yearMonth, d) === (cal.weekendDay ?? 5);
+  const isHoliday = (d) => (cal.publicHolidays||[]).some(h=>h.day===d);
+  const isOff = (d) => isWeekend(d) || isHoliday(d);
+
+  const hrSalaryByEmp = React.useMemo(()=>salaryMapFromRows(hrSalaryRows||[]), [hrSalaryRows]);
+
+  // Load existing idle data from Supabase
+  const load = async () => {
+    setLoading(true);
+    const monthStart = yearMonth + '-01';
+    try {
+      const { data } = await db.from('employee_idle_days').select('*').eq('month', monthStart);
+      const map = {};
+      (data||[]).forEach(r=>{
+        if (!map[r.employee_id]) map[r.employee_id] = [];
+        map[r.employee_id].push({day:r.day_number, reason:r.reason||'', clientAgreed:r.client_agreed||false, id:r.id});
+      });
+      setIdleData(map);
+    } catch(_) {}
+    setLoading(false);
+  };
+  React.useEffect(()=>{ load(); }, [yearMonth]);
+
+  const toggleIdleDay = (empId, day) => {
+    setIdleData(prev=>{
+      const empDays = prev[empId]||[];
+      const exists = empDays.find(d=>d.day===day);
+      if (exists) {
+        return {...prev, [empId]: empDays.filter(d=>d.day!==day)};
+      } else {
+        return {...prev, [empId]: [...empDays, {day, reason:'', clientAgreed:false}]};
+      }
+    });
+  };
+
+  const updateIdleDay = (empId, day, field, value) => {
+    setIdleData(prev=>{
+      const empDays = (prev[empId]||[]).map(d=>d.day===day?{...d,[field]:value}:d);
+      return {...prev, [empId]: empDays};
+    });
+  };
+
+  const saveIdle = async () => {
+    setSaving(true);
+    const monthStart = yearMonth + '-01';
+    // Delete all existing idle records for this month then re-insert
+    await db.from('employee_idle_days').delete().eq('month', monthStart);
+    const toInsert = [];
+    Object.entries(idleData).forEach(([empId, idleDays])=>{
+      idleDays.forEach(d=>{
+        toInsert.push({
+          employee_id: empId,
+          full_name: employees.find(e=>e.employee_id===empId)?.full_name||empId,
+          month: monthStart,
+          day_number: d.day,
+          reason: d.reason||null,
+          client_agreed: d.clientAgreed||false,
+        });
+      });
+    });
+    if (toInsert.length>0) await db.from('employee_idle_days').insert(toInsert);
+    setSaving(false);
+    alert('✅ Idle days saved.');
+    load();
+  };
+
+  const filteredEmps = employees.filter(e=>!e.is_temp && (
+    !search || e.full_name?.toLowerCase().includes(search.toLowerCase()) || e.employee_id?.toLowerCase().includes(search.toLowerCase())
+  ));
+
+  const [y,mo] = yearMonth.split('-');
+  const monthName = new Date(Number(y),Number(mo)-1,1).toLocaleString('default',{month:'long'});
+
+  return (
+    <div style={{background:'#fff',border:'2px solid #0369a1',borderRadius:'12px',padding:'20px'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'16px',flexWrap:'wrap',gap:'10px'}}>
+        <div>
+          <div style={{fontWeight:800,fontSize:'16px'}}>⏸ Idle Days — {monthName} {y}</div>
+          <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px',maxWidth:'600px'}}>
+            Employees deployed to client site but sitting idle (waiting for welding qualification certs, inspection clearance, etc.).
+            Mark idle days per employee. If <strong>client agreed to pay</strong>, these are treated as normal working days for salary.
+            If not agreed, they are tracked separately for negotiation.
+          </div>
+        </div>
+        <div style={{display:'flex',gap:'8px'}}>
+          <button onClick={saveIdle} disabled={saving} style={{...S.btnPri,background:'#0369a1',opacity:saving?0.6:1}}>
+            {saving?'Saving…':'💾 Save Idle Days'}
+          </button>
+          {onClose && <button onClick={onClose} style={S.btnSec}>✓ Done</button>}
+        </div>
+      </div>
+
+      {/* Info box */}
+      <div style={{background:'#e0f2fe',border:'1px solid #7dd3fc',borderRadius:'8px',padding:'10px 14px',marginBottom:'14px',fontSize:'12.5px',color:'#0c4a6e'}}>
+        <strong>How idle days work:</strong> Click any cell to mark a day as idle for that employee. Enter the reason (e.g. "Waiting for welding cert from BIS"). 
+        Check <strong>"Client Agreed"</strong> if the client has confirmed they will pay for the idle period — these count as normal working days in the salary calculation and are included in client billing.
+        Unconfirmed idle days are tracked but not paid until client approval.
+      </div>
+
+      <div style={{marginBottom:'12px',display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
+        <input placeholder="Search employee…" value={search} onChange={e=>setSearch(e.target.value)}
+          style={{...S.input,width:'220px'}}/>
+        <div style={{display:'flex',gap:'8px',fontSize:'12px',flexWrap:'wrap'}}>
+          {[['#fef3c7','#d97706','Weekend/Holiday (not editable)'],
+            ['#fee2e2','#dc2626','Idle – Client NOT agreed (tracked only)'],
+            ['#dcfce7','#166534','Idle – Client Agreed (paid as normal day)'],
+            ['#fff','#94a3b8','Normal working day']].map(([bg,c,label])=>(
+            <div key={label} style={{display:'flex',alignItems:'center',gap:'5px'}}>
+              <div style={{width:'12px',height:'12px',background:bg,border:'1px solid '+c+'88',borderRadius:'2px'}}/>
+              <span style={{color:'#64748b'}}>{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {loading ? <div style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</div> : (
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11.5px'}}>
+            <thead>
+              <tr style={{background:'#f0f9ff'}}>
+                <th style={{...S.th,position:'sticky',left:0,background:'#f0f9ff',zIndex:10,minWidth:'160px',textAlign:'left'}}>Employee</th>
+                <th style={{...S.th,minWidth:'60px',textAlign:'center'}}>Idle Days</th>
+                {days.map(d=>{
+                  const wd = isWeekend(d);
+                  const ph = isHoliday(d);
+                  return (
+                    <th key={d} style={{...S.th,padding:'4px 2px',minWidth:'28px',textAlign:'center',
+                      background:ph?'#f3e8ff':wd?'#fef3c7':'#f0f9ff',
+                      color:ph?'#7c3aed':wd?'#d97706':'#0369a1',fontSize:'10px'}}>
+                      {d}
+                      <div style={{fontSize:'8px',fontWeight:400,color:ph?'#7c3aed':wd?'#d97706':'#94a3b8'}}>
+                        {getDayName(getDayOfWeek(yearMonth,d)).slice(0,1)}
+                      </div>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredEmps.map(emp=>{
+                const empIdle = idleData[emp.employee_id]||[];
+                const idleCount = empIdle.length;
+                const agreedCount = empIdle.filter(d=>d.clientAgreed).length;
+                return (
+                  <React.Fragment key={emp.employee_id}>
+                    <tr style={{borderBottom:'1px solid #e0f2fe'}}>
+                      <td style={{...S.td,position:'sticky',left:0,background:'#fff',zIndex:5,fontWeight:700,minWidth:'160px',padding:'5px 8px'}}>
+                        <div style={{fontFamily:'ui-monospace,monospace',color:'#0369a1',fontSize:'11px'}}>{emp.employee_id}</div>
+                        <div style={{color:'#0f172a',fontSize:'12px'}}>{emp.full_name}</div>
+                        {idleCount>0 && (
+                          <div style={{fontSize:'10px',marginTop:'2px'}}>
+                            <span style={{color:'#dc2626'}}>{idleCount} idle</span>
+                            {agreedCount>0 && <span style={{color:'#166534',marginLeft:'4px'}}>({agreedCount} agreed)</span>}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{...S.td,textAlign:'center',fontWeight:700,
+                        color:idleCount>0?'#dc2626':'#94a3b8'}}>
+                        {idleCount>0?idleCount:'—'}
+                      </td>
+                      {days.map(d=>{
+                        const off = isOff(d);
+                        const idle = empIdle.find(x=>x.day===d);
+                        const bg = off?(isHoliday(d)?'#f3e8ff':'#fef9ec'):idle?(idle.clientAgreed?'#dcfce7':'#fee2e2'):'#fff';
+                        const cursor = off?'default':'pointer';
+                        return (
+                          <td key={d} onClick={()=>!off&&toggleIdleDay(emp.employee_id,d)}
+                            title={off?'Weekend/Holiday — not editable':idle?`Idle: ${idle.reason||'no reason'} | Client: ${idle.clientAgreed?'✅ Agreed':'❌ Not agreed'}`:'Click to mark as idle'}
+                            style={{padding:'2px',background:bg,cursor,textAlign:'center',border:'1px solid #e0f2fe'}}>
+                            {idle && (
+                              <div style={{fontSize:'9px',fontWeight:700,color:idle.clientAgreed?'#166534':'#dc2626',lineHeight:'1'}}>
+                                {idle.clientAgreed?'✓':'!'}
+                              </div>
+                            )}
+                            {off && !idle && <div style={{fontSize:'8px',color:'#cbd5e1'}}>—</div>}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                    {/* Expanded row for idle day details when employee is selected */}
+                    {selectedEmp===emp.employee_id && empIdle.length>0 && (
+                      <tr>
+                        <td colSpan={totalDays+2} style={{padding:'8px 12px',background:'#f0f9ff',borderBottom:'2px solid #7dd3fc'}}>
+                          <div style={{fontWeight:700,fontSize:'12px',color:'#0369a1',marginBottom:'8px'}}>
+                            Edit Idle Days — {emp.full_name}
+                          </div>
+                          <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+                            {[...empIdle].sort((a,b)=>a.day-b.day).map(idle=>(
+                              <div key={idle.day} style={{background:'#fff',border:'1px solid #7dd3fc',borderRadius:'8px',padding:'8px 12px',minWidth:'200px'}}>
+                                <div style={{fontWeight:700,fontSize:'12px',marginBottom:'6px',color:'#0369a1'}}>
+                                  Day {idle.day} ({getDayName(getDayOfWeek(yearMonth,idle.day))})
+                                </div>
+                                <div style={{marginBottom:'6px'}}>
+                                  <label style={{...S.label,fontSize:'11px'}}>Reason</label>
+                                  <input type="text" value={idle.reason||''} placeholder="e.g. Waiting for welding cert"
+                                    onChange={e=>updateIdleDay(emp.employee_id,idle.day,'reason',e.target.value)}
+                                    style={{...S.input,width:'100%',fontSize:'11.5px',padding:'4px 8px'}}/>
+                                </div>
+                                <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',fontSize:'12px',fontWeight:700,
+                                  color:idle.clientAgreed?'#166534':'#dc2626'}}>
+                                  <input type="checkbox" checked={idle.clientAgreed||false}
+                                    onChange={e=>updateIdleDay(emp.employee_id,idle.day,'clientAgreed',e.target.checked)}/>
+                                  {idle.clientAgreed ? '✅ Client Agreed to Pay' : '❌ Client NOT Agreed'}
+                                </label>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Click row to expand */}
+      <div style={{marginTop:'10px',fontSize:'11.5px',color:'#94a3b8',textAlign:'center'}}>
+        Tip: Click an employee's name row to edit reasons and client agreement for their idle days.
+        <br/>After editing, click <strong>Save Idle Days</strong> to store.
+      </div>
+      <div style={{marginTop:'8px',display:'flex',justifyContent:'center'}}>
+        {filteredEmps.map(emp=>(
+          empIdle(emp)>0 && (
+            <button key={emp.employee_id} onClick={()=>setSelectedEmp(s=>s===emp.employee_id?null:emp.employee_id)}
+              style={{...S.btnSec,fontSize:'12px',padding:'4px 10px',margin:'2px'}}>
+              {emp.full_name.split(' ')[0]} ({(idleData[emp.employee_id]||[]).length})
+            </button>
+          )
+        ))}
+      </div>
+      {/* Quick expand buttons for employees with idle days */}
+      <div style={{marginTop:'8px',display:'flex',gap:'6px',flexWrap:'wrap'}}>
+        {filteredEmps.filter(emp=>(idleData[emp.employee_id]||[]).length>0).map(emp=>(
+          <button key={emp.employee_id} onClick={()=>setSelectedEmp(s=>s===emp.employee_id?null:emp.employee_id)}
+            style={{...S.btnSec,fontSize:'12px',padding:'5px 12px',
+              background:selectedEmp===emp.employee_id?'#0369a1':'#fff',
+              color:selectedEmp===emp.employee_id?'#fff':'#0369a1'}}>
+            ✏️ {emp.full_name.split(' ')[0]} ({(idleData[emp.employee_id]||[]).length} idle)
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Main SalaryPipelineTab ────────────────────────────────────────
+function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
+  const [selectedMonth, setSelectedMonth] = React.useState(()=>{
+    const d = new Date(); d.setMonth(d.getMonth()-1);
+    return d.toISOString().slice(0,7);
+  });
+  const [pipeline, setPipeline] = React.useState([]);
+  const [pipelineLoading, setPipelineLoading] = React.useState(false);
+  const [activePanel, setActivePanel] = React.useState(null); // null | 'calendar' | 'idle' | 'timesheet'
+
+  // Bulk PDF OCR state
+  const [step, setStep] = React.useState('pipeline');
+  const [pdfFile, setPdfFile] = React.useState(null);
+  const [ocrProgress, setOcrProgress] = React.useState('');
+  const [extractedRows, setExtractedRows] = React.useState([]);
+  const [matchedRows, setMatchedRows] = React.useState([]);
+  const [bulkSaving, setBulkSaving] = React.useState(false);
+  const [savedCount, setSavedCount] = React.useState(0);
+  const [errorMsg, setErrorMsg] = React.useState('');
+
+  const hrSalaryByEmp = React.useMemo(()=>salaryMapFromRows(hrSalaryRows||[]), [hrSalaryRows]);
+
+  const loadPipeline = async () => {
+    if (!selectedMonth) return;
+    setPipelineLoading(true);
+    const monthStart = selectedMonth + '-01';
+    const [wpsPaid, actualMonthly, salaryProfiles, wpsMaster, idleRec] = await Promise.all([
+      db.from('wps_salary_monthly').select('employee_id,gross_salary,basic_salary,fixed_allowance,salary_month').eq('salary_month', monthStart),
+      db.from('employee_monthly_costs').select('employee_id,salary,salary_deductions,arrears,remarks').like('month', selectedMonth + '%'),
+      db.from('employee_salary_profiles').select('employee_id,full_name,basic_salary,fixed_allowance,hours_per_day'),
+      db.from('wps_employee_master').select('employee_id,full_name,basic_salary,fixed_allowance,hours_per_day'),
+      db.from('employee_idle_days').select('employee_id,day_number,client_agreed').eq('month', monthStart).catch(()=>({data:[]})),
+    ]);
+    const profileMap = {};
+    (salaryProfiles.data||[]).forEach(r=>{ profileMap[r.employee_id]=r; });
+    (wpsMaster.data||[]).forEach(r=>{ if (!profileMap[r.employee_id]) profileMap[r.employee_id]=r; });
+    Object.values(hrSalaryByEmp).forEach(r=>{ if (!profileMap[r.employee_id]) profileMap[r.employee_id]=r; });
+    const wpsMap = {};
+    (wpsPaid.data||[]).forEach(r=>{ wpsMap[r.employee_id]=r; });
+    const actualMap = {};
+    (actualMonthly.data||[]).forEach(r=>{ actualMap[r.employee_id]=r; });
+    const idleMap = {};
+    (idleRec.data||[]).forEach(r=>{
+      if (!idleMap[r.employee_id]) idleMap[r.employee_id]={total:0,agreed:0};
+      idleMap[r.employee_id].total++;
+      if (r.client_agreed) idleMap[r.employee_id].agreed++;
+    });
+
+    const rows = employees.filter(e=>!e.is_temp).map(e=>{
+      const wps = wpsMap[e.employee_id];
+      const actual = actualMap[e.employee_id];
+      let status = 'not_started';
+      if (wps && actual) status = 'settled';
+      else if (wps) status = 'wps_pending_ts';
+      else if (actual) status = 'actual_no_wps';
+      return { ...e, wps, actual, status,
+        wpsGross: wps ? Number(wps.gross_salary)||0 : null,
+        actualSalary: actual ? Number(actual.salary)||0 : null,
+        profile: profileMap[e.employee_id]||{},
+        idle: idleMap[e.employee_id]||null,
+      };
+    });
+    setPipeline(rows);
+    setPipelineLoading(false);
+  };
+
+  React.useEffect(()=>{ loadPipeline(); }, [selectedMonth]);
+
+  const cal = loadCalendar(selectedMonth);
+  const publicHolidayCount = (cal.publicHolidays||[]).length;
+  const weekendCount = Array.from({length:totalDaysInMonth(selectedMonth)},(_,i)=>i+1)
+    .filter(d=>getDayOfWeek(selectedMonth,d)===(cal.weekendDay??5)).length;
+
+  const readBulkTimesheet = async () => {
+    if (!pdfFile) return;
+    setStep('reading'); setErrorMsg('');
+    setOcrProgress('Sending timesheet to AI… (30–90 seconds for large files)');
+    const [y, m] = selectedMonth.split('-');
+    const monthName = new Date(Number(y),Number(m)-1,1).toLocaleString('default',{month:'long'});
+    const weekendDayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][cal.weekendDay??5];
+    const holidays = (cal.publicHolidays||[]).map(h=>`Day ${h.day} (${h.name})`).join(', ');
+    try {
+      const b64 = await fileToBase64(pdfFile);
+      const mimeType = pdfFile.type || 'application/pdf';
+      setOcrProgress('AI is reading employee names and daily hours…');
+      const prompt = `This is a client timesheet for ${monthName} ${y}.
+It lists employees one below the other. Each row shows hours worked per day for the whole month.
+Values: numbers = hours worked that day (8, 10, 12 etc.), 0/blank/absent/A = absent.
+
+Contract rules:
+- Standard working hours: 8h/day
+- Weekend (rest day) in UAE: ${weekendDayName}s — any hours on ${weekendDayName} = Holiday OT at 1.5x
+${holidays ? `- Public holidays this month: ${holidays} — any hours on these days = Holiday OT at 1.5x` : ''}
+- Normal OT: hours beyond 8h/day on regular working days (×1.25 rate)
+- Idle days: if a cell is marked "idle", "standby", "waiting" or similar — count as 8h for salary purposes
+
+Extract ALL employees. For each output:
+- name: exact name as shown
+- normal_days: count of regular working days (not weekend/holiday, hours > 0)
+- normal_ot_hours: sum of extra hours beyond 8h on regular days
+- holiday_ot_hours: total hours on weekends and public holidays
+- idle_days: count of days marked idle/standby
+- total_days_present: all days with any hours (including idle)
+
+Respond ONLY with a valid JSON array, no explanation, no markdown fences:
+[{"name":"...","normal_days":N,"normal_ot_hours":N,"holiday_ot_hours":N,"idle_days":N,"total_days_present":N},...]`;
+
+      const res = await fetch(CLAUDE_PROXY, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          model:'claude-sonnet-4-6', max_tokens:4000,
+          messages:[{ role:'user', content:[
+            { type: mimeType.startsWith('image/')?'image':'document',
+              source:{ type:'base64', media_type:mimeType, data:b64 } },
+            { type:'text', text:prompt }
+          ]}]
+        })
+      });
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const data = await res.json();
+      const text = (data.content||[]).map(c=>c.text||'').join('');
+      setOcrProgress('Parsing results…');
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) throw new Error('AI did not return valid JSON. Got: ' + text.slice(0,300));
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(parsed)||parsed.length===0) throw new Error('No employees found in timesheet');
+      setExtractedRows(parsed);
+      const matched = parsed.map(row=>{
+        const {emp,score} = bestMatch(row.name, employees.filter(e=>!e.is_temp));
+        return {...row, matchedEmp: score>=0.5?emp:null, matchScore:score, skip:false, override:null};
+      });
+      setMatchedRows(matched);
+      setOcrProgress(''); setStep('matching');
+    } catch(e) {
+      setErrorMsg('Error: '+(e.message||String(e)));
+      setStep('upload'); setOcrProgress('');
+    }
+  };
+
+  const calcSalary = (row, empProfile) => {
+    const monthDays = totalDaysInMonth(selectedMonth);
+    const basic = Number(empProfile?.basic_salary)||0;
+    const allowance = Number(empProfile?.fixed_allowance)||0;
+    const hoursPerDay = Number(empProfile?.hours_per_day)||8;
+    const normalDays = Number(row.normal_days)||0;
+    const normalOT = Number(row.normal_ot_hours)||0;
+    const holidayOT = Number(row.holiday_ot_hours)||0;
+    const dailyRate = basic / monthDays;
+    const hourlyRate = basic / monthDays / hoursPerDay;
+    const basicPay = Math.round(dailyRate * normalDays * 100)/100;
+    const normalOTPay = Math.round(hourlyRate * normalOT * 1.25 * 100)/100;
+    const holidayOTPay = Math.round(hourlyRate * holidayOT * 1.5 * 100)/100;
+    const gross = basicPay + normalOTPay + holidayOTPay + allowance;
+    return {basicPay,normalOTPay,holidayOTPay,allowPay:allowance,gross,monthDays,normalDays,normalOT,holidayOT};
+  };
+
+  const bulkSave = async () => {
+    const toSave = matchedRows.filter(r=>!r.skip&&(r.matchedEmp||r.override));
+    if (!toSave.length){alert('No employees to save.');return;}
+    setBulkSaving(true); setSavedCount(0); setStep('saving');
+    const profileMap={};
+    const [sp,wm]= await Promise.all([
+      db.from('employee_salary_profiles').select('*'),
+      db.from('wps_employee_master').select('employee_id,basic_salary,fixed_allowance,hours_per_day'),
+    ]);
+    (sp.data||[]).forEach(r=>{profileMap[r.employee_id]=r;});
+    (wm.data||[]).forEach(r=>{if(!profileMap[r.employee_id])profileMap[r.employee_id]=r;});
+    Object.values(hrSalaryByEmp).forEach(r=>{if(!profileMap[r.employee_id])profileMap[r.employee_id]=r;});
+    const monthStart=selectedMonth+'-01';
+    const [wpsRes,actualRes]=await Promise.all([
+      db.from('wps_salary_monthly').select('employee_id,gross_salary').eq('salary_month',monthStart),
+      db.from('employee_monthly_costs').select('id,employee_id').like('month',selectedMonth+'%'),
+    ]);
+    const wpsMap={};(wpsRes.data||[]).forEach(r=>{wpsMap[r.employee_id]=Number(r.gross_salary)||0;});
+    const existingActual={};(actualRes.data||[]).forEach(r=>{existingActual[r.employee_id]=r.id;});
+    let saved=0;
+    for(const row of toSave){
+      const emp=row.override?employees.find(e=>e.employee_id===row.override):row.matchedEmp;
+      if(!emp)continue;
+      const profile=profileMap[emp.employee_id]||{};
+      const cal=calcSalary(row,profile);
+      const wpsGross=wpsMap[emp.employee_id]||0;
+      const diff=cal.gross-wpsGross;
+      const arrears=diff>0.01?Math.round(diff*100)/100:0;
+      const deduction=diff<-0.01?Math.round(Math.abs(diff)*100)/100:0;
+      const idleNote = (row.idle_days||0)>0 ? ` | Idle days: ${row.idle_days}` : '';
+      const payload={
+        employee_id:emp.employee_id, full_name:emp.full_name,
+        month:monthStart, salary_type:'prorated',
+        salary:Math.round((cal.gross+arrears)*100)/100,
+        basic_salary:cal.basicPay+cal.normalOTPay+cal.holidayOTPay,
+        fixed_allowance:cal.allowPay,
+        working_days:cal.normalDays, month_days:cal.monthDays,
+        normal_ot_hours:cal.normalOT, holiday_ot_hours:cal.holidayOT,
+        computed_salary:cal.gross, manual_override:false,
+        salary_deductions:deduction, arrears:arrears,
+        arrears_for_month:arrears>0?selectedMonth:null,
+        arrears_reason:arrears>0?`WPS underpay: actual AED ${fmt(cal.gross)} vs WPS AED ${fmt(wpsGross)}`:null,
+        remarks:`Bulk timesheet ${selectedMonth}. Client: ${row.name}.${deduction>0?` WPS overpaid AED ${fmt(deduction)}, recover next.`:''}${idleNote}`,
+        food:0,accommodation:0,transport:0,other:0,recurring_allowance_total:0,
+      };
+      const existId=existingActual[emp.employee_id];
+      if(existId){await db.from('employee_monthly_costs').update(payload).eq('id',existId);}
+      else{await db.from('employee_monthly_costs').upsert(payload,{onConflict:'employee_id,month'});}
+      saved++; setSavedCount(saved);
+    }
+    setBulkSaving(false); await loadPipeline();
+    setStep('pipeline'); setPdfFile(null); setExtractedRows([]); setMatchedRows([]); setErrorMsg('');
+    alert(`✅ Saved actual salary for ${saved} employees.`);
+  };
+
+  const SC={
+    not_started:   {c:'#94a3b8',bg:'#f8fafc',icon:'○',label:'Not Started'},
+    wps_pending_ts:{c:'#d97706',bg:'#fffbeb',icon:'⏳',label:'WPS Paid — Need Timesheet'},
+    actual_no_wps: {c:'#7c3aed',bg:'#faf5ff',icon:'📝',label:'Actual Recorded'},
+    settled:       {c:'#166534',bg:'#f0fdf4',icon:'✅',label:'Settled'},
+  };
+  const counts=React.useMemo(()=>{
+    const c={not_started:0,wps_pending_ts:0,actual_no_wps:0,settled:0};
+    pipeline.forEach(r=>{c[r.status]=(c[r.status]||0)+1;}); return c;
+  },[pipeline]);
+
+  return (
+    <div>
+      {/* ── ALWAYS VISIBLE: Month selector + action bar ── */}
+      <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'12px',padding:'14px 18px',marginBottom:'14px'}}>
+        <div style={{display:'flex',gap:'12px',alignItems:'flex-end',flexWrap:'wrap'}}>
+          <div>
+            <label style={S.label}>Salary Month</label>
+            <input type="month" value={selectedMonth} onChange={e=>{setSelectedMonth(e.target.value);setActivePanel(null);setStep('pipeline');}}
+              style={{...S.input,width:'160px'}}/>
+          </div>
+          <div style={{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'1px'}}>
+            <button onClick={()=>setActivePanel(p=>p==='calendar'?null:'calendar')}
+              style={{...S.btnPri,background:activePanel==='calendar'?'#2563eb':'#eff6ff',color:activePanel==='calendar'?'#fff':'#2563eb',border:'1px solid #2563eb'}}>
+              📅 Month Calendar
+              {publicHolidayCount>0 && <span style={{marginLeft:'6px',background:'#7c3aed',color:'#fff',borderRadius:'10px',padding:'1px 7px',fontSize:'11px'}}>{publicHolidayCount} holidays</span>}
+            </button>
+            <button onClick={()=>setActivePanel(p=>p==='idle'?null:'idle')}
+              style={{...S.btnPri,background:activePanel==='idle'?'#0369a1':'#e0f2fe',color:activePanel==='idle'?'#fff':'#0369a1',border:'1px solid #0369a1'}}>
+              ⏸ Idle Days Tracker
+            </button>
+            <button onClick={()=>{setStep('upload');setActivePanel(null);}}
+              style={{...S.btnPri,background:'#7c3aed'}}>
+              📄 Upload Timesheet PDF
+            </button>
+            <button style={{...S.btnPri,background:'#0f172a'}} onClick={loadPipeline}>🔄 Refresh</button>
+          </div>
+        </div>
+
+        {/* Calendar summary strip */}
+        {!activePanel && (
+          <div style={{marginTop:'10px',display:'flex',gap:'10px',fontSize:'12px',flexWrap:'wrap'}}>
+            <span style={{background:'#fef3c7',color:'#d97706',padding:'3px 10px',borderRadius:'8px',fontWeight:700}}>
+              📅 {weekendCount} weekends
+            </span>
+            {publicHolidayCount>0 && (
+              <span style={{background:'#f3e8ff',color:'#7c3aed',padding:'3px 10px',borderRadius:'8px',fontWeight:700}}>
+                🗓 {publicHolidayCount} public holidays: {(cal.publicHolidays||[]).map(h=>`Day ${h.day} ${h.name}`).join(', ')}
+              </span>
+            )}
+            <span style={{background:'#f0fdf4',color:'#166534',padding:'3px 10px',borderRadius:'8px',fontWeight:700}}>
+              💼 {totalDaysInMonth(selectedMonth)-weekendCount-publicHolidayCount} working days
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* ── PANELS ── */}
+      {activePanel==='calendar' && (
+        <div style={{marginBottom:'14px'}}>
+          <MonthCalendarPanel yearMonth={selectedMonth} onClose={()=>{setActivePanel(null);loadPipeline();}}/>
+        </div>
+      )}
+      {activePanel==='idle' && (
+        <div style={{marginBottom:'14px'}}>
+          <IdleDaysPanel yearMonth={selectedMonth} employees={employees} hrSalaryRows={hrSalaryRows}
+            onClose={()=>{setActivePanel(null);loadPipeline();}}/>
+        </div>
+      )}
+
+      {/* ── PIPELINE OVERVIEW (always visible below panels) ── */}
+      {step==='pipeline' && (
+        <>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'14px'}}>
+            {Object.entries(SC).map(([k,v])=>(
+              <div key={k} style={{background:v.bg,border:'1px solid '+v.c+'44',borderRadius:'10px',padding:'12px 16px'}}>
+                <div style={{fontSize:'22px',fontWeight:800,color:v.c}}>{counts[k]||0}</div>
+                <div style={{fontSize:'11.5px',color:v.c,fontWeight:700}}>{v.icon} {v.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'12px',overflow:'hidden'}}>
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+                <thead>
+                  <tr style={{background:'#f8fafc'}}>
+                    {['Emp ID','Name','Status','Idle Days','WPS Paid','Actual Calc.','Difference'].map(h=>(
+                      <th key={h} style={{...S.th,whiteSpace:'nowrap'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pipelineLoading
+                    ? <tr><td colSpan={7} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                    : pipeline.length===0
+                      ? <tr><td colSpan={7} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No employees</td></tr>
+                      : pipeline.map(row=>{
+                          const sc=SC[row.status];
+                          const diff=(row.actualSalary!=null&&row.wpsGross!=null)?row.actualSalary-row.wpsGross:null;
+                          return (
+                            <tr key={row.employee_id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                              <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{row.employee_id}</td>
+                              <td style={{...S.td,fontWeight:600}}>{row.full_name}</td>
+                              <td style={S.td}><span style={{background:sc.bg,color:sc.c,fontSize:'11px',fontWeight:700,padding:'3px 10px',borderRadius:'10px',whiteSpace:'nowrap'}}>{sc.icon} {sc.label}</span></td>
+                              <td style={{...S.td,textAlign:'center'}}>
+                                {row.idle ? (
+                                  <span style={{fontSize:'11.5px'}}>
+                                    <span style={{color:'#dc2626',fontWeight:700}}>{row.idle.total}</span>
+                                    {row.idle.agreed>0&&<span style={{color:'#166534',marginLeft:'4px'}}>({row.idle.agreed}✓)</span>}
+                                  </span>
+                                ):<span style={{color:'#cbd5e1'}}>—</span>}
+                              </td>
+                              <td style={{...S.td,textAlign:'right',fontWeight:700,color:row.wpsGross!=null?'#0f172a':'#cbd5e1'}}>
+                                {row.wpsGross!=null?'AED '+fmt(row.wpsGross):'—'}</td>
+                              <td style={{...S.td,textAlign:'right',fontWeight:700,color:row.actualSalary!=null?'#166534':'#cbd5e1'}}>
+                                {row.actualSalary!=null?'AED '+fmt(row.actualSalary):'—'}</td>
+                              <td style={{...S.td,textAlign:'right'}}>
+                                {diff!=null?<span style={{fontWeight:800,color:diff>=0?'#166534':'#dc2626'}}>{diff>=0?'▲ +':'▼ '}{fmt(Math.abs(diff))}</span>:<span style={{color:'#cbd5e1'}}>—</span>}
+                              </td>
+                            </tr>
+                          );
+                        })
+                  }
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── UPLOAD PDF ── */}
+      {step==='upload' && (
+        <div style={{background:'#fff',border:'2px solid #7c3aed',borderRadius:'12px',padding:'28px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'20px'}}>
+            <button onClick={()=>setStep('pipeline')} style={S.btnSec}>← Back</button>
+            <div>
+              <div style={{fontWeight:800,fontSize:'16px'}}>📄 Upload Bulk Timesheet — {selectedMonth}</div>
+              <div style={{fontSize:'12px',color:'#64748b'}}>
+                {publicHolidayCount>0
+                  ? `✅ Calendar loaded: ${publicHolidayCount} public holidays + ${weekendCount} weekends will be applied automatically`
+                  : `⚠️ No public holidays set. Go to 📅 Month Calendar first to mark holidays for accurate OT calculation.`}
+              </div>
+            </div>
+          </div>
+          <div style={{background:'#faf5ff',border:'1px solid #d8b4fe',borderRadius:'10px',padding:'16px',marginBottom:'20px',fontSize:'12.5px',color:'#475569'}}>
+            <strong style={{color:'#581c87'}}>What the AI will extract:</strong> All employee names → normal working days → OT hours (×1.25) beyond 8h/day →
+            Weekend & public holiday hours (×1.5) → Idle/standby days if marked.
+            Holiday rules from your <strong>Month Calendar</strong> are passed to the AI automatically.
+          </div>
+          <div style={{marginBottom:'20px'}}>
+            <div style={{border:'2px dashed #d8b4fe',borderRadius:'10px',padding:'30px',textAlign:'center',background:'#faf5ff'}}>
+              <input type="file" accept="application/pdf,image/*" id="bulk-ts-upload" style={{display:'none'}}
+                onChange={e=>{setPdfFile(e.target.files[0]);setErrorMsg('');}}/>
+              <label htmlFor="bulk-ts-upload" style={{cursor:'pointer'}}>
+                <div style={{fontSize:'36px',marginBottom:'8px'}}>📁</div>
+                <div style={{fontWeight:700,color:'#7c3aed',fontSize:'14px',marginBottom:'4px'}}>Click to select timesheet (PDF or image)</div>
+                <div style={{fontSize:'12px',color:'#94a3b8'}}>Client sends one file for all employees — all formats accepted</div>
+              </label>
+              {pdfFile && (
+                <div style={{marginTop:'12px',background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'6px',padding:'8px 12px',display:'inline-block'}}>
+                  <span style={{fontWeight:700,color:'#166534'}}>✅ {pdfFile.name}</span>
+                  <span style={{fontSize:'11px',color:'#64748b',marginLeft:'8px'}}>({(pdfFile.size/1024).toFixed(0)} KB)</span>
+                </div>
+              )}
+            </div>
+          </div>
+          {errorMsg && <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'8px',padding:'12px',marginBottom:'16px',fontSize:'12.5px',color:'#991b1b'}}>⚠️ {errorMsg}</div>}
+          <button onClick={readBulkTimesheet} disabled={!pdfFile}
+            style={{...S.btnPri,background:'#7c3aed',opacity:!pdfFile?0.5:1,padding:'12px 28px',fontSize:'14px'}}>
+            🤖 Read All Employees with AI →
+          </button>
+        </div>
+      )}
+
+      {/* ── READING PROGRESS ── */}
+      {step==='reading' && (
+        <div style={{background:'#fff',border:'2px solid #7c3aed',borderRadius:'12px',padding:'40px',textAlign:'center'}}>
+          <div style={{fontSize:'40px',marginBottom:'12px'}}>🤖</div>
+          <div style={{fontWeight:800,fontSize:'16px',color:'#581c87',marginBottom:'8px'}}>AI is reading the timesheet…</div>
+          <div style={{fontSize:'13px',color:'#64748b',marginBottom:'20px'}}>{ocrProgress}</div>
+          <div style={{width:'200px',height:'6px',background:'#f1f5f9',borderRadius:'3px',margin:'0 auto',overflow:'hidden'}}>
+            <div style={{height:'100%',background:'#7c3aed',animation:'pulsebar 1.5s ease-in-out infinite',borderRadius:'3px',width:'60%'}}/>
+          </div>
+          <style>{`@keyframes pulsebar{0%{transform:translateX(-150%)}100%{transform:translateX(300%)}}`}</style>
+          <div style={{marginTop:'16px',fontSize:'12px',color:'#94a3b8'}}>Large PDFs may take 30–90 seconds. Please keep this page open.</div>
+        </div>
+      )}
+
+      {/* ── NAME MATCHING REVIEW ── */}
+      {step==='matching' && (
+        <div>
+          <div style={{background:'#fff',border:'2px solid #7c3aed',borderRadius:'12px',padding:'20px',marginBottom:'14px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:'10px'}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:'16px',marginBottom:'4px'}}>🔗 Review Name Matches — {extractedRows.length} employees found</div>
+                <div style={{fontSize:'12.5px',color:'#64748b'}}>
+                  The AI extracted employee names from the client's timesheet and auto-matched them to your SATCO list.
+                  Review each match — <span style={{color:'#166534',fontWeight:700}}>green = confident</span>,
+                  <span style={{color:'#d97706',fontWeight:700}}> yellow = check this</span>,
+                  <span style={{color:'#dc2626',fontWeight:700}}> red = no match found</span>.
+                  Use the dropdown to correct any wrong match. Skip employees not in this batch.
+                </div>
+              </div>
+              <div style={{display:'flex',gap:'8px',flexShrink:0}}>
+                <button onClick={()=>setStep('upload')} style={S.btnSec}>← Re-upload</button>
+                <button onClick={bulkSave} style={{...S.btnPri,background:'#166534',padding:'10px 20px'}}>
+                  ✅ Save {matchedRows.filter(r=>!r.skip&&(r.matchedEmp||r.override)).length} Employees
+                </button>
+              </div>
+            </div>
+          </div>
+          <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'12px',overflow:'hidden'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+              <thead>
+                <tr style={{background:'#f8fafc'}}>
+                  {['#','Client Name (PDF)','Normal Days','OT ×1.25 hrs','Holiday OT ×1.5','Idle Days','SATCO Employee Match','Confidence',''].map(h=>(
+                    <th key={h} style={{...S.th,whiteSpace:'nowrap',fontSize:'11.5px'}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {matchedRows.map((row,i)=>{
+                  const pct=Math.round(row.matchScore*100);
+                  const cc=pct>=80?'#166534':pct>=50?'#d97706':'#dc2626';
+                  const cb=pct>=80?'#f0fdf4':pct>=50?'#fffbeb':'#fef2f2';
+                  const resolvedEmp=row.override?employees.find(e=>e.employee_id===row.override):row.matchedEmp;
+                  return (
+                    <tr key={i} style={{borderBottom:'1px solid #f1f5f9',opacity:row.skip?0.35:1,background:row.skip?'#f8fafc':'#fff'}}>
+                      <td style={{...S.td,color:'#94a3b8',width:'28px',fontWeight:600}}>{i+1}</td>
+                      <td style={{...S.td,fontWeight:700}}>{row.name}</td>
+                      <td style={{...S.td,textAlign:'center'}}>{row.normal_days}</td>
+                      <td style={{...S.td,textAlign:'center',color:row.normal_ot_hours>0?'#d97706':'#94a3b8'}}>{row.normal_ot_hours||0}</td>
+                      <td style={{...S.td,textAlign:'center',color:row.holiday_ot_hours>0?'#dc2626':'#94a3b8'}}>{row.holiday_ot_hours||0}</td>
+                      <td style={{...S.td,textAlign:'center',color:row.idle_days>0?'#0369a1':'#94a3b8'}}>{row.idle_days||0}</td>
+                      <td style={{...S.td,minWidth:'220px'}}>
+                        {row.skip ? <span style={{color:'#94a3b8',fontSize:'11px'}}>Skipped</span> : (
+                          <select value={row.override||resolvedEmp?.employee_id||'__none__'}
+                            onChange={e=>{const v=e.target.value; setMatchedRows(rows=>rows.map((r,j)=>j===i?{...r,override:v==='__none__'?null:v,matchedEmp:v==='__none__'?null:r.matchedEmp}:r));}}
+                            style={{...S.input,width:'100%',fontSize:'12px',padding:'4px 8px'}}>
+                            <option value="__none__">— No match / skip —</option>
+                            {employees.filter(e=>!e.is_temp).map(e=>(
+                              <option key={e.employee_id} value={e.employee_id}>{e.employee_id} — {e.full_name}</option>
+                            ))}
+                          </select>
+                        )}
+                      </td>
+                      <td style={{...S.td,textAlign:'center'}}>
+                        {!row.skip&&<span style={{background:cb,color:cc,fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'8px'}}>{pct}%</span>}
+                      </td>
+                      <td style={{...S.td,textAlign:'center'}}>
+                        <button onClick={()=>setMatchedRows(rows=>rows.map((r,j)=>j===i?{...r,skip:!r.skip}:r))}
+                          style={{...S.btnSec,padding:'3px 10px',fontSize:'11.5px',background:row.skip?'#dcfce7':'#fff',color:row.skip?'#166534':'#64748b'}}>
+                          {row.skip?'↩ Restore':'⏭ Skip'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{display:'flex',justifyContent:'flex-end',gap:'10px',marginTop:'14px'}}>
+            <button onClick={()=>setStep('upload')} style={S.btnSec}>← Re-upload</button>
+            <button onClick={bulkSave} style={{...S.btnPri,background:'#166534',padding:'12px 28px',fontSize:'14px'}}>
+              ✅ Save {matchedRows.filter(r=>!r.skip&&(r.matchedEmp||r.override)).length} Employees' Salaries
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── SAVING PROGRESS ── */}
+      {step==='saving' && (
+        <div style={{background:'#fff',border:'2px solid #166534',borderRadius:'12px',padding:'40px',textAlign:'center'}}>
+          <div style={{fontSize:'40px',marginBottom:'12px'}}>💾</div>
+          <div style={{fontWeight:800,fontSize:'16px',color:'#166534',marginBottom:'8px'}}>Saving actual salaries…</div>
+          <div style={{fontSize:'20px',fontWeight:800,color:'#0f172a',marginBottom:'16px'}}>
+            {savedCount} / {matchedRows.filter(r=>!r.skip&&(r.matchedEmp||r.override)).length}
+          </div>
+          <div style={{width:'300px',height:'10px',background:'#f1f5f9',borderRadius:'5px',margin:'0 auto',overflow:'hidden'}}>
+            <div style={{height:'100%',background:'#166534',borderRadius:'5px',transition:'width 0.4s',
+              width:matchedRows.filter(r=>!r.skip&&(r.matchedEmp||r.override)).length>0
+                ?(savedCount/matchedRows.filter(r=>!r.skip&&(r.matchedEmp||r.override)).length*100)+'%':'0%'}}/>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // ── APP ───────────────────────────────────────────────────────────
 function App() {
@@ -5213,7 +6353,7 @@ function App() {
     return ()=>{ alive = false; };
   },[]);
 
-  const tabs=[['dashboard','P&L Dashboard'],['salary_profiles','💼 Salary Master'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['deductions','📋 Deduction Ledger (HR)'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)'],['wps','📋 WPS Report']];
+  const tabs=[['dashboard','P&L Dashboard'],['salary_pipeline','📋 Salary Pipeline'],['salary_profiles','💼 Salary Master'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['deductions','📋 Deduction Ledger (HR)'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)'],['wps','📋 WPS Report']];
 
   if (session===undefined) return null;
   if (!session) return <LoginScreen onLogin={setSession} />;
@@ -5252,6 +6392,7 @@ function App() {
       ) : (
         <>
           {tab==='dashboard'       && <PnlDashboard empMeta={empMeta} onOpenEmployee={(id,name)=>setDetailEmp({id,name})} />}
+          {tab==='salary_pipeline' && <SalaryPipelineTab employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
           {tab==='salary_profiles' && <SalaryProfilesTab employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
           {tab==='deductions'      && <DeductionLedgerTab employees={employees} empMeta={empMeta} />}
           {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date" recoverableSupport
