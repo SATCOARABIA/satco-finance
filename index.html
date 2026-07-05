@@ -595,6 +595,77 @@ function AmountTag({ value }) {
   return <span style={{ fontWeight:800, color: value>=0?'#166534':'#dc2626' }}>{value<0?'-':''}AED {fmt(Math.abs(value))}</span>;
 }
 
+
+function canonEmpId(id) {
+  return String(id || '').trim().toUpperCase();
+}
+function hasMoneyActivity(r) {
+  return ['lifetime_income','lifetime_expense','lifetime_net','lifetime_onboarding_cost','advance_outstanding'].some(k => Math.abs(Number((r||{})[k]) || 0) > 0.004);
+}
+function preferDisplayName(id, candidates=[]) {
+  const clean = (v) => String(v || '').replace(/\s+/g,' ').trim();
+  const opts = candidates.map(clean).filter(Boolean).filter(v => v !== id);
+  if (!opts.length) return id;
+  // Prefer a normal readable HR-style name over all-caps import names.
+  const normal = opts.find(v => /[a-z]/.test(v) && /[A-Z]/.test(v));
+  if (normal) return normal;
+  return opts.sort((a,b)=>b.length-a.length)[0];
+}
+function dedupePnlSummaryRows(rows=[], monthlyRows=[], ctx={}) {
+  const monthlyById = {};
+  (monthlyRows || []).forEach(r => {
+    const id = canonEmpId(r.employee_id);
+    if (!id) return;
+    if (!monthlyById[id]) monthlyById[id] = { income:0, expense:0, net:0, onboarding:0, idle:0 };
+    monthlyById[id].income     += Number(r.total_income) || 0;
+    monthlyById[id].expense    += Number(r.total_expense) || 0;
+    monthlyById[id].net        += Number(r.net_profit_loss) || 0;
+    monthlyById[id].onboarding += Number(r.onboarding_cost) || 0;
+    if ((Number(r.total_income)||0) === 0 && (Number(r.total_expense)||0) > 0) monthlyById[id].idle += 1;
+  });
+
+  const byId = {};
+  (rows || []).forEach(r => {
+    const id = canonEmpId(r.employee_id);
+    if (!id) return;
+    if (!byId[id]) byId[id] = { rows:[], flags:{} };
+    byId[id].rows.push(r);
+    ['is_temp','is_finance_only','is_roster_only','is_hr_only'].forEach(k => { if (r[k]) byId[id].flags[k] = true; });
+  });
+
+  const empNameById = {};
+  (ctx.employees || []).forEach(e => { const id = canonEmpId(e.employee_id); if (id && e.full_name) empNameById[id] = e.full_name; });
+  const hrNameById = {};
+  (ctx.hrSalaryRows || []).forEach(e => { const id = canonEmpId(e.employee_id); if (id && e.full_name) hrNameById[id] = e.full_name; });
+
+  return Object.entries(byId).map(([id, bucket]) => {
+    const list = bucket.rows;
+    const agg = monthlyById[id];
+    const best = [...list].sort((a,b)=>{
+      const score = x => Math.abs(Number(x.lifetime_income)||0) + Math.abs(Number(x.lifetime_expense)||0) + Math.abs(Number(x.lifetime_net)||0);
+      return score(b)-score(a);
+    })[0] || { employee_id:id };
+    const meta = (ctx.empMeta && (ctx.empMeta[id] || ctx.empMeta[best.employee_id])) || {};
+    const temp = (ctx.tempCandMeta && (ctx.tempCandMeta[id] || ctx.tempCandMeta[best.employee_id])) || {};
+    const names = [meta.full_name, empNameById[id], hrNameById[id], temp.full_name, ...list.map(r=>r.full_name)];
+    const out = { ...best, ...bucket.flags, employee_id:id, full_name:preferDisplayName(id, names) };
+
+    if (agg) {
+      out.lifetime_income = Math.round(agg.income*100)/100;
+      out.lifetime_expense = Math.round(agg.expense*100)/100;
+      out.lifetime_net = Math.round(agg.net*100)/100;
+      out.lifetime_onboarding_cost = Math.max(Number(best.lifetime_onboarding_cost)||0, Math.round(agg.onboarding*100)/100);
+      out.idle_months = Math.max(Number(best.idle_months)||0, agg.idle||0);
+    } else if (list.length > 1) {
+      // No monthly rows to recalc from. Do NOT add duplicate rows; keep the most complete record.
+      ['lifetime_income','lifetime_expense','lifetime_net','lifetime_onboarding_cost','advance_outstanding','idle_months'].forEach(k => {
+        out[k] = list.reduce((mx,r)=> Math.abs(Number(r[k])||0) > Math.abs(Number(mx)||0) ? Number(r[k])||0 : mx, Number(out[k])||0);
+      });
+    }
+    return out;
+  }).sort((a,b)=>canonEmpId(a.employee_id).localeCompare(canonEmpId(b.employee_id), undefined, {numeric:true}));
+}
+
 function EmployeePicker({ employees, value, name, onChange }) {
   return (
     <div style={{ display:'flex', gap:'8px' }}>
@@ -4775,15 +4846,15 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     else setTempCandError(null);
     let summaryRows = s.data || [];
     const tcMeta = {};
-    (tempCands.data || []).forEach(t => { if (t.temp_employee_id) tcMeta[t.temp_employee_id] = { full_name: t.candidate_name, position: t.position_display }; });
+    (tempCands.data || []).forEach(t => { const id = canonEmpId(t.temp_employee_id); if (id) tcMeta[id] = { full_name: t.candidate_name, position: t.position_display }; });
     setTempCandMeta(tcMeta);
     // Temp candidates (Visa Processing, not yet a real employee) don't have a row in the
     // employee_pnl_summary view — it's joined off the `employees` table, which they're not in
     // yet by design. If a deposit was logged against their temp ID, synthesize a minimal row so
     // it's actually visible in this table instead of only being folded into the grand totals.
     if (d.data && d.data.length) {
-      const realIds = new Set(summaryRows.map(r => r.employee_id));
-      const depositedTempIds = [...new Set(d.data.map(r => r.employee_id))].filter(id => /T$/i.test(id) && !realIds.has(id));
+      const realIds = new Set(summaryRows.map(r => canonEmpId(r.employee_id)));
+      const depositedTempIds = [...new Set(d.data.map(r => canonEmpId(r.employee_id)))].filter(id => /T$/i.test(id) && !realIds.has(id));
       depositedTempIds.forEach(id => {
         summaryRows = [...summaryRows, {
           employee_id: id, full_name: (tcMeta[id] && tcMeta[id].full_name) || id,
@@ -4800,10 +4871,10 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         db.from('employee_salary_profiles').select('employee_id,full_name'),
         db.from('wps_employee_master').select('employee_id,full_name'),
       ]);
-      const realIds = new Set(summaryRows.map(r => r.employee_id));
+      const realIds = new Set(summaryRows.map(r => canonEmpId(r.employee_id)));
       const financeOnly = {};
-      (spFinance.data||[]).forEach(r=>{ if (r.employee_id && !realIds.has(r.employee_id)) financeOnly[r.employee_id]=r.full_name||r.employee_id; });
-      (wmFinance.data||[]).forEach(r=>{ if (r.employee_id && !realIds.has(r.employee_id)) financeOnly[r.employee_id]=r.full_name||financeOnly[r.employee_id]||r.employee_id; });
+      (spFinance.data||[]).forEach(r=>{ const id=canonEmpId(r.employee_id); if (id && !realIds.has(id)) financeOnly[id]=r.full_name||id; });
+      (wmFinance.data||[]).forEach(r=>{ const id=canonEmpId(r.employee_id); if (id && !realIds.has(id)) financeOnly[id]=r.full_name||financeOnly[id]||id; });
       Object.entries(financeOnly).forEach(([id,name])=>{
         summaryRows = [...summaryRows, {
           employee_id:id, full_name:name,
@@ -4817,9 +4888,9 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     // Fix: The P&L Dashboard must show the complete employee roster, even where there is
     // no Finance entry yet. This makes missing costs/income visible instead of hiding people.
     try {
-      const ids = new Set((summaryRows||[]).map(r=>String(r.employee_id||'')));
+      const ids = new Set((summaryRows||[]).map(r=>canonEmpId(r.employee_id)));
       const addEmptyPnlRow = (id, name, flags={}) => {
-        id = String(id||'').trim();
+        id = canonEmpId(id);
         if (!id || ids.has(id)) return;
         summaryRows = [...summaryRows, {
           employee_id:id, full_name:name || (empMeta[id] && empMeta[id].full_name) || id,
@@ -4834,6 +4905,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       Object.entries(empMeta||{}).forEach(([id,m])=>addEmptyPnlRow(id, (m&&m.full_name)||id, {is_hr_only:true}));
     } catch(_){}
 
+    summaryRows = dedupePnlSummaryRows(summaryRows, m.data || [], { employees, hrSalaryRows, empMeta, tempCandMeta: tcMeta });
     if (summaryRows) setSummary(summaryRows);
     if (m.data) setMonthly(m.data);
     if (d.data) setDeposits(d.data);
@@ -4874,7 +4946,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
 
   const depositMap = useMemo(()=>{
     const m={};
-    deposits.forEach(d=>{m[d.employee_id]=(m[d.employee_id]||0)+(Number(d.amount)||0);});
+    deposits.forEach(d=>{ const id=canonEmpId(d.employee_id); if(id) m[id]=(m[id]||0)+(Number(d.amount)||0); });
     return m;
   },[deposits]);
 
@@ -4893,7 +4965,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   //    like every other recoverable cost type.
   const recoveryMap = useMemo(()=>{
     const m = {};
-    const ensure = (id) => { if (!m[id]) m[id] = { recoverable:0, recovered:0 }; return m[id]; };
+    const ensure = (id) => { id=canonEmpId(id); if (!id) return { recoverable:0, recovered:0 }; if (!m[id]) m[id] = { recoverable:0, recovered:0 }; return m[id]; };
     recoverySrc.visa.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
     recoverySrc.flights.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
     recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
@@ -4939,7 +5011,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   // aggregated from employee_pnl_monthly, which already carries each month's category breakdown.
   const categoryTotals = useMemo(()=>{
     const m = {};
-    const ensure = (id) => { if (!m[id]) m[id] = { visa:0, flights:0, training:0, salary:0, income:0 }; return m[id]; };
+    const ensure = (id) => { id=canonEmpId(id); if (!id) return { visa:0, flights:0, training:0, salary:0, income:0 }; if (!m[id]) m[id] = { visa:0, flights:0, training:0, salary:0, income:0 }; return m[id]; };
     monthly.forEach(r=>{
       const t = ensure(r.employee_id);
       t.visa     += Number(r.visa_cost)||0;
@@ -4952,7 +5024,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   },[monthly]);
 
   const empMonthly = useMemo(()=>
-    [...monthly.filter(r=>r.employee_id===selectedEmp)].sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0),
+    [...monthly.filter(r=>canonEmpId(r.employee_id)===canonEmpId(selectedEmp))].sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0),
     [monthly,selectedEmp]);
 
   const G = summary.reduce((a,r)=>{
@@ -5042,8 +5114,8 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                       // Expense reduces progressively as company recovers visa/onboarding costs from salary deductions
                       const adjExpense=Math.max(0,(r.lifetime_expense||0)-dep-rec.recovered);
                       const adjNet=(r.lifetime_net||0)+2*dep+rec.recovered;
-                      const meta=empMeta&&empMeta[r.employee_id];
-                      const tcMeta=tempCandMeta[r.employee_id];
+                      const meta=empMeta&&(empMeta[r.employee_id]||empMeta[canonEmpId(r.employee_id)]);
+                      const tcMeta=tempCandMeta[canonEmpId(r.employee_id)]||tempCandMeta[r.employee_id];
                       const cat=categoryTotals[r.employee_id]||{visa:0,flights:0,training:0,salary:0,income:0};
                       // rec.recovered already includes deposits received (added once when recoveryMap is built) — this is the single source of truth, no further addition needed.
                       return (
@@ -5078,11 +5150,11 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         )}
       </div>
 
-      {selectedEmp&&empMeta&&empMeta[selectedEmp]&&(
+      {selectedEmp&&empMeta&&(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)])&&(
         <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
-          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot — {empMeta[selectedEmp].full_name}</div>
+          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot — {(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).full_name}</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',fontSize:'12.5px'}}>
-            {[['Position',empMeta[selectedEmp].position],['Nationality',empMeta[selectedEmp].nationality],['Joining Date',empMeta[selectedEmp].joining_date],['Status',empMeta[selectedEmp].status],['Hired From',empMeta[selectedEmp].hired_from],['Supplier / Agent',empMeta[selectedEmp].supplier_name],['Mobilization Date',empMeta[selectedEmp].mobilization_date],['Site / Location',empMeta[selectedEmp].location]].map(([k,v])=>(
+            {[['Position',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).position],['Nationality',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).nationality],['Joining Date',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).joining_date],['Status',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).status],['Hired From',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).hired_from],['Supplier / Agent',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).supplier_name],['Mobilization Date',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).mobilization_date],['Site / Location',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).location]].map(([k,v])=>(
               <div key={k}><div style={{color:'#94a3b8',fontWeight:600}}>{k}</div><div style={{fontWeight:700}}>{v||'—'}</div></div>
             ))}
           </div>
@@ -7142,8 +7214,10 @@ function App() {
       const map = {};
       const add = (r) => {
         if (!r || !r.employee_id) return;
-        if (!map[r.employee_id]) map[r.employee_id] = { employee_id:r.employee_id, full_name:r.full_name || r.employee_id };
-        else if (!map[r.employee_id].full_name && r.full_name) map[r.employee_id].full_name = r.full_name;
+        const id = canonEmpId(r.employee_id);
+        if (!id) return;
+        if (!map[id]) map[id] = { employee_id:id, full_name:r.full_name || id };
+        else if (!map[id].full_name && r.full_name) map[id].full_name = r.full_name;
       };
       (sp.data||[]).forEach(add);
       (wm.data||[]).forEach(add);
@@ -7160,18 +7234,20 @@ function App() {
       let baseEmployees = [];
       const meta = {};
       if (rows && rows.length) {
-        baseEmployees = rows.map(r=>({ employee_id:r.employee_id, full_name:r.full_name || r.employee_id }));
-        rows.forEach(r=>{ meta[r.employee_id] = { ...r, bank_iban:r.iban, allowance:r.fixed_allowance }; });
+        const rowMap = {};
+        rows.forEach(r=>{ const id=canonEmpId(r.employee_id); if(id && !rowMap[id]) rowMap[id] = { ...r, employee_id:id, full_name:r.full_name || id }; });
+        baseEmployees = Object.values(rowMap).map(r=>({ employee_id:r.employee_id, full_name:r.full_name || r.employee_id }));
+        Object.values(rowMap).forEach(r=>{ meta[r.employee_id] = { ...r, bank_iban:r.iban, allowance:r.fixed_allowance }; });
       } else {
         baseEmployees = await localFinanceEmployees();
-        baseEmployees.forEach(e=>{ meta[e.employee_id] = { ...e }; });
+        baseEmployees.forEach(e=>{ const id=canonEmpId(e.employee_id); if(id) meta[id] = { ...e, employee_id:id }; });
       }
 
       // If HR has created the optional assignment bridge, enrich empMeta.
       // Missing/blocked bridge should not break the Finance portal.
       try {
         const { data:md } = await hrDb.from('v_finance_employee_mob_demob').select('*');
-        if (alive && md) md.forEach(m=>{ if (meta[m.employee_id]) meta[m.employee_id] = { ...meta[m.employee_id], ...m }; });
+        if (alive && md) md.forEach(m=>{ const id=canonEmpId(m.employee_id); if (meta[id]) meta[id] = { ...meta[id], ...m, employee_id:id }; });
       } catch (_) {}
 
       // Optional pending Temp IDs from HR hiring pipeline.
@@ -7185,18 +7261,18 @@ function App() {
           setEmployees(baseEmployees);
         } else {
           setTempCandError(null);
-          const existingIds = new Set(baseEmployees.map(e=>String(e.employee_id||'').trim().toLowerCase()));
+          const existingIds = new Set(baseEmployees.map(e=>canonEmpId(e.employee_id).toLowerCase()));
           const tempEntries = (tempCands||[])
             .filter(t=>t.temp_employee_id)
             .map(t=>{
-              const id = String(t.temp_employee_id||'').trim();
+              const id = canonEmpId(t.temp_employee_id);
               const name = String(t.candidate_name||id).trim();
               if (!id) return null;
               meta[id] = { ...(meta[id]||{}), employee_id:id, full_name:name, position:t.position_display||'', status:t.status||'', is_temp:true };
               return { employee_id:id, full_name:name, is_temp:true, status:t.status||'', position:t.position_display||'' };
             })
             .filter(Boolean)
-            .filter(t=>!existingIds.has(String(t.employee_id||'').trim().toLowerCase()));
+            .filter(t=>!existingIds.has(canonEmpId(t.employee_id).toLowerCase()));
           setEmployees([...baseEmployees, ...tempEntries]);
         }
       } catch (e) {
