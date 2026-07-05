@@ -61,8 +61,9 @@
   .drag-scroll.dragging table { cursor:grabbing; }
   .drag-scroll::before { content:'Hold mouse and drag this table left/right'; display:block; font-size:11px; font-weight:800; color:#64748b; padding:6px 10px; background:#f8fafc; border-bottom:1px solid #e2e8f0; }
 
-  .satco-shell { min-height:100vh; display:grid; grid-template-columns:280px minmax(0,1fr); }
+  .satco-shell { min-height:100vh; display:grid; grid-template-columns:minmax(0,1fr); }
   .satco-sidebar {
+    display:none;
     position:sticky; top:0; height:100vh; overflow:auto; padding:18px;
     background:rgba(255,255,255,.84); border-right:1px solid var(--line);
     backdrop-filter: blur(18px);
@@ -126,6 +127,14 @@
     background:#fff; color:#475569; font-weight:900; font-size:12px; cursor:pointer;
   }
   .signout-btn:hover { border-color:#94a3b8; color:#0f172a; }
+
+  .dashboard-home-btn {
+    min-height:34px; padding:7px 13px; border-radius:999px; border:1px solid #bfdbfe;
+    background:#eff6ff; color:#1d4ed8; font-weight:950; font-size:12px; cursor:pointer;
+    box-shadow:0 8px 18px rgba(37,99,235,.08);
+  }
+  .dashboard-home-btn:hover { background:#dbeafe; border-color:#93c5fd; color:#1e40af; }
+
   .mobile-section-picker { display:none; margin:0 0 14px; }
   .mobile-section-picker select { width:100%; padding:12px 14px; border-radius:14px; border:1px solid var(--line); background:#fff; font-weight:800; }
   .guide-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
@@ -3037,6 +3046,7 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   const [sheetReady, setSheetReady] = useState(true);
   const [savingSheet, setSavingSheet] = useState(false);
   const [recoveryCtx, setRecoveryCtx] = useState({});
+  const [salaryAdjustments, setSalaryAdjustments] = useState({});
   const [generating, setGenerating] = useState('');
   const [importingFile, setImportingFile] = useState(false);
   const [hrPullError, setHrPullError] = useState('');
@@ -3082,6 +3092,13 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   };
   const hasUnsavedDraft = Object.keys(overrides || {}).length > 0;
 
+  const prevMonthYm = (ym) => {
+    const [yy, mm] = String(ym || '').split('-').map(Number);
+    if (!yy || !mm) return '';
+    const d = new Date(yy, mm - 2, 1);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  };
+
   const ensureXlsx = () => new Promise((resolve, reject) => {
     if (window.XLSX) return resolve(window.XLSX);
     const existing = document.querySelector('script[data-satco-xlsx="true"]');
@@ -3111,30 +3128,80 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   const findCol = (headers, tests) => headers.findIndex(h => tests.some(t => t.test(cleanKey(h)) || t.test(cleanCell(h).toLowerCase())));
   const firstNonEmpty = (...vals) => vals.find(v => cleanCell(v) !== '') ?? '';
 
+  const excelDateToYm = (v) => {
+    if (v instanceof Date && !isNaN(v)) return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}`;
+    if (typeof v === 'number' && Number.isFinite(v) && v > 20000 && v < 70000) {
+      const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000);
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+    }
+    const s = cleanCell(v);
+    let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+    if (m) return `${m[1]}-${String(Number(m[2])).padStart(2,'0')}`;
+    m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+    if (m) return `${m[3]}-${String(Number(m[2])).padStart(2,'0')}`;
+    m = s.match(/^(\d{1,2})(\d{4})$/); // WPS SCR Salary Month = MMYYYY, e.g. 062026
+    if (m) return `${m[2]}-${String(Number(m[1])).padStart(2,'0')}`;
+    m = s.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[-\s]*(\d{4})\b/i);
+    if (m) {
+      const mm = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].slice(0,3).toLowerCase()) + 1;
+      return `${m[2]}-${String(mm).padStart(2,'0')}`;
+    }
+    return '';
+  };
+
+  const detectSalaryMonthFromAoa = (aoa) => {
+    for (let r=0; r<aoa.length; r++) {
+      const row = aoa[r] || [];
+      for (let c=0; c<row.length; c++) {
+        const cell = cleanCell(row[c]).toLowerCase();
+        if (/^month:?$/.test(cell) || cell === 'salary month mmyyyy') {
+          const ym = excelDateToYm(row[c+1]);
+          if (ym) return ym;
+        }
+        if (cell === 'salary from') {
+          for (let rr=r+1; rr<Math.min(aoa.length, r+8); rr++) {
+            const ym = excelDateToYm((aoa[rr]||[])[c]);
+            if (ym) return ym;
+          }
+        }
+      }
+      if (cleanCell(row[0]).toUpperCase() === 'SCR') {
+        const ym = excelDateToYm(row[5]);
+        if (ym) return ym;
+      }
+    }
+    return '';
+  };
+
   const matchEmployeeForImport = ({employee_id, full_name, labour_card_no, iban}) => {
     const id = cleanCell(employee_id);
-    if (id) return { employee_id:id, full_name:cleanCell(full_name)||id, confidence:1, method:'Employee code' };
+    if (id) {
+      const byId = (employees||[]).find(e => cleanCell(e.employee_id).toLowerCase() === id.toLowerCase());
+      return { employee_id:byId?.employee_id || id, full_name:byId?.full_name || cleanCell(full_name)||id, confidence:byId?1:0.90, method:byId?'Employee code':'Employee code from file' };
+    }
     const ib = normIban(iban);
     if (ib) {
       const byIban = (master||[]).find(m => normIban(m.iban) === ib) || null;
-      if (byIban) return { employee_id:byIban.employee_id, full_name:byIban.full_name||full_name||byIban.employee_id, confidence:0.96, method:'IBAN' };
+      if (byIban) return { employee_id:byIban.employee_id, full_name:byIban.full_name||full_name||byIban.employee_id, confidence:0.98, method:'IBAN' };
     }
     const lc = cleanCell(labour_card_no).replace(/\D/g,'');
     if (lc) {
       const byLc = (master||[]).find(m => cleanCell(m.labour_card_no).replace(/\D/g,'') === lc) || null;
-      if (byLc) return { employee_id:byLc.employee_id, full_name:byLc.full_name||full_name||byLc.employee_id, confidence:0.94, method:'Labour card' };
+      if (byLc) return { employee_id:byLc.employee_id, full_name:byLc.full_name||full_name||byLc.employee_id, confidence:0.96, method:'Labour card' };
     }
     const nm = cleanCell(full_name);
     if (nm) {
-      const exact = (employees||[]).filter(e=>!e.is_temp && cleanCell(e.full_name).toLowerCase() === nm.toLowerCase());
-      if (exact.length === 1) return { employee_id:exact[0].employee_id, full_name:exact[0].full_name, confidence:0.92, method:'Exact name' };
-      const {emp, score} = bestMatch(nm, (employees||[]).filter(e=>!e.is_temp));
-      if (emp && score >= 0.68) return { employee_id:emp.employee_id, full_name:emp.full_name, confidence:score, method:'Name match' };
+      const live = (employees||[]).filter(e=>!e.is_temp);
+      const exact = live.filter(e=>cleanCell(e.full_name).toLowerCase() === nm.toLowerCase());
+      if (exact.length === 1) return { employee_id:exact[0].employee_id, full_name:exact[0].full_name, confidence:0.94, method:'Exact name' };
+      const {emp, score} = bestMatch(nm, live);
+      if (emp && score >= 0.58) return { employee_id:emp.employee_id, full_name:emp.full_name, confidence:score, method:'Name match' };
     }
     return null;
   };
 
   const parseSalarySheetAoa = (aoa) => {
+    const fileMonth = detectSalaryMonthFromAoa(aoa);
     const headerRow = aoa.findIndex(row => row && row.some(c=>/emp\s*(code|no\.?)/i.test(cleanCell(c))) && row.some(c=>/gross\s*salary|bank\s*deposit|net\s*amount/i.test(cleanCell(c))));
     if (headerRow < 0) return [];
     const headers = aoa[headerRow].map(cleanCell);
@@ -3167,31 +3234,37 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       if (!rawId && !name) continue;
       if (/^total/i.test(rawId) || /^total/i.test(name)) continue;
       const matched = matchEmployeeForImport({employee_id:rawId, full_name:name});
-      if (!matched) { out.push({unmatched:true, source_name:name, source_employee_id:rawId}); continue; }
-      const gross = numCell(grossCol>=0 ? row[grossCol] : 0);
-      const bank = numCell(bankDepositCol>=0 ? row[bankDepositCol] : 0);
-      const basicPay = numCell(basicPayCol>=0 ? row[basicPayCol] : 0);
-      const normalOtPay = numCell(normalOtPayCol>=0 ? row[normalOtPayCol] : 0);
-      const holidayOtPay = numCell(holidayOtPayCol>=0 ? row[holidayOtPayCol] : 0);
-      const allowPay = numCell(allowancePayCol>=0 ? row[allowancePayCol] : 0);
-      const net = bank || Math.max(0, gross - numCell(deductionCol>=0 ? row[deductionCol] : 0));
-      const wpsBasic = Math.max(0, Math.round(Math.min(net || basicPay, basicPay || net)));
-      const wpsOtAllowance = Math.max(0, Math.round((net || gross) - wpsBasic));
+      if (!matched) { out.push({unmatched:true, source_type:'internal_salary_sheet', source_name:name, source_employee_id:rawId}); continue; }
+      const gross = money(numCell(grossCol>=0 ? row[grossCol] : 0));
+      const arrears = money(numCell(arrearsCol>=0 ? row[arrearsCol] : 0));
+      const deductions = money(numCell(deductionCol>=0 ? row[deductionCol] : 0));
+      const wpsPaid = money(numCell(bankDepositCol>=0 ? row[bankDepositCol] : 0));
+      const actualGross = money(gross + arrears);
+      const actualNet = money(actualGross - deductions);
+      const carryForward = money(actualNet - wpsPaid);
+      const action = carryForward > 0
+        ? `Pay arrears AED ${fmt(carryForward)} in next salary`
+        : carryForward < 0
+          ? `Recover/deduct AED ${fmt(Math.abs(carryForward))} in next salary`
+          : 'No carry forward';
       out.push({
+        source_type:'internal_salary_sheet', salary_month:fileMonth,
         employee_id:matched.employee_id, full_name:matched.full_name || name || matched.employee_id,
         craft: craftCol>=0 ? cleanCell(row[craftCol]) : '', match_method:matched.method, match_confidence:matched.confidence,
         basic_salary:numCell(basicSalaryCol>=0 ? row[basicSalaryCol] : 0), fixed_allowance:numCell(fixedAllowanceCol>=0 ? row[fixedAllowanceCol] : 0),
         working_days:numCell(workingCol>=0 ? row[workingCol] : 0), normal_ot_hours:numCell(normalOtCol>=0 ? row[normalOtCol] : 0), holiday_ot_hours:numCell(holidayOtCol>=0 ? row[holidayOtCol] : 0),
-        basic_pay:basicPay, normal_ot_pay:normalOtPay, holiday_ot_pay:holidayOtPay, allowance_pay:allowPay,
-        food_allowance_pay:numCell(foodCol>=0 ? row[foodCol] : 0), gross_salary:gross, arrears:numCell(arrearsCol>=0 ? row[arrearsCol] : 0),
-        deduction_total:numCell(deductionCol>=0 ? row[deductionCol] : 0), net_salary:net, wps_basic:wpsBasic, wps_ot_allowance:wpsOtAllowance,
-        remarks:firstNonEmpty(remarkCol>=0 ? row[remarkCol] : '', `Imported salary sheet · ${matched.method}`),
+        basic_pay:numCell(basicPayCol>=0 ? row[basicPayCol] : 0), normal_ot_pay:numCell(normalOtPayCol>=0 ? row[normalOtPayCol] : 0), holiday_ot_pay:numCell(holidayOtPayCol>=0 ? row[holidayOtPayCol] : 0), allowance_pay:numCell(allowancePayCol>=0 ? row[allowancePayCol] : 0),
+        food_allowance_pay:numCell(foodCol>=0 ? row[foodCol] : 0), gross_salary:actualGross, actual_gross_salary:actualGross, actual_net_salary:actualNet,
+        arrears, deduction_total:deductions, net_salary:actualNet, wps_paid_total:wpsPaid, wps_basic:wpsPaid, wps_ot_allowance:0,
+        carry_forward:carryForward, next_month_action:action,
+        remarks:firstNonEmpty(remarkCol>=0 ? row[remarkCol] : '', `Imported HR actual salary sheet · ${matched.method}. WPS paid AED ${fmt(wpsPaid)}; actual payable AED ${fmt(actualNet)}; ${action}.`),
       });
     }
     return out;
   };
 
   const parseWpsAoa = (aoa) => {
+    const fileMonth = detectSalaryMonthFromAoa(aoa);
     const out=[];
     for (let r=0; r<aoa.length; r++) {
       const row = aoa[r] || [];
@@ -3200,85 +3273,165 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const routing = cleanCell(row[2]).replace(/\D/g,'');
       const iban = normIban(row[3]);
       const name = cleanCell(row[10]);
-      const basic = numCell(row[7]);
-      const otAllow = numCell(row[8]);
+      const basic = money(numCell(row[7]));
+      const otAllow = money(numCell(row[8]));
       const days = numCell(row[6]);
+      const paidTotal = money(basic + otAllow);
       const matched = matchEmployeeForImport({full_name:name, labour_card_no:labour, iban});
-      if (!matched) { out.push({unmatched:true, source_name:name, labour_card_no:labour, iban}); continue; }
+      if (!matched) { out.push({unmatched:true, source_type:'bank_wps', source_name:name, labour_card_no:labour, iban}); continue; }
       out.push({
+        source_type:'bank_wps', salary_month:fileMonth,
         employee_id:matched.employee_id, full_name:matched.full_name || name || matched.employee_id,
         labour_card_no:labour, bank_routing:routing, iban, match_method:matched.method, match_confidence:matched.confidence,
         salary_type:'fixed', working_days:days, basic_salary:basic, fixed_allowance:otAllow,
-        basic_pay:basic, allowance_pay:otAllow, gross_salary:basic+otAllow, net_salary:basic+otAllow,
-        wps_basic:basic, wps_ot_allowance:otAllow, deduction_total:0, remarks:`Imported WPS bank file · ${matched.method}`,
+        basic_pay:basic, allowance_pay:otAllow, gross_salary:paidTotal, net_salary:paidTotal,
+        wps_basic:basic, wps_ot_allowance:otAllow, wps_paid_total:paidTotal, deduction_total:0,
+        remarks:`Imported Bank WPS file · ${matched.method}. This is the amount already sent to the bank, not the final actual salary.`,
       });
     }
     return out;
   };
 
-  const importSalaryOrWpsExcel = async (file) => {
-    if (!file) return;
+  const mergeImportRows = (rows) => {
+    const byEmp = {};
+    rows.forEach(r => {
+      if (!r.employee_id) return;
+      const ex = byEmp[r.employee_id] || {};
+      const wpsPaidExisting = money(ex.wps_paid_total || (numCell(ex.wps_basic)+numCell(ex.wps_ot_allowance)) || 0);
+      if (r.source_type === 'bank_wps') {
+        byEmp[r.employee_id] = {
+          ...ex,
+          employee_id:r.employee_id, full_name:ex.full_name || r.full_name,
+          labour_card_no:r.labour_card_no || ex.labour_card_no, bank_routing:r.bank_routing || ex.bank_routing, iban:r.iban || ex.iban,
+          wps_basic:r.wps_basic || 0, wps_ot_allowance:r.wps_ot_allowance || 0, wps_paid_total:r.wps_paid_total || 0,
+          working_days:ex.working_days || r.working_days || 0,
+          basic_salary:ex.basic_salary || 0, fixed_allowance:ex.fixed_allowance || 0,
+          gross_salary:ex.actual_gross_salary || ex.gross_salary || r.wps_paid_total || 0,
+          net_salary:ex.actual_net_salary || ex.net_salary || r.wps_paid_total || 0,
+          source_type:ex.source_type === 'internal_salary_sheet' ? 'combined' : 'bank_wps',
+          remarks: ex.source_type === 'internal_salary_sheet' ? `${ex.remarks || 'Imported HR actual salary sheet'} | WPS bank paid AED ${fmt(r.wps_paid_total || 0)}.` : r.remarks,
+        };
+      } else {
+        const wpsPaid = money(r.wps_paid_total || wpsPaidExisting || 0);
+        const actualNet = money(r.actual_net_salary ?? r.net_salary ?? 0);
+        const carry = money(actualNet - wpsPaid);
+        const action = carry > 0 ? `Pay arrears AED ${fmt(carry)} in next salary` : carry < 0 ? `Recover/deduct AED ${fmt(Math.abs(carry))} in next salary` : 'No carry forward';
+        byEmp[r.employee_id] = {
+          ...ex,
+          ...r,
+          source_type: ex.source_type === 'bank_wps' ? 'combined' : 'internal_salary_sheet',
+          wps_basic: ex.wps_basic || r.wps_basic || wpsPaid,
+          wps_ot_allowance: ex.wps_ot_allowance || r.wps_ot_allowance || 0,
+          wps_paid_total:wpsPaid,
+          carry_forward:carry,
+          next_month_action:action,
+          remarks:`Imported HR actual salary sheet · ${r.match_method || 'matched'}. WPS paid AED ${fmt(wpsPaid)}; actual payable AED ${fmt(actualNet)}; ${action}.`,
+        };
+      }
+    });
+    return Object.values(byEmp);
+  };
+
+  const importSalaryOrWpsExcel = async (file, importMode='auto') => {
+    if (!file || importingFile) return;
     setImportingFile(true);
     try {
       const XLSXLib = await ensureXlsx();
       const buf = await file.arrayBuffer();
       const wb = XLSXLib.read(buf, {type:'array', cellDates:true, raw:true});
       let parsed=[];
+      let detectedMonth='';
       for (const sh of wb.SheetNames) {
         const aoa = XLSXLib.utils.sheet_to_json(wb.Sheets[sh], {header:1, defval:null, raw:true});
-        parsed = parsed.concat(parseSalarySheetAoa(aoa));
-        parsed = parsed.concat(parseWpsAoa(aoa));
+        detectedMonth = detectedMonth || detectSalaryMonthFromAoa(aoa);
+        if (importMode === 'internal_salary_sheet' || importMode === 'auto') parsed = parsed.concat(parseSalarySheetAoa(aoa));
+        if (importMode === 'bank_wps' || importMode === 'auto') parsed = parsed.concat(parseWpsAoa(aoa));
       }
       const unmatched = parsed.filter(r=>r.unmatched);
       const rows = parsed.filter(r=>!r.unmatched && r.employee_id);
       if (!rows.length) {
-        alert('No salary/WPS rows could be read. Please upload the Salary Sheet or WPS Excel file generated by this portal.');
+        alert('No salary/WPS rows could be read. Use “Import Bank WPS file” for the bank .xls file or “Import HR Salary Sheet” for the internal salary sheet.');
         setImportingFile(false); return;
       }
-      const salaryMonth = firstOfMonth(month);
-      const dedup = {};
-      rows.forEach(r => { dedup[r.employee_id] = {...(dedup[r.employee_id]||{}), ...r}; });
-      const cleanRows = Object.values(dedup);
-      const salaryPayload = cleanRows.map(r => ({
-        employee_id:r.employee_id, full_name:r.full_name || r.employee_id, labour_card_no:r.labour_card_no || null, bank_routing:r.bank_routing || null, iban:r.iban || null,
-        salary_month:salaryMonth, salary_type:r.salary_type || 'fixed', basic_salary:r.basic_salary || 0, fixed_allowance:r.fixed_allowance || 0,
-        hourly_rate:0, hours_per_day:8, contract_days_per_week:6, working_days:r.working_days || 0, hours_worked:0,
-        normal_ot_hours:r.normal_ot_hours || 0, holiday_ot_hours:r.holiday_ot_hours || 0, extra_allowance:r.arrears || 0, overtime_amount:0,
-        food_allowance:0, food_allowance_pay:r.food_allowance_pay || 0, hourly_pay:0, basic_pay:r.basic_pay || r.wps_basic || 0,
-        normal_ot_pay:r.normal_ot_pay || 0, holiday_ot_pay:r.holiday_ot_pay || 0, allowance_pay:r.allowance_pay || r.wps_ot_allowance || 0,
-        gross_salary:r.gross_salary || r.net_salary || 0, finance_recoverable:0, finance_recovered_before:0, finance_deposits:0, finance_balance_before:0,
-        deduction_auto:0, deduction_manual:r.deduction_total || 0, deduction_total:r.deduction_total || 0,
-        net_salary:r.net_salary || r.gross_salary || 0, wps_basic:r.wps_basic || r.basic_pay || 0, wps_ot_allowance:r.wps_ot_allowance || 0,
-        remarks:r.remarks || 'Imported Excel salary/WPS file', saved_to_monthly_costs:true, updated_at:new Date().toISOString(),
-      }));
-      const masterPayload = cleanRows.map(r => ({
-        employee_id:r.employee_id, full_name:r.full_name || r.employee_id,
-        ...(r.labour_card_no ? {labour_card_no:r.labour_card_no} : {}),
-        ...(r.bank_routing ? {bank_routing:r.bank_routing} : {}),
-        ...(r.iban ? {iban:r.iban} : {}),
-        ...(r.basic_salary ? {basic_salary:r.basic_salary} : {}),
-        ...(r.fixed_allowance ? {fixed_allowance:r.fixed_allowance} : {}),
-        active:true, updated_at:new Date().toISOString(),
-      }));
-      const monthlyPayload = cleanRows.map(r => ({
-        employee_id:r.employee_id, full_name:r.full_name || r.employee_id, month:salaryMonth,
-        salary_type:'wps_imported', salary:r.gross_salary || r.net_salary || 0,
-        food:r.food_allowance_pay || 0, food_allowance_pay:r.food_allowance_pay || 0, accommodation:0, transport:0, other:0,
-        remarks:(r.remarks || 'Imported salary/WPS Excel') + '. Net WPS: AED ' + fmt(r.net_salary || r.gross_salary || 0),
-        salary_deductions:r.deduction_total || 0, hours_worked:0, hourly_rate:0,
-        basic_salary:r.basic_salary || 0, fixed_allowance:r.fixed_allowance || 0, hours_per_day:8, contract_days_per_week:6,
-        working_days:r.working_days || 0, month_days:daysInMonthFn(...month.split('-').map(Number)),
-        normal_ot_hours:r.normal_ot_hours || 0, holiday_ot_hours:r.holiday_ot_hours || 0,
-        computed_salary:r.gross_salary || r.net_salary || 0, manual_override:false, recurring_allowance_total:0,
-      }));
+      const cleanRows = mergeImportRows(rows);
+      const fileMonth = detectedMonth || cleanRows.find(r=>r.salary_month)?.salary_month || '';
+      let targetMonth = fileMonth || month;
+      if (fileMonth && fileMonth !== month) {
+        const ok = window.confirm(`This file appears to be for ${fileMonth}, but the portal is currently open at ${month}.\n\nImport into ${fileMonth}?`);
+        if (!ok) { setImportingFile(false); return; }
+        setMonth(fileMonth);
+      }
+      const modeLabel = importMode === 'bank_wps' ? 'Bank WPS file' : importMode === 'internal_salary_sheet' ? 'HR actual salary sheet' : 'salary/WPS file';
+      const wpsCount = cleanRows.filter(r=>r.source_type==='bank_wps' || r.source_type==='combined').length;
+      const actualCount = cleanRows.filter(r=>r.source_type==='internal_salary_sheet' || r.source_type==='combined').length;
+      const totalWpsPaid = cleanRows.reduce((s,r)=>s+numCell(r.wps_paid_total || r.wps_basic || 0)+numCell(r.wps_ot_allowance && !r.wps_paid_total ? r.wps_ot_allowance : 0),0);
+      const totalActual = cleanRows.reduce((s,r)=>s+numCell(r.actual_net_salary ?? r.net_salary ?? 0),0);
+      const proceed = window.confirm(`Ready to import ${cleanRows.length} employee row(s) for ${targetMonth}.\n\nType: ${modeLabel}\nWPS bank-paid rows: ${wpsCount}\nActual salary rows: ${actualCount}\nWPS paid total: AED ${fmt(totalWpsPaid)}\nActual payable total: AED ${fmt(totalActual)}\n\nContinue?`);
+      if (!proceed) { setImportingFile(false); return; }
+
+      const salaryMonth = firstOfMonth(targetMonth);
+      const [yy,mm] = targetMonth.split('-').map(Number);
+      const salaryPayload = cleanRows.map(r => {
+        const isActual = r.source_type === 'internal_salary_sheet' || r.source_type === 'combined';
+        const wpsPaid = money(r.wps_paid_total || ((numCell(r.wps_basic)||0) + (numCell(r.wps_ot_allowance)||0)) || r.net_salary || 0);
+        const actualGross = money(isActual ? (r.actual_gross_salary ?? r.gross_salary ?? 0) : wpsPaid);
+        const actualNet = money(isActual ? (r.actual_net_salary ?? r.net_salary ?? actualGross) : wpsPaid);
+        const carry = money(isActual ? actualNet - wpsPaid : 0);
+        const action = isActual ? (carry > 0 ? `Pay arrears AED ${fmt(carry)} in next salary` : carry < 0 ? `Recover/deduct AED ${fmt(Math.abs(carry))} in next salary` : 'No carry forward') : 'Awaiting actual timesheet/salary sheet';
+        return {
+          employee_id:r.employee_id, full_name:r.full_name || r.employee_id, labour_card_no:r.labour_card_no || null, bank_routing:r.bank_routing || null, iban:r.iban || null,
+          salary_month:salaryMonth, salary_type:r.salary_type || 'fixed', basic_salary:r.basic_salary || r.basic_pay || 0, fixed_allowance:r.fixed_allowance || 0,
+          hourly_rate:0, hours_per_day:8, contract_days_per_week:6, working_days:r.working_days || 0, hours_worked:0,
+          normal_ot_hours:r.normal_ot_hours || 0, holiday_ot_hours:r.holiday_ot_hours || 0, extra_allowance:r.arrears || 0, overtime_amount:0,
+          food_allowance:0, food_allowance_pay:r.food_allowance_pay || 0, hourly_pay:0, basic_pay:r.basic_pay || r.wps_basic || 0,
+          normal_ot_pay:r.normal_ot_pay || 0, holiday_ot_pay:r.holiday_ot_pay || 0, allowance_pay:r.allowance_pay || r.wps_ot_allowance || 0,
+          gross_salary:actualGross, finance_recoverable:0, finance_recovered_before:0, finance_deposits:0, finance_balance_before:0,
+          deduction_auto:0, deduction_manual:r.deduction_total || 0, deduction_total:r.deduction_total || 0,
+          net_salary:actualNet, wps_basic:r.wps_basic || wpsPaid, wps_ot_allowance:r.wps_ot_allowance || 0,
+          remarks:r.remarks || `${modeLabel}. WPS paid AED ${fmt(wpsPaid)}; actual payable AED ${fmt(actualNet)}; ${action}.`, saved_to_monthly_costs:true, updated_at:new Date().toISOString(),
+        };
+      });
+      const masterPayload = cleanRows.map(r => {
+        const isBankOnly = r.source_type === 'bank_wps';
+        const obj = { employee_id:r.employee_id, full_name:r.full_name || r.employee_id, active:true, updated_at:new Date().toISOString() };
+        if (r.labour_card_no) obj.labour_card_no = r.labour_card_no;
+        if (r.bank_routing) obj.bank_routing = r.bank_routing;
+        if (r.iban) obj.iban = r.iban;
+        // WPS bank file is a payment instruction, not the contract master. Do not overwrite salary master from bank file.
+        if (!isBankOnly) {
+          if (numCell(r.basic_salary)) obj.basic_salary = r.basic_salary;
+          if (numCell(r.fixed_allowance)) obj.fixed_allowance = r.fixed_allowance;
+        }
+        return obj;
+      });
+      const monthlyPayload = cleanRows.map(r => {
+        const isActual = r.source_type === 'internal_salary_sheet' || r.source_type === 'combined';
+        const wpsPaid = money(r.wps_paid_total || ((numCell(r.wps_basic)||0) + (numCell(r.wps_ot_allowance)||0)) || r.net_salary || 0);
+        const actualGross = money(isActual ? (r.actual_gross_salary ?? r.gross_salary ?? 0) : wpsPaid);
+        const actualNet = money(isActual ? (r.actual_net_salary ?? r.net_salary ?? actualGross) : wpsPaid);
+        const carry = money(isActual ? actualNet - wpsPaid : 0);
+        const action = isActual ? (carry > 0 ? `Pay arrears AED ${fmt(carry)} in next salary` : carry < 0 ? `Recover/deduct AED ${fmt(Math.abs(carry))} in next salary` : 'No carry forward') : 'Provisional WPS paid; actual salary pending timesheet.';
+        return {
+          employee_id:r.employee_id, full_name:r.full_name || r.employee_id, month:salaryMonth,
+          salary_type:isActual ? 'actual_salary_sheet' : 'wps_bank_paid_provisional', salary:actualGross,
+          food:r.food_allowance_pay || 0, food_allowance_pay:r.food_allowance_pay || 0, accommodation:0, transport:0, other:0,
+          remarks:`${isActual ? 'Actual HR salary sheet' : 'Bank WPS file'} imported. WPS paid AED ${fmt(wpsPaid)}; actual payable AED ${fmt(actualNet)}; ${action}`,
+          salary_deductions:r.deduction_total || 0, hours_worked:0, hourly_rate:0,
+          basic_salary:r.basic_salary || 0, fixed_allowance:r.fixed_allowance || 0, hours_per_day:8, contract_days_per_week:6,
+          working_days:r.working_days || 0, month_days:daysInMonthFn(yy, mm),
+          normal_ot_hours:r.normal_ot_hours || 0, holiday_ot_hours:r.holiday_ot_hours || 0,
+          computed_salary:actualGross, manual_override:false, recurring_allowance_total:0,
+        };
+      });
       const mUp = await db.from('wps_employee_master').upsert(masterPayload, { onConflict:'employee_id' });
       if (mUp.error) throw new Error('Master update failed: ' + mUp.error.message);
       const sUp = await db.from('wps_salary_monthly').upsert(salaryPayload, { onConflict:'employee_id,salary_month' });
       if (sUp.error) throw new Error('WPS monthly import failed: ' + sUp.error.message);
       const pUp = await db.from('employee_monthly_costs').upsert(monthlyPayload, { onConflict:'employee_id,month' });
-      if (pUp.error) alert('Imported WPS sheet, but P&L monthly sync failed: ' + pUp.error.message);
+      if (pUp.error) alert('Imported WPS/salary sheet, but P&L monthly sync failed: ' + pUp.error.message);
       await loadMaster(); await loadMonthlySheet(); await loadRecoveryContext();
-      alert(`Imported ${cleanRows.length} employee row(s) for ${month}.` + (unmatched.length ? `\n${unmatched.length} row(s) could not be matched by Employee Code / IBAN / Labour Card / Name and were skipped.` : ''));
+      const skipped = unmatched.length ? `\n${unmatched.length} row(s) could not be matched by Employee Code / IBAN / Labour Card / Name and were skipped.` : '';
+      alert(`Imported ${cleanRows.length} employee row(s) for ${targetMonth}.\n\nExcel import completed. Portal-generated WPS/Salary Sheet is the default process, but Excel upload remains available for any month whenever HR needs to correct, migrate, or capture an externally prepared file.${skipped}`);
     } catch(e) {
       alert('Import failed: ' + (e.message || String(e)));
     }
@@ -3369,8 +3522,49 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     setRecoveryCtx(m);
   };
 
+  const loadSalaryAdjustments = async () => {
+    if (!month) return;
+    const prevYm = prevMonthYm(month);
+    if (!prevYm) { setSalaryAdjustments({}); return; }
+    const prevStart = prevYm + '-01';
+    try {
+      const [wpsRes, actualRes] = await Promise.all([
+        db.from('wps_salary_monthly')
+          .select('employee_id,gross_salary,net_salary,wps_basic,wps_ot_allowance,remarks')
+          .eq('salary_month', prevStart),
+        db.from('employee_monthly_costs')
+          .select('employee_id,salary_type,salary,computed_salary,salary_deductions,arrears,remarks')
+          .like('month', prevYm + '%')
+      ]);
+      const wpsMap = {};
+      (wpsRes.data || []).forEach(r => {
+        wpsMap[r.employee_id] = money(r.net_salary || r.gross_salary || ((Number(r.wps_basic)||0) + (Number(r.wps_ot_allowance)||0)));
+      });
+      const out = {};
+      (actualRes.data || []).forEach(r => {
+        const st = String(r.salary_type || '').toLowerCase();
+        if (st.includes('wps_bank') || st.includes('wps_salary_sheet')) return;
+        const wpsPaid = money(wpsMap[r.employee_id] || 0);
+        const actual = money(r.computed_salary || r.salary || 0);
+        if (!r.employee_id || !wpsPaid || !actual) return;
+        const amount = money(actual - wpsPaid);
+        if (Math.abs(amount) < 0.01) return;
+        out[r.employee_id] = {
+          month: prevYm, amount, wpsPaid, actual,
+          label: amount > 0
+            ? `Previous ${prevYm} arrears AED ${fmt(amount)}`
+            : `Previous ${prevYm} recovery AED ${fmt(Math.abs(amount))}`
+        };
+      });
+      setSalaryAdjustments(out);
+    } catch (e) {
+      console.warn('Could not load salary adjustments', e);
+      setSalaryAdjustments({});
+    }
+  };
+
   useEffect(() => { if (tableReady !== false) loadMonthlySheet(); }, [month, tableReady]);
-  useEffect(() => { loadRecoveryContext(); }, [month, master.length]);
+  useEffect(() => { loadRecoveryContext(); loadSalaryAdjustments(); }, [month, master.length]);
 
 
   // Pull IBAN + salary from HR bridge only when an exact employee is selected
@@ -3510,8 +3704,13 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
         extraAllowancePay = lastDay ? (extraAllowance / lastDay * workDays) : extraAllowance;
       }
 
-      const gross = money(basicPay + normalOTPay + holidayOTPay + allowancePay + extraAllowancePay + foodAllowancePay);
-      const deductionTotal = Math.min(gross, money(deductionAuto + deductionManual));
+      const prevAdj = salaryAdjustments[emp.employee_id] || null;
+      const carryForwardAdjustment = money(prevAdj?.amount || 0);
+      const carryForwardPay = carryForwardAdjustment > 0 ? carryForwardAdjustment : 0;
+      const carryForwardDeduction = carryForwardAdjustment < 0 ? Math.abs(carryForwardAdjustment) : 0;
+      const grossBeforeAdjustment = money(basicPay + normalOTPay + holidayOTPay + allowancePay + extraAllowancePay + foodAllowancePay);
+      const gross = money(grossBeforeAdjustment + carryForwardPay);
+      const deductionTotal = Math.min(gross, money(deductionAuto + deductionManual + carryForwardDeduction));
       const net = money(gross - deductionTotal);
       const rec = recoveryCtx[emp.employee_id] || { recoverable:0, recoveredBefore:0, deposits:0, balanceBefore:0 };
       const balanceAfter = Math.max(0, money((Number(rec.balanceBefore)||0) - deductionTotal));
@@ -3556,6 +3755,11 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
         holiday_ot_pay: money(holidayOTPay),
         allowance_pay: money(allowancePay + extraAllowancePay),
         gross_salary: gross,
+        gross_before_adjustment: grossBeforeAdjustment,
+        carry_forward_adjustment: carryForwardAdjustment,
+        carry_forward_pay: carryForwardPay,
+        carry_forward_deduction: carryForwardDeduction,
+        carry_forward_note: prevAdj?.label || '',
         finance_recoverable: money(rec.recoverable),
         finance_recovered_before: money(rec.recoveredBefore),
         finance_deposits: money(rec.deposits),
@@ -3736,12 +3940,13 @@ ${rows.map(r => `<tr class="edr">
       ['Month:', new Date(y, mo-1, 1), 'Month Days', lastDay, '', '', '', '', '', '', '', '', '', '', '', 'TOTAL TO RECOVER', totalBalance, 'DEDUCTION THIS MONTH', totalDed, 'NET WPS', totalNet],
       [],
       ['', '', '', '', '', '', '', 'WORKING DAYS/HOURS', '', '', 'TOTAL AMOUNT', '', '', '', '', '', 'FINANCE RECOVERY', '', '', '', 'Remark'],
-      ['Sl no.','EMP CODE','Name of Employee','Craft','Basic Salary','ALLOWANCE','Hourly Rate','Working days / Hours Worked','Contract Hrs/Day','Contract Days/Week','NORMAL OT HRS','HOLIDAYS OT','BASIC / HOURLY PAY','NORMAL OVERTIME (X1.25)','HOLIDAY OVERTIME (X1.5)','ALLOWANCE PAY','Monthly Food Allowance','Food Allowance Pay','GROSS SALARY','Balance to Recover','Cash Advance & Deductions','Deposits Received','Net Amount / WPS','Remark'],
-      ...rows.map(r => [r.sl_no, r.employee_id, r.name, r.craft, r.base_basic, r.base_allowance, r.hourly_rate, r.is_hourly ? r.hours_worked : r.working_days, r.hours_per_day, r.contract_days_per_week, r.normal_ot, r.holiday_ot, r.basic_pay, r.normal_ot_pay, r.holiday_ot_pay, r.allowance_pay, r.food_allowance, r.food_allowance_pay, r.gross_salary, r.finance_balance_before, r.deduction_total, r.finance_deposits, r.net_salary, r.remarks]),
-      ['Total Salaries','','','','','','','','','','','', rows.reduce((s,r)=>s+r.basic_pay,0), rows.reduce((s,r)=>s+r.normal_ot_pay,0), rows.reduce((s,r)=>s+r.holiday_ot_pay,0), rows.reduce((s,r)=>s+r.allowance_pay,0), rows.reduce((s,r)=>s+r.food_allowance,0), rows.reduce((s,r)=>s+r.food_allowance_pay,0), totalGross, totalBalance, totalDed, totalDeposits, totalNet, ''],
+      ['Sl no.','EMP CODE','Name of Employee','Craft','Basic Salary','ALLOWANCE','Hourly Rate','Working days / Hours Worked','Contract Hrs/Day','Contract Days/Week','NORMAL OT HRS','HOLIDAYS OT','BASIC / HOURLY PAY','NORMAL OVERTIME (X1.25)','HOLIDAY OVERTIME (X1.5)','ALLOWANCE PAY','Monthly Food Allowance','Food Allowance Pay','GROSS SALARY','Prev Month Adj.','Balance to Recover','Cash Advance & Deductions','Deposits Received','Net Amount / WPS','Remark'],
+      ...rows.map(r => [r.sl_no, r.employee_id, r.name, r.craft, r.base_basic, r.base_allowance, r.hourly_rate, r.is_hourly ? r.hours_worked : r.working_days, r.hours_per_day, r.contract_days_per_week, r.normal_ot, r.holiday_ot, r.basic_pay, r.normal_ot_pay, r.holiday_ot_pay, r.allowance_pay, r.food_allowance, r.food_allowance_pay, r.gross_salary, r.carry_forward_adjustment, r.finance_balance_before, r.deduction_total, r.finance_deposits, r.net_salary, [r.remarks, r.carry_forward_note].filter(Boolean).join(' | ')]),
+      ['Total Salaries','','','','','','','','','','','', rows.reduce((s,r)=>s+r.basic_pay,0), rows.reduce((s,r)=>s+r.normal_ot_pay,0), rows.reduce((s,r)=>s+r.holiday_ot_pay,0), rows.reduce((s,r)=>s+r.allowance_pay,0), rows.reduce((s,r)=>s+r.food_allowance,0), rows.reduce((s,r)=>s+r.food_allowance_pay,0), totalGross, rows.reduce((s,r)=>s+(r.carry_forward_adjustment||0),0), totalBalance, totalDed, totalDeposits, totalNet, ''],
       [],
       ['', '', 'Summary', WPS_CO.name],
       ['', '', 'Gross Salary with Allowances', totalGross],
+      ['', '', 'Previous Month Adjustments', rows.reduce((s,r)=>s+(r.carry_forward_adjustment||0),0)],
       ['', '', 'Deductions / Recoveries', totalDed],
       ['', '', 'Deposits received in Finance (already recovered)', totalDeposits],
       ['', '', 'Net WPS / Bank Amount', totalNet],
@@ -3756,7 +3961,7 @@ ${rows.map(r => `<tr class="edr">
       const ws = XLSXLib.utils.aoa_to_sheet(salarySheetAoa());
       ws['!cols'] = [
         {wch:8},{wch:12},{wch:28},{wch:22},{wch:14},{wch:14},{wch:12},{wch:18},{wch:10},{wch:14},{wch:14},
-        {wch:18},{wch:12},{wch:12},{wch:18},{wch:18},{wch:18},{wch:14},{wch:16},{wch:16},{wch:14},{wch:18},{wch:18},{wch:16},{wch:16},{wch:30}
+        {wch:18},{wch:12},{wch:12},{wch:18},{wch:18},{wch:18},{wch:14},{wch:16},{wch:16},{wch:14},{wch:16},{wch:18},{wch:18},{wch:16},{wch:16},{wch:30}
       ];
       const wb = XLSXLib.utils.book_new();
       XLSXLib.utils.book_append_sheet(wb, ws, 'Salary Sheet');
@@ -3806,7 +4011,7 @@ ${rows.map(r => `<tr class="edr">
   <th>Sl</th><th>Emp Code</th><th>Name</th><th>Craft</th><th>Basic Salary</th><th>Allowance</th><th>Hourly Rate</th>
   <th>Working Days / Hours</th><th>Contract Hrs/Day</th><th>Days/Week</th><th>Normal OT</th><th>Holiday OT</th>
   <th>Basic</th><th>Normal OT Pay</th><th>Holiday OT Pay</th><th>Allowance Pay</th><th>Monthly Food</th><th>Food Pay</th>
-  <th>Gross Salary</th><th>Balance to Recover</th><th>Deductions</th><th>Deposits</th><th>Net Amount / WPS</th><th>Remark</th>
+  <th>Gross Salary</th><th>Prev Month Adj.</th><th>Balance to Recover</th><th>Deductions</th><th>Deposits</th><th>Net Amount / WPS</th><th>Remark</th>
 </tr></thead>
 <tbody>
 ${rows.map(r=>`<tr>
@@ -3815,8 +4020,8 @@ ${rows.map(r=>`<tr>
   <td class="num">${fmt(r.normal_ot)}</td><td class="num">${fmt(r.holiday_ot)}</td>
   <td class="num">${fmt(r.basic_pay)}</td><td class="num">${fmt(r.normal_ot_pay)}</td><td class="num">${fmt(r.holiday_ot_pay)}</td>
   <td class="num">${fmt(r.allowance_pay)}</td><td class="num">${fmt(r.food_allowance)}</td><td class="num">${fmt(r.food_allowance_pay)}</td><td class="num">${fmt(r.gross_salary)}</td>
-  <td class="num">${fmt(r.finance_balance_before)}</td><td class="num ded">${r.deduction_total>0?'-':''}${fmt(r.deduction_total)}</td>
-  <td class="num">${fmt(r.finance_deposits)}</td><td class="num net">${fmt(r.net_salary)}</td><td>${esc(r.remarks)}</td>
+  <td class="num">${r.carry_forward_adjustment ? (r.carry_forward_adjustment>0?'+':'-') + fmt(Math.abs(r.carry_forward_adjustment)) : ''}</td><td class="num">${fmt(r.finance_balance_before)}</td><td class="num ded">${r.deduction_total>0?'-':''}${fmt(r.deduction_total)}</td>
+  <td class="num">${fmt(r.finance_deposits)}</td><td class="num net">${fmt(r.net_salary)}</td><td>${esc([r.remarks, r.carry_forward_note].filter(Boolean).join(' | '))}</td>
 </tr>`).join('')}
 <tr class="total">
   <td colspan="12">TOTAL — ${rows.length} employees</td>
@@ -3826,7 +4031,7 @@ ${rows.map(r=>`<tr>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.allowance_pay,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.food_allowance,0))}</td>
   <td class="num">${fmt(rows.reduce((s,r)=>s+r.food_allowance_pay,0))}</td>
-  <td class="num">${fmt(totalGross)}</td><td class="num">${fmt(totalBalance)}</td><td class="num">${fmt(totalDed)}</td><td></td><td class="num">${fmt(totalNet)}</td><td></td>
+  <td class="num">${fmt(totalGross)}</td><td class="num">${fmt(rows.reduce((s,r)=>s+(r.carry_forward_adjustment||0),0))}</td><td class="num">${fmt(totalBalance)}</td><td class="num">${fmt(totalDed)}</td><td></td><td class="num">${fmt(totalNet)}</td><td></td>
 </tr>
 </tbody></table></body></html>`;
   };
@@ -3853,16 +4058,16 @@ ${rows.map(r=>`<tr>
       allowance_pay:r.allowance_pay, gross_salary:r.gross_salary,
       finance_recoverable:r.finance_recoverable, finance_recovered_before:r.finance_recovered_before,
       finance_deposits:r.finance_deposits, finance_balance_before:r.finance_balance_before,
-      deduction_auto:r.deduction_auto, deduction_manual:r.deduction_manual, deduction_total:r.deduction_total,
+      deduction_auto:money(r.deduction_auto + r.carry_forward_deduction), deduction_manual:r.deduction_manual, deduction_total:r.deduction_total,
       net_salary:r.net_salary, wps_basic:r.wps_basic, wps_ot_allowance:r.wps_ot_allowance,
-      remarks:r.remarks || null, saved_to_monthly_costs:true, updated_at:new Date().toISOString(),
+      remarks:[r.remarks, r.carry_forward_note].filter(Boolean).join(' | ') || null, saved_to_monthly_costs:true, updated_at:new Date().toISOString(),
     }));
 
     const monthlyPayload = rows.map(r => ({
       employee_id:r.employee_id, full_name:r.name, month:salaryMonth,
       salary_type:'wps_salary_sheet', salary:r.gross_salary,
       food:r.food_allowance_pay || 0, food_allowance_pay:r.food_allowance_pay || 0, accommodation:0, transport:0, other:0,
-      remarks:(r.remarks ? r.remarks + ' | ' : '') + 'Saved from WPS Salary Sheet. Net WPS: AED ' + fmt(r.net_salary),
+      remarks:([r.remarks, r.carry_forward_note, 'Saved from Portal WPS Salary Sheet. Net WPS: AED ' + fmt(r.net_salary)].filter(Boolean).join(' | ')),
       salary_deductions:r.deduction_total,
       hours_worked:r.hours_worked || 0, hourly_rate:r.hourly_rate || 0,
       basic_salary:r.base_basic, fixed_allowance:r.base_allowance, hours_per_day:r.hours_per_day, contract_days_per_week:r.contract_days_per_week,
@@ -3992,6 +4197,8 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
     recoveredBefore: salaryRows.reduce((s,r)=>s+r.finance_recovered_before,0),
     deposits: salaryRows.reduce((s,r)=>s+r.finance_deposits,0),
     balanceBefore: salaryRows.reduce((s,r)=>s+r.finance_balance_before,0),
+    carryPay: salaryRows.reduce((s,r)=>s+(r.carry_forward_pay||0),0),
+    carryDeduction: salaryRows.reduce((s,r)=>s+(r.carry_forward_deduction||0),0),
     deduction: salaryRows.reduce((s,r)=>s+r.deduction_total,0),
     balanceAfter: salaryRows.reduce((s,r)=>s+r.balance_after,0),
     gross: salaryRows.reduce((s,r)=>s+r.gross_salary,0),
@@ -4045,9 +4252,13 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
               <button style={{...S.btnPri,background:'#0f766e'}} disabled={savingSheet} onClick={saveSalarySheet}>
                 {savingSheet?'Saving…':'💾 Save Salary Sheet'}
               </button>
-              <input type="file" id="wps-import-excel" accept=".xls,.xlsx" style={{display:'none'}} onChange={e=>{importSalaryOrWpsExcel(e.target.files && e.target.files[0]); e.target.value='';}} />
-              <label htmlFor="wps-import-excel" style={{...S.btnPri,background:'#7c3aed',cursor:'pointer',opacity:importingFile?0.6:1}}>
-                {importingFile?'Importing…':'⬆ Import Salary/WPS Excel'}
+              <input type="file" id="wps-import-bank" accept=".xls,.xlsx" style={{display:'none'}} onChange={e=>{importSalaryOrWpsExcel(e.target.files && e.target.files[0], 'bank_wps'); e.target.value='';}} />
+              <label htmlFor="wps-import-bank" style={{...S.btnPri,background:'#7c3aed',cursor:'pointer',opacity:importingFile?0.6:1}}>
+                {importingFile?'Importing…':'⬆ Import Bank WPS Excel'}
+              </label>
+              <input type="file" id="wps-import-salary" accept=".xls,.xlsx" style={{display:'none'}} onChange={e=>{importSalaryOrWpsExcel(e.target.files && e.target.files[0], 'internal_salary_sheet'); e.target.value='';}} />
+              <label htmlFor="wps-import-salary" style={{...S.btnPri,background:'#0ea5e9',cursor:'pointer',opacity:importingFile?0.6:1}}>
+                {importingFile?'Importing…':'⬆ Import HR Salary Excel'}
               </label>
               <button style={{...S.btnPri,background:'#166534'}} disabled={!!generating} onClick={exportSalarySheetXls}>
                 {generating==='salary_xls'?'Generating…':'⬇ Salary Sheet XLS'}
@@ -4065,7 +4276,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
           </div>
 
           <div style={{padding:'12px 18px',borderBottom:'1px solid #e2e8f0',background:'#eff6ff',fontSize:'12.5px',color:'#1e3a8a',lineHeight:1.55}}>
-            <strong>Simple payroll flow:</strong> Prepare WPS by the 28th using Basic + Allowance, pay on the 1st of next month, then upload the client timesheet later in <strong>Salary Pipeline</strong>. The portal compares <strong>WPS paid</strong> vs <strong>Actual salary</strong> and carries any arrears or deduction to the next payroll. You can also import the Salary Sheet/WPS Excel here if the bank file was prepared outside the portal.
+            <strong>Simple payroll flow:</strong> The portal is the main system. Step 1 — by the 28th generate the <strong>Portal WPS Salary Sheet</strong> from employee master salary plus approved previous-month arrears/recoveries, then send the bank WPS on the 1st. Step 2 — after the client timesheet arrives, review the actual salary in <strong>Salary Pipeline</strong> and save it. The difference automatically appears as next month arrears or recovery. Excel import remains available for any month when HR needs to upload an already-prepared WPS or salary sheet.
           </div>
 
           {/* Summary banner */}
@@ -4073,6 +4284,8 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Month</div><div style={{fontSize:'16px',fontWeight:800}}>{monthLabel}</div></div>
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Employees</div><div style={{fontSize:'16px',fontWeight:800}}>{salaryRows.length}</div></div>
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Gross Salary Sheet</div><div style={{fontSize:'18px',fontWeight:800}}>AED {fmt(sheetTotals.gross)}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Prev. Arrears Added</div><div style={{fontSize:'16px',fontWeight:800,color:'#166534'}}>AED {fmt(sheetTotals.carryPay)}</div></div>
+            <div><div style={{fontSize:'10px',fontWeight:700,color:'#dc2626',textTransform:'uppercase'}}>Prev. Recovery Added</div><div style={{fontSize:'16px',fontWeight:800,color:'#dc2626'}}>AED {fmt(sheetTotals.carryDeduction)}</div></div>
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#92400e',textTransform:'uppercase'}}>Total to Recover</div><div style={{fontSize:'18px',fontWeight:800,color:'#92400e'}}>AED {fmt(sheetTotals.balanceBefore)}</div></div>
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Deposits Received</div><div style={{fontSize:'16px',fontWeight:800,color:'#166534'}}>AED {fmt(sheetTotals.deposits)}</div></div>
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#dc2626',textTransform:'uppercase'}}>Deduction This Month</div><div style={{fontSize:'18px',fontWeight:800,color:'#dc2626'}}>AED {fmt(sheetTotals.deduction)}</div></div>
@@ -4085,7 +4298,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
           </div>
 
           <div style={{padding:'8px 18px',borderBottom:'1px solid #e2e8f0',background:'#fff7ed',fontSize:'11.5px',color:'#92400e'}}>
-            Master data such as Labour Card, Bank Routing, IBAN, Basic Salary, Allowance, Hourly Rate, Contract Hours/Day and Contract Days/Week is taken from <strong>Employee WPS Master</strong> and reused every month. If <strong>Hourly Rate</strong> is entered, salary is calculated by <strong>Hourly Rate × actual regular hours worked</strong>; Basic Salary is shown only as a contractual / WPS dummy value. For all other employees, the sheet follows the Excel formula: <strong>Basic ÷ month days × working days</strong>, allowance/food are prorated by working days, and OT uses <strong>Basic ÷ month days ÷ contract hours/day × OT × 1.25/1.5</strong>. Set Engineers/Staff as 10 hours/day and workers as 8 hours/day in WPS Master. If any master entry is wrong, click <strong>Correct Master</strong>, edit it once, then save the salary sheet again for this month. Only monthly values such as days/hours worked, OT, monthly food allowance, deduction and remarks are entered here. {hasUnsavedDraft && <strong style={{marginLeft:'8px',color:'#dc2626'}}>Unsaved entries are temporarily kept on this browser — click Save Salary Sheet to store in database.</strong>}
+            Master data such as Labour Card, Bank Routing, IBAN, Basic Salary, Allowance and Contract Hours/Day is taken from <strong>Employee WPS Master</strong>. For the bank WPS, keep it simple: Basic + Allowance plus previous-month arrears, minus previous-month recovery / visa / advance deductions. Actual hours and OT are handled later in <strong>Salary Pipeline</strong>. If any master entry is wrong, click <strong>Correct Master</strong>, edit it once, then save again. {hasUnsavedDraft && <strong style={{marginLeft:'8px',color:'#dc2626'}}>Unsaved entries are temporarily kept on this browser — click Save Salary Sheet to store in database.</strong>}
           </div>
 
           {/* Salary Sheet table */}
@@ -4093,16 +4306,16 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',minWidth:'2180px'}}>
               <thead>
                 <tr style={{background:'#f8fafc'}}>
-                  {['Sl','Employee','Craft','Basic Salary','Allowance','Hourly Rate','Working Days / Hours','Contract Hrs/Day','Days/Wk','Normal OT hrs','Holiday OT hrs','Basic / Hourly Pay','Normal OT Pay','Holiday OT Pay','Allowance Pay','Monthly Food Allow.','Food Allow. Pay','Gross Salary','Balance to Recover','Deduction This Month','Deposits Received','Balance After','Net WPS','Remarks'].map(h => (
+                  {['Sl','Employee','Craft','Basic Salary','Allowance','Hourly Rate','Working Days / Hours','Contract Hrs/Day','Days/Wk','Normal OT hrs','Holiday OT hrs','Basic / Hourly Pay','Normal OT Pay','Holiday OT Pay','Allowance Pay','Monthly Food Allow.','Food Allow. Pay','Gross Salary','Prev Month Adj.','Balance to Recover','Deduction This Month','Deposits Received','Balance After','Net WPS','Remarks'].map(h => (
                     <th key={h} style={{...S.th,whiteSpace:'nowrap',fontSize:'10.5px'}}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={24} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                  <tr><td colSpan={25} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 ) : activeMaster.length === 0 ? (
-                  <tr><td colSpan={24} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
+                  <tr><td colSpan={25} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>
                     No active employees. Go to <strong>Employee WPS Master</strong> and add employees.
                   </td></tr>
                 ) : salaryRows.map(r => {
@@ -4169,6 +4382,10 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                       </td>
                       <td style={{...S.td,textAlign:'right',fontWeight:700}}>{fmt(r.food_allowance_pay)}</td>
                       <td style={{...S.td,textAlign:'right',fontWeight:800,color:'#0f172a'}}>{fmt(r.gross_salary)}</td>
+                      <td style={{...S.td,textAlign:'right',fontWeight:800,color:r.carry_forward_adjustment>0?'#166534':r.carry_forward_adjustment<0?'#dc2626':'#94a3b8'}}>
+                        {r.carry_forward_adjustment ? (r.carry_forward_adjustment>0?'+':'−') + fmt(Math.abs(r.carry_forward_adjustment)) : '—'}
+                        {r.carry_forward_note && <div style={{fontSize:'10px',color:'#64748b',fontWeight:600}}>{r.carry_forward_note}</div>}
+                      </td>
                       <td style={{...S.td,textAlign:'right',fontWeight:800,color:r.finance_balance_before>0?'#92400e':'#94a3b8'}}>
                         {fmt(r.finance_balance_before)}
                         {r.finance_recoverable>0 && <div style={{fontSize:'10px',color:'#64748b'}}>Recov. {fmt(r.finance_recoverable)} · Done {fmt(r.finance_recovered_before)}</div>}
@@ -4202,6 +4419,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.food_allowance,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(salaryRows.reduce((s,r)=>s+r.food_allowance_pay,0))}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right'}}>{fmt(sheetTotals.gross)}</td>
+                    <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#bfdbfe'}}>+{fmt(sheetTotals.carryPay)} / −{fmt(sheetTotals.carryDeduction)}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#fdba74'}}>{fmt(sheetTotals.balanceBefore)}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#fca5a5'}}>{fmt(sheetTotals.deduction)}</td>
                     <td style={{padding:'10px 14px',fontWeight:800,textAlign:'right',color:'#86efac'}}>{fmt(sheetTotals.deposits)}</td>
@@ -4611,7 +4829,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         }];
         ids.add(id);
       };
-      (employees||[]).filter(e=>!e.is_temp).forEach(e=>addEmptyPnlRow(e.employee_id, e.full_name, {is_roster_only:true}));
+      (employees||[]).forEach(e=>addEmptyPnlRow(e.employee_id, e.full_name, {is_roster_only:true, is_temp:!!e.is_temp}));
       (hrSalaryRows||[]).forEach(r=>addEmptyPnlRow(r.employee_id, r.full_name, {is_hr_only:true}));
       Object.entries(empMeta||{}).forEach(([id,m])=>addEmptyPnlRow(id, (m&&m.full_name)||id, {is_hr_only:true}));
     } catch(_){}
@@ -5881,7 +6099,7 @@ function loadCalendar(yearMonth) {
     const raw = localStorage.getItem(calendarKey(yearMonth));
     if (raw) return JSON.parse(raw);
   } catch(_) {}
-  return { publicHolidays: [], weekendDay: 5 }; // UAE: Friday = 5 weekend
+  return { publicHolidays: [], weekendDay: 0 }; // SATCO rule: Sunday rest day = 0, paid at 1.5x when worked
 }
 function saveCalendar(yearMonth, data) {
   try { localStorage.setItem(calendarKey(yearMonth), JSON.stringify(data)); } catch(_) {}
@@ -5890,7 +6108,7 @@ function saveCalendar(yearMonth, data) {
 // ── MonthCalendarPanel ────────────────────────────────────────────
 function MonthCalendarPanel({ yearMonth, onClose }) {
   const [cal, setCal] = React.useState(()=>loadCalendar(yearMonth));
-  const [weekendDay, setWeekendDay] = React.useState(cal.weekendDay ?? 5);
+  const [weekendDay, setWeekendDay] = React.useState(cal.weekendDay ?? 0);
   const [holidayInput, setHolidayInput] = React.useState('');
   const [holidayName, setHolidayName] = React.useState('');
 
@@ -6040,7 +6258,7 @@ function IdleDaysPanel({ yearMonth, employees, hrSalaryRows, onClose }) {
   const totalDays = totalDaysInMonth(yearMonth);
   const days = Array.from({length:totalDays},(_,i)=>i+1);
   const cal = loadCalendar(yearMonth);
-  const isWeekend = (d) => getDayOfWeek(yearMonth, d) === (cal.weekendDay ?? 5);
+  const isWeekend = (d) => getDayOfWeek(yearMonth, d) === (cal.weekendDay ?? 0);
   const isHoliday = (d) => (cal.publicHolidays||[]).some(h=>h.day===d);
   const isOff = (d) => isWeekend(d) || isHoliday(d);
 
@@ -6315,8 +6533,8 @@ function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
     setPipelineLoading(true);
     const monthStart = selectedMonth + '-01';
     const [wpsPaid, actualMonthly, salaryProfiles, wpsMaster, idleRec] = await Promise.all([
-      db.from('wps_salary_monthly').select('employee_id,gross_salary,basic_salary,fixed_allowance,salary_month').eq('salary_month', monthStart),
-      db.from('employee_monthly_costs').select('employee_id,salary,salary_deductions,arrears,remarks').like('month', selectedMonth + '%'),
+      db.from('wps_salary_monthly').select('employee_id,gross_salary,net_salary,wps_basic,wps_ot_allowance,basic_salary,fixed_allowance,salary_month').eq('salary_month', monthStart),
+      db.from('employee_monthly_costs').select('employee_id,salary_type,salary,computed_salary,salary_deductions,arrears,remarks').like('month', selectedMonth + '%'),
       db.from('employee_salary_profiles').select('employee_id,full_name,basic_salary,fixed_allowance,hours_per_day'),
       db.from('wps_employee_master').select('employee_id,full_name,basic_salary,fixed_allowance,hours_per_day'),
       db.from('employee_idle_days').select('employee_id,day_number,client_agreed').eq('month', monthStart).catch(()=>({data:[]})),
@@ -6328,7 +6546,11 @@ function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
     const wpsMap = {};
     (wpsPaid.data||[]).forEach(r=>{ wpsMap[r.employee_id]=r; });
     const actualMap = {};
-    (actualMonthly.data||[]).forEach(r=>{ actualMap[r.employee_id]=r; });
+    (actualMonthly.data||[]).forEach(r=>{
+      const st = String(r.salary_type || '').toLowerCase();
+      if (st.includes('wps_bank') || st.includes('wps_salary_sheet')) return;
+      actualMap[r.employee_id]=r;
+    });
     const idleMap = {};
     (idleRec.data||[]).forEach(r=>{
       if (!idleMap[r.employee_id]) idleMap[r.employee_id]={total:0,agreed:0};
@@ -6344,8 +6566,8 @@ function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
       else if (wps) status = 'wps_pending_ts';
       else if (actual) status = 'actual_no_wps';
       return { ...e, wps, actual, status,
-        wpsGross: wps ? Number(wps.gross_salary)||0 : null,
-        actualSalary: actual ? Number(actual.salary)||0 : null,
+        wpsGross: wps ? Number(wps.net_salary || wps.gross_salary || ((Number(wps.wps_basic)||0)+(Number(wps.wps_ot_allowance)||0)))||0 : null,
+        actualSalary: actual ? Number(actual.computed_salary || actual.salary)||0 : null,
         profile: profileMap[e.employee_id]||{},
         idle: idleMap[e.employee_id]||null,
       };
@@ -6359,7 +6581,7 @@ function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
   const cal = loadCalendar(selectedMonth);
   const publicHolidayCount = (cal.publicHolidays||[]).length;
   const weekendCount = Array.from({length:totalDaysInMonth(selectedMonth)},(_,i)=>i+1)
-    .filter(d=>getDayOfWeek(selectedMonth,d)===(cal.weekendDay??5)).length;
+    .filter(d=>getDayOfWeek(selectedMonth,d)===(cal.weekendDay??0)).length;
 
   const readBulkTimesheet = async () => {
     if (!pdfFile) return;
@@ -6367,7 +6589,7 @@ function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
     setOcrProgress('Sending timesheet to AI… (30–90 seconds for large files)');
     const [y, m] = selectedMonth.split('-');
     const monthName = new Date(Number(y),Number(m)-1,1).toLocaleString('default',{month:'long'});
-    const weekendDayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][cal.weekendDay??5];
+    const weekendDayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][cal.weekendDay??0];
     const holidays = (cal.publicHolidays||[]).map(h=>`Day ${h.day} (${h.name})`).join(', ');
     try {
       const b64 = await fileToBase64(pdfFile);
@@ -6433,15 +6655,18 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
     const allowance = Number(empProfile?.fixed_allowance)||0;
     const hoursPerDay = Number(empProfile?.hours_per_day)||8;
     const normalDays = Number(row.normal_days)||0;
+    const idleDays = Number(row.idle_days)||0;
+    const payableDays = Math.min(monthDays, normalDays + idleDays);
     const normalOT = Number(row.normal_ot_hours)||0;
     const holidayOT = Number(row.holiday_ot_hours)||0;
     const dailyRate = basic / monthDays;
     const hourlyRate = basic / monthDays / hoursPerDay;
-    const basicPay = Math.round(dailyRate * normalDays * 100)/100;
+    const basicPay = Math.round(dailyRate * payableDays * 100)/100;
     const normalOTPay = Math.round(hourlyRate * normalOT * 1.25 * 100)/100;
     const holidayOTPay = Math.round(hourlyRate * holidayOT * 1.5 * 100)/100;
-    const gross = basicPay + normalOTPay + holidayOTPay + allowance;
-    return {basicPay,normalOTPay,holidayOTPay,allowPay:allowance,gross,monthDays,normalDays,normalOT,holidayOT};
+    const allowPay = Math.round((allowance / monthDays * payableDays) * 100)/100;
+    const gross = basicPay + normalOTPay + holidayOTPay + allowPay;
+    return {basicPay,normalOTPay,holidayOTPay,allowPay,gross,monthDays,normalDays:payableDays,normalOT,holidayOT,idleDays};
   };
 
   const bulkSave = async () => {
@@ -6477,7 +6702,7 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
       const payload={
         employee_id:emp.employee_id, full_name:emp.full_name,
         month:monthStart, salary_type:'prorated',
-        salary:Math.round((cal.gross+arrears)*100)/100,
+        salary:Math.round(cal.gross*100)/100,
         basic_salary:cal.basicPay+cal.normalOTPay+cal.holidayOTPay,
         fixed_allowance:cal.allowPay,
         working_days:cal.normalDays, month_days:cal.monthDays,
@@ -6486,7 +6711,7 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
         salary_deductions:deduction, arrears:arrears,
         arrears_for_month:arrears>0?selectedMonth:null,
         arrears_reason:arrears>0?`WPS underpay: actual AED ${fmt(cal.gross)} vs WPS AED ${fmt(wpsGross)}`:null,
-        remarks:`Bulk timesheet ${selectedMonth}. Client: ${row.name}.${deduction>0?` WPS overpaid AED ${fmt(deduction)}, recover next.`:''}${idleNote}`,
+        remarks:`Bulk timesheet ${selectedMonth}. Client: ${row.name}. Actual AED ${fmt(cal.gross)} vs WPS AED ${fmt(wpsGross)}.${arrears>0?` Pay arrears AED ${fmt(arrears)} in next WPS.`:''}${deduction>0?` Recover AED ${fmt(deduction)} in next WPS.`:''}${idleNote}`,
         food:0,accommodation:0,transport:0,other:0,recurring_allowance_total:0,
       };
       const existId=existingActual[emp.employee_id];
@@ -6540,10 +6765,10 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
 
         <div style={{marginTop:'12px',display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:'8px'}}>
           {[
-            ['1','WPS Pay','By 28th prepare Basic + Allowance and pay on 1st.'],
+            ['1','Portal WPS','By 28th generate from portal: Basic + Allowance ± previous adjustments.'],
             ['2','Timesheet','Upload one client PDF for all employees when received.'],
             ['3','Review','Check AI name match, normal hours, OT ×1.25 and OT ×1.5.'],
-            ['4','Adjust Next Month','Arrears or deduction is carried forward automatically.'],
+            ['4','Next WPS','Portal carries arrears/recovery into next month WPS.'],
           ].map(x=><div key={x[0]} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'10px 12px'}}>
             <div style={{fontSize:'10px',fontWeight:900,color:'#64748b',textTransform:'uppercase'}}>Step {x[0]}</div>
             <div style={{fontSize:'13px',fontWeight:900,color:'#0f172a'}}>{x[1]}</div>
@@ -6858,7 +7083,7 @@ const PORTAL_TABS = [
   { key:'salary_pipeline', icon:'📋', label:'Salary Pipeline', short:'WPS vs Actual', desc:'Upload client timesheets, match employees, calculate actual salary, and carry arrears/deductions to next month.' },
   { key:'salary_profiles', icon:'💼', label:'Salary Master', short:'Payroll setup', desc:'Basic salary, allowance, IBAN, and HR salary bridge status.' },
   { key:'deductions', icon:'🧾', label:'Deduction Ledger', short:'HR deductions', desc:'Employee deductions, recoveries, balances, and supporting notes.' },
-  { key:'wps', icon:'🏦', label:'WPS Report', short:'Bank file', desc:'Prepare or import the Basic + Allowance WPS salary sheet and bank file.' },
+  { key:'wps', icon:'🏦', label:'WPS Report', short:'Bank file', desc:'Generate the Basic + Allowance WPS salary sheet, or import a WPS/HR salary Excel for any month.' },
   { key:'monthly', icon:'📅', label:'Monthly Costs', short:'Recurring', desc:'Salary, food, accommodation, transport, and other monthly costs.' },
   { key:'visa', icon:'🛂', label:'Visa Costs', short:'Employee cost', desc:'Track recoverable and non-recoverable visa-related expenses.' },
   { key:'flights', icon:'✈️', label:'Flights', short:'Tickets', desc:'Mobilization, demobilization, leave, and emergency ticket costs.' },
@@ -6952,18 +7177,26 @@ function App() {
       // Optional pending Temp IDs from HR hiring pipeline.
       try {
         const { data:tempCands, error:tcErr } = await hrDb.from('v_temp_candidates')
-          .select('temp_employee_id,candidate_name,status')
-          .not('temp_employee_id','is',null)
-          .neq('status','Joined');
+          .select('temp_employee_id,candidate_name,status,position_display')
+          .not('temp_employee_id','is',null);
         if (!alive) return;
         if (tcErr) {
           setTempCandError(tcErr.message || String(tcErr));
           setEmployees(baseEmployees);
         } else {
           setTempCandError(null);
+          const existingIds = new Set(baseEmployees.map(e=>String(e.employee_id||'').trim().toLowerCase()));
           const tempEntries = (tempCands||[])
             .filter(t=>t.temp_employee_id)
-            .map(t=>({ employee_id:t.temp_employee_id, full_name:(t.candidate_name||'')+' (pending)', is_temp:true }));
+            .map(t=>{
+              const id = String(t.temp_employee_id||'').trim();
+              const name = String(t.candidate_name||id).trim();
+              if (!id) return null;
+              meta[id] = { ...(meta[id]||{}), employee_id:id, full_name:name, position:t.position_display||'', status:t.status||'', is_temp:true };
+              return { employee_id:id, full_name:name, is_temp:true, status:t.status||'', position:t.position_display||'' };
+            })
+            .filter(Boolean)
+            .filter(t=>!existingIds.has(String(t.employee_id||'').trim().toLowerCase()));
           setEmployees([...baseEmployees, ...tempEntries]);
         }
       } catch (e) {
@@ -7070,6 +7303,11 @@ function App() {
               <div className="page-desc">{detailEmp ? 'Single employee view with salary, costs, recoveries, income, and monthly profit/loss.' : activeMeta.desc}</div>
             </div>
             <div className="top-actions">
+              {(tab !== 'dashboard' || detailEmp) && (
+                <button className="dashboard-home-btn" onClick={()=>{setTab('dashboard');setDetailEmp(null);window.scrollTo({top:0,behavior:'smooth'});}}>
+                  ← Dashboard
+                </button>
+              )}
               <span className="pill">👥 {employeeCount || 0} employees</span>
               {pendingCount > 0 && <span className="pill warn">⏳ {pendingCount} pending IDs</span>}
               <span className={'pill '+(hrIsConnected?'good':'warn')}>{hrIsConnected?'✓ HR connected':'⚠ Local salary data'}</span>
@@ -7092,7 +7330,7 @@ function App() {
           {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v6','done');setShowMig(false);}} />}
           {tempCandError && (
             <div className="alert-card danger">
-              <b>Pending candidates could not be loaded from HR.</b> Temporary employee IDs will not appear until HR access is fixed.
+              <b>Temporary HR candidates could not be loaded.</b> Temp-ID employees will appear once the HR candidate bridge/view is accessible.
               <div style={{marginTop:'4px',fontSize:'12px'}}>Technical detail: <code>{tempCandError}</code></div>
             </div>
           )}
