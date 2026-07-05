@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SATCO — Employee Finance & P&L v17</title>
+<title>SATCO — FINANCE PORTAL</title>
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
@@ -11,12 +11,225 @@
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
+  :root {
+    --bg: #f6f8fb;
+    --panel: #ffffff;
+    --panel-soft: #f8fafc;
+    --text: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --line-strong: #cbd5e1;
+    --brand: #0f172a;
+    --brand-2: #1e293b;
+    --accent: #0ea5e9;
+    --accent-soft: #e0f2fe;
+    --success: #166534;
+    --success-soft: #dcfce7;
+    --danger: #dc2626;
+    --danger-soft: #fee2e2;
+    --warning: #d97706;
+    --warning-soft: #fef3c7;
+    --radius: 18px;
+    --shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+  }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f1f5f9; color:#0f172a; }
-  .container { max-width:1400px; margin:0 auto; padding:20px; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin:0;
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(14,165,233,.16), transparent 30%),
+      linear-gradient(180deg,#f8fafc 0%,#eef2f7 100%);
+    color:var(--text);
+    min-height:100vh;
+  }
+  button, input, select, textarea { font: inherit; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 3px solid rgba(14,165,233,.25);
+    outline-offset: 2px;
+  }
+  .container { width:100%; max-width:none; margin:0; padding:0; }
   .hr-row:hover { background:#f0f9ff !important; cursor:pointer; }
   ::-webkit-scrollbar { height:8px; width:8px; }
-  ::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:4px; }
+  ::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:999px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+
+  .satco-shell { min-height:100vh; display:grid; grid-template-columns:280px minmax(0,1fr); }
+  .satco-sidebar {
+    position:sticky; top:0; height:100vh; overflow:auto; padding:18px;
+    background:rgba(255,255,255,.84); border-right:1px solid var(--line);
+    backdrop-filter: blur(18px);
+  }
+  .brand-card {
+    display:flex; gap:12px; align-items:center; padding:14px; border:1px solid var(--line);
+    border-radius:22px; background:linear-gradient(135deg,#0f172a,#1e293b); color:#fff;
+    box-shadow: var(--shadow);
+  }
+  .brand-mark {
+    width:42px; height:42px; display:grid; place-items:center; border-radius:15px;
+    background:rgba(255,255,255,.12); font-weight:900; letter-spacing:-.04em;
+  }
+  .brand-title { font-weight:900; font-size:15px; line-height:1.15; }
+  .brand-subtitle { color:#cbd5e1; font-size:12px; margin-top:3px; }
+  .brand-logo-wrap {
+    width:68px; height:44px; display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+    border-radius:15px; background:#fff; padding:5px; box-shadow:inset 0 0 0 1px rgba(15,23,42,.08);
+  }
+  .brand-logo { width:100%; height:100%; object-fit:contain; display:block; }
+  .portal-name { font-size:17px; line-height:1; font-weight:950; letter-spacing:.03em; color:#fff; }
+  .brand-card .portal-name { color:#fff; }
+  .topbar-brand { display:flex; align-items:center; gap:13px; min-width:0; margin-bottom:10px; }
+  .topbar-brand .brand-logo-wrap { width:74px; height:48px; border:1px solid var(--line); box-shadow:0 10px 28px rgba(15,23,42,.08); }
+  .topbar-brand .portal-name { color:#0f172a; font-size:20px; letter-spacing:.04em; }
+  .topbar-brand .brand-subtitle { color:#64748b; font-size:12px; font-weight:800; margin-top:3px; }
+
+  .nav-group { margin-top:18px; }
+  .nav-title { color:var(--muted); font-size:11px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; margin:0 0 8px 8px; }
+  .nav-btn {
+    width:100%; display:flex; gap:11px; align-items:center; border:1px solid transparent;
+    background:transparent; color:#334155; border-radius:15px; padding:10px 12px; cursor:pointer;
+    font-weight:800; font-size:13px; text-align:left; transition:.16s ease;
+  }
+  .nav-btn:hover { background:#f1f5f9; color:#0f172a; transform:translateX(2px); }
+  .nav-btn.active { background:#0f172a; color:#fff; box-shadow:0 10px 24px rgba(15,23,42,.18); }
+  .nav-icon { width:26px; height:26px; display:grid; place-items:center; border-radius:10px; background:#f1f5f9; font-size:14px; flex:0 0 auto; }
+  .nav-btn.active .nav-icon { background:rgba(255,255,255,.14); }
+  .nav-caption { display:block; color:#94a3b8; font-size:11px; font-weight:700; margin-top:1px; }
+  .nav-btn.active .nav-caption { color:#cbd5e1; }
+  .sidebar-footer { margin-top:18px; padding:14px; border:1px solid var(--line); border-radius:18px; background:#f8fafc; }
+  .sidebar-footer strong { display:block; font-size:13px; margin-bottom:4px; }
+  .sidebar-footer span { display:block; color:var(--muted); font-size:12px; line-height:1.4; }
+
+  .satco-main { min-width:0; padding:24px; }
+  .topbar {
+    display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px;
+  }
+  .eyebrow { color:#64748b; font-size:12px; font-weight:900; letter-spacing:.09em; text-transform:uppercase; margin-bottom:6px; }
+  .page-title { margin:0; font-size:28px; letter-spacing:-.04em; line-height:1.1; }
+  .page-desc { margin-top:7px; color:#64748b; max-width:760px; font-size:14px; line-height:1.5; }
+  .top-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
+  .pill {
+    display:inline-flex; align-items:center; gap:7px; min-height:34px; padding:7px 11px; border-radius:999px;
+    border:1px solid var(--line); background:#fff; color:#334155; font-size:12px; font-weight:800;
+  }
+  .pill.good { color:#166534; background:#f0fdf4; border-color:#bbf7d0; }
+  .pill.warn { color:#92400e; background:#fffbeb; border-color:#fde68a; }
+  .signout-btn {
+    min-height:34px; padding:7px 12px; border-radius:999px; border:1px solid var(--line);
+    background:#fff; color:#475569; font-weight:900; font-size:12px; cursor:pointer;
+  }
+  .signout-btn:hover { border-color:#94a3b8; color:#0f172a; }
+  .mobile-section-picker { display:none; margin:0 0 14px; }
+  .mobile-section-picker select { width:100%; padding:12px 14px; border-radius:14px; border:1px solid var(--line); background:#fff; font-weight:800; }
+  .guide-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+  .guide-card { background:#fff; border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 24px rgba(15,23,42,.04); }
+  .guide-card b { display:block; font-size:13px; margin-bottom:4px; }
+  .guide-card span { color:#64748b; font-size:12.5px; line-height:1.4; }
+
+  .dashboard-launch {
+    margin-bottom:18px; border:1px solid var(--line); border-radius:24px; overflow:hidden;
+    background:linear-gradient(135deg,#0f172a 0%,#1e293b 48%,#0f766e 100%); color:#fff; box-shadow:0 18px 45px rgba(15,23,42,.14);
+  }
+  .launch-hero { padding:22px 22px 14px; display:flex; justify-content:space-between; gap:18px; align-items:flex-end; flex-wrap:wrap; }
+  .launch-kicker { color:#bae6fd; font-size:12px; font-weight:950; letter-spacing:.1em; text-transform:uppercase; margin-bottom:7px; }
+  .launch-hero h2 { margin:0; font-size:24px; line-height:1.1; letter-spacing:-.04em; }
+  .launch-hero p { margin:8px 0 0; max-width:720px; color:#dbeafe; font-size:13.5px; line-height:1.45; }
+  .launch-help { display:grid; gap:6px; color:#e2e8f0; font-size:12px; font-weight:750; min-width:220px; }
+  .launch-groups { padding:0 16px 16px; display:grid; gap:12px; }
+  .launch-group { border:1px solid rgba(255,255,255,.12); border-radius:18px; padding:12px; background:rgba(255,255,255,.08); backdrop-filter:blur(12px); }
+  .launch-group-title { font-size:11px; color:#cbd5e1; font-weight:950; letter-spacing:.1em; text-transform:uppercase; margin:0 0 10px 4px; }
+  .module-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+  .module-card {
+    min-height:86px; width:100%; border:1px solid rgba(255,255,255,.18); border-radius:16px; padding:12px;
+    background:rgba(255,255,255,.96); color:#0f172a; text-align:left; cursor:pointer; display:flex; gap:11px; align-items:flex-start;
+    box-shadow:0 10px 25px rgba(15,23,42,.10); transition:.16s ease; touch-action:manipulation;
+  }
+  .module-card:hover { transform:translateY(-2px); box-shadow:0 18px 35px rgba(15,23,42,.18); }
+  .module-card.active { outline:3px solid rgba(186,230,253,.6); background:#eff6ff; }
+  .module-card-icon { width:38px; height:38px; border-radius:14px; display:grid; place-items:center; background:#f1f5f9; font-size:18px; flex:0 0 auto; }
+  .module-card-title { font-size:13.5px; font-weight:950; line-height:1.15; }
+  .module-card-desc { margin-top:4px; color:#64748b; font-size:11.5px; line-height:1.3; }
+  .dashboard-section-label { display:flex; align-items:center; gap:8px; margin:18px 0 12px; color:#334155; font-size:13px; font-weight:950; letter-spacing:.06em; text-transform:uppercase; }
+  .dashboard-section-label:after { content:""; height:1px; background:var(--line); flex:1; }
+  .finance-kpi-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+  .pnl-row-limit { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 18px; border-top:1px solid #e2e8f0; background:#f8fafc; color:#64748b; font-size:12px; font-weight:800; }
+  .pnl-row-limit button { border:1px solid var(--line); background:#fff; border-radius:999px; padding:7px 11px; color:#0f172a; font-size:12px; font-weight:900; cursor:pointer; }
+
+  .alert-card { border-radius:16px; padding:12px 14px; margin-bottom:14px; border:1px solid; font-size:13px; line-height:1.45; }
+  .alert-card.danger { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+  .content-card {
+    background:rgba(255,255,255,.92); border:1px solid var(--line); border-radius:24px;
+    box-shadow:var(--shadow); padding:18px; overflow:hidden;
+  }
+  .content-card > div:first-child[style*="background:#fff"], .content-card > div:first-child[style*="background: '#fff'"] {
+    box-shadow:none;
+  }
+  .detail-backbar { margin-bottom:14px; }
+  .quick-back {
+    border:1px solid var(--line); background:#fff; color:#334155; border-radius:999px; padding:9px 14px;
+    font-weight:900; cursor:pointer;
+  }
+  .quick-back:hover { border-color:#94a3b8; color:#0f172a; }
+
+  .login-shell {
+    min-height:100vh; display:grid; place-items:center; padding:24px;
+    background:
+      radial-gradient(circle at 15% 10%, rgba(14,165,233,.22), transparent 32%),
+      radial-gradient(circle at 85% 20%, rgba(15,23,42,.14), transparent 30%),
+      linear-gradient(180deg,#f8fafc 0%,#eef2f7 100%);
+  }
+  .login-card { width:min(920px,100%); display:grid; grid-template-columns:1.1fr .9fr; background:#fff; border:1px solid var(--line); border-radius:28px; overflow:hidden; box-shadow:var(--shadow); }
+  .login-hero { padding:38px; background:linear-gradient(135deg,#0f172a,#1e293b); color:#fff; display:flex; flex-direction:column; justify-content:space-between; min-height:430px; }
+  .login-hero h1 { margin:16px 0 10px; font-size:34px; line-height:1.05; letter-spacing:-.05em; }
+  .login-hero p { margin:0; color:#cbd5e1; line-height:1.55; font-size:14px; max-width:420px; }
+  .login-checks { display:grid; gap:9px; margin-top:24px; }
+  .login-checks div { color:#e2e8f0; font-size:13px; font-weight:700; }
+  .login-form { padding:38px; display:flex; flex-direction:column; justify-content:center; }
+  .login-form h2 { margin:0 0 5px; font-size:22px; letter-spacing:-.03em; }
+  .login-form .hint { color:#64748b; margin-bottom:22px; font-size:13px; }
+  .login-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 12px; border-radius:12px; font-size:12px; margin-bottom:12px; }
+
+  @media (max-width: 980px) {
+    .satco-shell { display:block; }
+    .satco-sidebar { display:none; }
+    .satco-main { padding:16px; }
+    .topbar { flex-direction:column; }
+    .top-actions { justify-content:flex-start; }
+    .mobile-section-picker { display:block; }
+    .guide-grid { grid-template-columns:1fr; }
+    .content-card { padding:12px; border-radius:18px; }
+    .page-title { font-size:24px; }
+    .login-card { grid-template-columns:1fr; }
+    .login-hero { min-height:auto; padding:28px; }
+    .login-form { padding:28px; }
+
+    .topbar-brand { margin-bottom:8px; }
+    .topbar-brand .brand-logo-wrap { width:64px; height:42px; }
+    .topbar-brand .portal-name { font-size:18px; }
+    .dashboard-launch { border-radius:18px; margin-bottom:14px; }
+    .launch-hero { padding:18px 16px 10px; align-items:flex-start; }
+    .launch-hero h2 { font-size:21px; }
+    .launch-help { width:100%; min-width:0; grid-template-columns:1fr; }
+    .launch-groups { padding:0 10px 12px; }
+    .module-grid { grid-template-columns:1fr; gap:9px; }
+    .module-card { min-height:76px; padding:12px; border-radius:15px; }
+    .module-card-icon { width:36px; height:36px; }
+    .top-actions { width:100%; }
+    .pill, .signout-btn { min-height:38px; }
+    .content-card input, .content-card select, .content-card textarea { min-height:40px; }
+    .content-card button { min-height:38px; }
+    .finance-kpi-grid { grid-template-columns:1fr; }
+  }
+
+  @media (max-width: 560px) {
+    .satco-main { padding:12px; }
+    .page-title { font-size:21px; }
+    .page-desc { font-size:13px; }
+    .topbar-brand .portal-name { font-size:16px; }
+    .topbar-brand .brand-subtitle { font-size:11px; }
+    .launch-hero p { font-size:12.5px; }
+    .login-hero h1 { font-size:28px; }
+  }
 </style>
 </head>
 <body>
@@ -3468,6 +3681,7 @@ ${rows.map(r=>`<tr>
   .sign-line  { border-bottom: 1px solid #000; width: 180px; margin-bottom: 4px; height: 40px; }
   .footer-rule { border-top: 1px solid #aaa; margin-top: 40px; padding-top: 6px; font-size: 7.5pt; color: #555; text-align: center; }
   strong.underline { text-decoration: underline; }
+
 </style>
 </head><body>
 <div class="header">
@@ -4069,6 +4283,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
   const [loading,      setLoading]      = useState(true);
   const [selectedEmp,  setSelectedEmp]  = useState(null);
   const [filters,      setFilters]      = useState({});
+  const [showAllPnlRows, setShowAllPnlRows] = useState(false);
   const [empNotes,     setEmpNotes]     = useState({});
   const [notesLoading, setNotesLoading] = useState(false);
 
@@ -4232,6 +4447,8 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
 
   const filterFields = [{key:'employee_id',label:'Emp ID',width:'100px'},{key:'full_name',label:'Name',width:'180px'}];
   const filteredSummary = useMemo(()=>applyFilters(summary,filters),[summary,filters]);
+  const PNL_VISIBLE_LIMIT = 75;
+  const visiblePnlSummary = showAllPnlRows ? filteredSummary : filteredSummary.slice(0, PNL_VISIBLE_LIMIT);
 
   // Per-employee lifetime totals broken out by category (Visa, Flights, Training, Salary, Income) —
   // aggregated from employee_pnl_monthly, which already carries each month's category breakdown.
@@ -4255,7 +4472,11 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
 
   const G = summary.reduce((a,r)=>{
     const dep=depositMap[r.employee_id]||0;
-    return {income:a.income+(r.lifetime_income||0)+dep,expense:a.expense+Math.max(0,(r.lifetime_expense||0)-dep),net:a.net+(r.lifetime_net||0)+2*dep};
+    const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
+    // Expense reduces as company recovers visa/onboarding costs from salary deductions
+    const effExpense=Math.max(0,(r.lifetime_expense||0)-dep-rec.recovered);
+    const effNet=(r.lifetime_net||0)+2*dep+rec.recovered;
+    return {income:a.income+(r.lifetime_income||0)+dep,expense:a.expense+effExpense,net:a.net+effNet};
   },{income:0,expense:0,net:0});
   const totalDeposits=Object.values(depositMap).reduce((s,v)=>s+v,0);
 
@@ -4298,7 +4519,7 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
           ⚠️ Couldn't load in-process candidate names/positions from HR for this table — temp-ID rows (if any) will still show using the raw ID as the name. Error: <code>{tempCandError}</code>
         </div>
       )}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'16px'}}>
+      <div className="finance-kpi-grid">
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>{totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>incl. AED {fmt(totalDeposits)} deposits received</div>}</div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div></div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Net Profit / Loss</div><div style={{fontSize:'22px',marginTop:'6px'}}><AmountTag value={G.net} /></div></div>
@@ -4328,15 +4549,16 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                 ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : filteredSummary.length===0
                   ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
-                  : filteredSummary.map(r=>{
+                  : visiblePnlSummary.map(r=>{
                       const dep=depositMap[r.employee_id]||0;
-                      const adjIncome=(r.lifetime_income||0)+dep;
-                      const adjExpense=Math.max(0,(r.lifetime_expense||0)-dep);
-                      const adjNet=(r.lifetime_net||0)+2*dep;
-                      const meta=empMeta&&empMeta[r.employee_id];
-                      const tcMeta=tempCandMeta[r.employee_id];
                       const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
                       const balance=rec.recoverable-rec.recovered;
+                      const adjIncome=(r.lifetime_income||0)+dep;
+                      // Expense reduces progressively as company recovers visa/onboarding costs from salary deductions
+                      const adjExpense=Math.max(0,(r.lifetime_expense||0)-dep-rec.recovered);
+                      const adjNet=(r.lifetime_net||0)+2*dep+rec.recovered;
+                      const meta=empMeta&&empMeta[r.employee_id];
+                      const tcMeta=tempCandMeta[r.employee_id];
                       const cat=categoryTotals[r.employee_id]||{visa:0,flights:0,training:0,salary:0,income:0};
                       // rec.recovered already includes deposits received (added once when recoveryMap is built) — this is the single source of truth, no further addition needed.
                       return (
@@ -4347,7 +4569,10 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
                           <td style={{...S.td,padding:'7px 6px'}}>{r.is_temp?<span style={{background:'#f0fdfa',color:'#0f766e',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>pending</span>:r.is_finance_only?<span style={{background:'#faf5ff',color:'#7c3aed',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Finance only</span>:((meta&&meta.joining_date)||'—')}</td>
                           <td style={{...S.td,padding:'7px 6px',color:'#166534'}}>{cat.income>0?fmt(cat.income):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
-                          <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>{fmt(adjExpense)}</td>
+                          <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>
+                            <div title={rec.recovered>0?`Gross: AED ${fmt((r.lifetime_expense||0)-dep)} · Recovered: AED ${fmt(rec.recovered)} · Net shown: AED ${fmt(adjExpense)}`:''}>{fmt(adjExpense)}</div>
+                            {rec.recovered>0&&<div style={{fontSize:'9.5px',color:'#94a3b8',fontWeight:600,lineHeight:'1.2',marginTop:'2px'}}>-{fmt(rec.recovered)} rcvd</div>}
+                          </td>
                           <td style={{...S.td,padding:'7px 6px'}}><AmountTag value={adjNet} /></td>
                           <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||rec.recovered>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}{dep>0&&<div style={{fontSize:'10px',color:'#94a3b8',fontWeight:600}}>incl. {fmt(dep)} deposit</div>}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
@@ -4360,6 +4585,12 @@ function PnlDashboard({ empMeta, onOpenEmployee }) {
             </tbody>
           </table>
         </div>
+        {filteredSummary.length > PNL_VISIBLE_LIMIT && (
+          <div className="pnl-row-limit">
+            <span>{showAllPnlRows ? `Showing all ${filteredSummary.length} employees` : `Showing first ${PNL_VISIBLE_LIMIT} of ${filteredSummary.length} employees for faster loading`}</span>
+            <button onClick={()=>setShowAllPnlRows(v=>!v)}>{showAllPnlRows ? 'Show less' : 'Show all rows'}</button>
+          </div>
+        )}
       </div>
 
       {selectedEmp&&empMeta&&empMeta[selectedEmp]&&(
@@ -4436,17 +4667,38 @@ function LoginScreen({ onLogin }) {
     onLogin(data.session);
   };
   return (
-    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#f1f5f9'}}>
-      <form onSubmit={submit} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'12px',padding:'32px',width:'320px'}}>
-        <h2 style={{margin:'0 0 4px',fontSize:'18px',fontWeight:800}}>SATCO Finance</h2>
-        <div style={{fontSize:'12px',color:'#64748b',marginBottom:'20px'}}>Sign in to continue</div>
-        <label style={S.label}>Email</label>
-        <input style={{...S.input,width:'100%',marginBottom:'12px'}} type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
-        <label style={S.label}>Password</label>
-        <input style={{...S.input,width:'100%',marginBottom:'16px'}} type="password" value={password} onChange={e=>setPassword(e.target.value)} required />
-        {error&&<div style={{color:'#dc2626',fontSize:'12px',marginBottom:'12px'}}>{error}</div>}
-        <button type="submit" disabled={loading} style={{...S.btnPri,width:'100%'}}>{loading?'Signing in...':'Sign In'}</button>
-      </form>
+    <div className="login-shell">
+      <div className="login-card">
+        <section className="login-hero">
+          <div>
+            <div className="brand-card" style={{boxShadow:'none',borderColor:'rgba(255,255,255,.16)',background:'rgba(255,255,255,.08)',width:'fit-content'}}>
+              <div className="brand-logo-wrap"><SatcoLogo /></div>
+              <div>
+                <div className="portal-name">FINANCE PORTAL</div>
+                <div className="brand-subtitle">Employee cost, payroll and P&amp;L portal</div>
+              </div>
+            </div>
+            <h1>Finance work without the confusion.</h1>
+            <p>Simple screens for salary, employee costs, timesheets, billing, WPS, and profit/loss tracking.</p>
+            <div className="login-checks">
+              <div>✓ Start from Dashboard for the big picture</div>
+              <div>✓ Use Payroll for salaries and WPS</div>
+              <div>✓ Use Costs and Revenue to keep P&amp;L clean</div>
+            </div>
+          </div>
+          <p style={{fontSize:'12px',marginTop:'28px'}}>Designed for everyday finance users — clear, direct, and no unnecessary steps.</p>
+        </section>
+        <form onSubmit={submit} className="login-form">
+          <h2>Sign in</h2>
+          <div className="hint">Use your SATCO Finance account to continue.</div>
+          <label style={S.label}>Email</label>
+          <input style={{...S.input,width:'100%',marginBottom:'12px',padding:'11px 12px',borderRadius:'12px'}} type="email" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="email" required />
+          <label style={S.label}>Password</label>
+          <input style={{...S.input,width:'100%',marginBottom:'16px',padding:'11px 12px',borderRadius:'12px'}} type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" required />
+          {error&&<div className="login-error">{error}</div>}
+          <button type="submit" disabled={loading} style={{...S.btnPri,width:'100%',padding:'12px 16px',borderRadius:'14px',fontSize:'14px'}}>{loading?'Signing in...':'Sign In'}</button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -4648,7 +4900,17 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Training Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.training)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Salary Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.salary)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Income Total</div><div style={{fontWeight:700,color:'#166534'}}>AED {fmt(incomeTotal)}</div></div>
-          <div><div style={{color:'#94a3b8',fontWeight:600}}>Net (Income − Costs)</div><div style={{fontWeight:800}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)} /></div></div>
+          <div>
+            <div style={{color:'#94a3b8',fontWeight:600}}>Net (Income − Costs)</div>
+            {/* Effective net: gross costs minus amounts already recovered from salary — matches P&L Dashboard */}
+            {recovery && recovery.totalRecovered>0
+              ? <div style={{fontWeight:800}}>
+                  <AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)+recovery.totalRecovered} />
+                  <div style={{fontSize:'9.5px',color:'#94a3b8',fontWeight:600,marginTop:'2px'}}>net of AED {fmt(recovery.totalRecovered)} recovered</div>
+                </div>
+              : <div style={{fontWeight:800}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)} /></div>
+            }
+          </div>
         </div>
       </div>
 
@@ -4669,7 +4931,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>+ WPS Recoveries Logged</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.recoveredFromInvoices)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Balance to Recover</div><div style={{fontWeight:800,fontSize:'16px',color:recovery.balance>0?'#dc2626':'#166534'}}>AED {fmt(Math.abs(recovery.balance))}{recovery.balance<0?' (over-recovered)':''}</div></div>
           </div>
-          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}>"Recovered" = sum of "Deductions" entered each month in Monthly Costs, plus any Deposits Received logged in Onboarding &amp; Misc, plus any "Recovered" amount on a manual WPS Overpaid entry, plus any WPS recoveries logged on Client Billing. "WPS Overpaid vs Billing" = manually-entered WPS-overpaid rows from Onboarding &amp; Misc, plus any amount calculated live from Client Billing invoices — same totals shown on the P&amp;L Dashboard, so these figures will always match. To recover this employee's costs, enter the deduction amount when adding/editing their monthly salary record.</div>
+          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}><strong>P&amp;L impact:</strong> As amounts are recovered from this employee&apos;s salary, the <em>Total Expense</em> on the P&amp;L Dashboard reduces by the same amount and Net P/L improves — the P&amp;L always shows the company&apos;s <em>net</em> cost, not the gross upfront cost. Recovered = Deductions entered each month in Monthly Costs + Deposits Received + WPS Overpaid recovered + WPS recoveries logged on Client Billing. To recover costs, enter the deduction amount when adding/editing the monthly salary record.</div>
         </div>
       )}
 
@@ -6260,6 +6522,87 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
 }
 
 
+// ── APP SHELL / NAVIGATION ────────────────────────────────────────
+
+const SATCO_LOGO_SRC = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzNjAgMTMyIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlNBVENPIGxvZ28iPgogIDxyZWN0IHdpZHRoPSIzNjAiIGhlaWdodD0iMTMyIiByeD0iMjIiIGZpbGw9IiNmZmZmZmYiLz4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyMyAxOCkiPgogICAgPHBhdGggZD0iTTggNDggQzM1IDE4IDcyIDcgMTEyIDE1IEM4OCAzMiA3MCA1NCA2MCA4MiBDNDUgNjkgMjcgNTggOCA0OFoiIGZpbGw9IiMxZjVmYmYiLz4KICAgIDxwYXRoIGQ9Ik03MCAxNyBDMTA3IDYgMTQxIDE0IDE2NyAzOSBDMTMwIDM1IDk5IDQ3IDc0IDc3IEM3MiA1MyA3MCAzMyA3MCAxN1oiIGZpbGw9IiNmN2I3MzMiLz4KICAgIDxwYXRoIGQ9Ik0xMDMgNTIgQzEzMiAzNyAxNzIgNDAgMjA3IDY1IEMxNjYgNjEgMTMyIDcyIDEwMSA5OSBDMTAxIDgyIDEwMSA2NiAxMDMgNTJaIiBmaWxsPSIjZWE2YTIwIi8+CiAgICA8cGF0aCBkPSJNMjEgNTEgQzQ4IDYxIDcyIDc4IDkxIDEwMiBDNTcgOTkgMzEgODMgMTMgNThaIiBmaWxsPSIjMTIzZjgzIiBvcGFjaXR5PSIwLjk1Ii8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzNSIgeT0iNzciIGZvbnQtZmFtaWx5PSJBcmlhbCwgSGVsdmV0aWNhLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjQ4IiBmb250LXdlaWdodD0iOTAwIiBmaWxsPSIjMTc0NThmIiBsZXR0ZXItc3BhY2luZz0iMSI+U0FUQ088L3RleHQ+CiAgPHBhdGggZD0iTTEzNiA4OCBIMzE3IiBzdHJva2U9IiNmMmI3MDUiIHN0cm9rZS13aWR0aD0iNyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg==';
+
+function SatcoLogo() {
+  return <img className="brand-logo" src={SATCO_LOGO_SRC} alt="SATCO" />;
+}
+
+function PortalLaunchpad({ active, onOpen }) {
+  return (
+    <div className="dashboard-launch">
+      <div className="launch-hero">
+        <div>
+          <div className="launch-kicker">Start here</div>
+          <h2>Choose what you need to do.</h2>
+          <p>All finance tools are available as large buttons on this first screen. Pick a module, complete the entry, then come back to Dashboard to review the impact on profit/loss.</p>
+        </div>
+        <div className="launch-help">
+          <span>✓ Big tap-friendly buttons</span>
+          <span>✓ Works cleanly on mobile</span>
+          <span>✓ Simple flow: Payroll → Costs → Revenue → P&amp;L</span>
+        </div>
+      </div>
+      <div className="launch-groups">
+        {PORTAL_NAV_GROUPS.map(group=>(
+          <div className="launch-group" key={group.title}>
+            <div className="launch-group-title">{group.title}</div>
+            <div className="module-grid">
+              {group.items.map(key=>{
+                const item = PORTAL_TAB_MAP[key];
+                return (
+                  <button key={key} className={'module-card '+(active===key?'active':'')} onClick={()=>onOpen(key)}>
+                    <span className="module-card-icon">{item.icon}</span>
+                    <span>
+                      <span className="module-card-title">{item.label}</span>
+                      <span className="module-card-desc">{item.desc}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const PORTAL_TABS = [
+  { key:'dashboard', icon:'📊', label:'Dashboard', short:'Overview', desc:'Company-wide profit, loss, idle months, and employee drill-down.' },
+  { key:'salary_pipeline', icon:'📋', label:'Salary Pipeline', short:'Upload & match', desc:'Import salary sheets, match employees, and save actual salaries.' },
+  { key:'salary_profiles', icon:'💼', label:'Salary Master', short:'Payroll setup', desc:'Basic salary, allowance, IBAN, and HR salary bridge status.' },
+  { key:'deductions', icon:'🧾', label:'Deduction Ledger', short:'HR deductions', desc:'Employee deductions, recoveries, balances, and supporting notes.' },
+  { key:'wps', icon:'🏦', label:'WPS Report', short:'Bank file', desc:'Prepare WPS data from salary master and HR employee records.' },
+  { key:'monthly', icon:'📅', label:'Monthly Costs', short:'Recurring', desc:'Salary, food, accommodation, transport, and other monthly costs.' },
+  { key:'visa', icon:'🛂', label:'Visa Costs', short:'Employee cost', desc:'Track recoverable and non-recoverable visa-related expenses.' },
+  { key:'flights', icon:'✈️', label:'Flights', short:'Tickets', desc:'Mobilization, demobilization, leave, and emergency ticket costs.' },
+  { key:'training', icon:'🎓', label:'Trainings', short:'Courses', desc:'Training names, dates, costs, and recovery status.' },
+  { key:'other', icon:'🧰', label:'Onboarding & Misc', short:'Other spend', desc:'Deposits, advances, medicals, PPE, and miscellaneous employee costs.' },
+  { key:'timesheets', icon:'⏱️', label:'Timesheets / Income', short:'Revenue input', desc:'Enter employee time and income for monthly P&L.' },
+  { key:'billing', icon:'🧾', label:'Client Billing', short:'Invoices', desc:'Create client invoices, track rates, recovery, and billing status.' },
+];
+const PORTAL_TAB_MAP = Object.fromEntries(PORTAL_TABS.map(t=>[t.key,t]));
+const PORTAL_NAV_GROUPS = [
+  { title:'Start here', items:['dashboard','salary_pipeline'] },
+  { title:'Payroll', items:['salary_profiles','deductions','wps'] },
+  { title:'Employee Costs', items:['monthly','visa','flights','training','other'] },
+  { title:'Revenue', items:['timesheets','billing'] },
+];
+
+function PortalGuide({ active }) {
+  return null;
+  return (
+    <div className="guide-grid">
+      <div className="guide-card"><b>1. Check P&amp;L</b><span>Start with the dashboard to see which employees, months, or costs need attention.</span></div>
+      <div className="guide-card"><b>2. Fix payroll data</b><span>Use Salary Master and WPS Report before closing monthly payroll.</span></div>
+      <div className="guide-card"><b>3. Match costs to income</b><span>Use Costs, Timesheets, and Billing so every employee has a clean monthly story.</span></div>
+    </div>
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────
 function App() {
   const [session,   setSession]   = useState(undefined);
@@ -6277,8 +6620,6 @@ function App() {
     const {data:l}=db.auth.onAuthStateChange((_,sess)=>setSession(sess));
     return ()=>l.subscription.unsubscribe();
   },[]);
-
-
 
   useEffect(()=>{
     let alive = true;
@@ -6353,61 +6694,129 @@ function App() {
     return ()=>{ alive = false; };
   },[]);
 
-  const tabs=[['dashboard','P&L Dashboard'],['salary_pipeline','📋 Salary Pipeline'],['salary_profiles','💼 Salary Master'],['visa','Visa Costs'],['flights','Flights'],['training','Trainings'],['other','Onboarding & Misc'],['deductions','📋 Deduction Ledger (HR)'],['monthly','Monthly Costs'],['timesheets','Timesheets / Income'],['billing','Client Billing (Invoice/WPS)'],['wps','📋 WPS Report']];
-
   if (session===undefined) return null;
   if (!session) return <LoginScreen onLogin={setSession} />;
 
+  const activeMeta = PORTAL_TAB_MAP[tab] || PORTAL_TAB_MAP.dashboard;
+  const hrIsConnected = !!(hrSalaryRows && hrSalaryRows.length);
+  const employeeCount = employees.filter(e=>!e.is_temp).length;
+  const pendingCount = employees.filter(e=>e.is_temp).length;
+
+  const renderContent = () => {
+    if (detailEmp) {
+      return (
+        <>
+          <div className="detail-backbar">
+            <button className="quick-back" onClick={()=>setDetailEmp(null)}>← Back to portal</button>
+          </div>
+          <EmployeeDetailPage employeeId={detailEmp.id} employeeName={detailEmp.name} employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} onBack={()=>setDetailEmp(null)} />
+        </>
+      );
+    }
+    return (
+      <>
+        {tab==='dashboard'       && <>
+          <PortalLaunchpad active={tab} onOpen={(key)=>{setTab(key);setDetailEmp(null);window.scrollTo({top:0,behavior:'smooth'});}} />
+          <div className="dashboard-section-label">Live P&amp;L Dashboard</div>
+          <PnlDashboard empMeta={empMeta} onOpenEmployee={(id,name)=>setDetailEmp({id,name})} />
+        </>}
+        {tab==='salary_pipeline' && <SalaryPipelineTab employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
+        {tab==='salary_profiles' && <SalaryProfilesTab employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
+        {tab==='deductions'      && <DeductionLedgerTab employees={employees} empMeta={empMeta} />}
+        {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date" recoverableSupport
+          fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
+        {tab==='flights'   && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date" recoverableSupport
+          fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
+        {tab==='training'  && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date" recoverableSupport
+          fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
+        {tab==='other'     && <OtherCostsTable employees={employees} />}
+        {tab==='monthly'   && <MonthlyCostsTable employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
+        {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
+        {tab==='billing'    && <ClientBillingTab employees={employees} />}
+        {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
+      </>
+    );
+  };
+
   return (
     <div className="container">
-      <div style={{marginBottom:'18px',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-        <div>
-          <h1 style={{margin:0,fontSize:'22px',fontWeight:800}}>SATCO — Employee Finance &amp; P&amp;L</h1>
-          <div style={{fontSize:'13px',color:'#64748b',marginTop:'4px'}}>Track visa costs, flights, trainings, monthly recurring costs, and timesheet income per employee.</div>
-        </div>
-        <button onClick={()=>db.auth.signOut()} style={{padding:'8px 14px',borderRadius:'8px',border:'1px solid #e2e8f0',background:'#fff',color:'#475569',fontWeight:700,fontSize:'12px',cursor:'pointer'}}>Sign Out</button>
-      </div>
+      <div className="satco-shell">
+        <aside className="satco-sidebar">
+          <div className="brand-card">
+            <div className="brand-logo-wrap"><SatcoLogo /></div>
+            <div>
+              <div className="portal-name">FINANCE PORTAL</div>
+              <div className="brand-subtitle">Employee Finance &amp; P&amp;L</div>
+            </div>
+          </div>
 
-      {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v6','done');setShowMig(false);}} />}
-      {tempCandError && (
-        <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'8px',padding:'10px 16px',margin:'0 0 14px',color:'#991b1b',fontSize:'12.5px'}}>
-          ⚠️ Couldn't load in-process candidates (Temp Employee IDs) from HR — they won't appear in the Employee ID picker until this is fixed. Error: <code>{tempCandError}</code>
-          <div style={{marginTop:'4px',fontSize:'11.5px',color:'#7f1d1d'}}>Likely cause: a Row Level Security policy on <code>hiring_pipeline</code> in the HR Supabase project is blocking the anon key used here. Check Supabase → HR project → Authentication → Policies → hiring_pipeline → SELECT policy.</div>
-        </div>
-      )}
-
-      {!detailEmp && (
-        <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
-          {tabs.map(([k,l])=>(
-            <button key={k} onClick={()=>{setTab(k);setDetailEmp(null);}}
-              style={{padding:'9px 16px',borderRadius:'8px',border:'1px solid '+(tab===k?'#0f172a':'#e2e8f0'),background:tab===k?'#0f172a':'#fff',color:tab===k?'#fff':'#475569',fontWeight:700,fontSize:'13px',cursor:'pointer'}}>
-              {l}
-            </button>
+          {PORTAL_NAV_GROUPS.map(group=>(
+            <div className="nav-group" key={group.title}>
+              <div className="nav-title">{group.title}</div>
+              {group.items.map(key=>{
+                const item = PORTAL_TAB_MAP[key];
+                return (
+                  <button key={key} className={'nav-btn '+(tab===key && !detailEmp ? 'active' : '')} onClick={()=>{setTab(key);setDetailEmp(null);}}>
+                    <span className="nav-icon">{item.icon}</span>
+                    <span>{item.label}<span className="nav-caption">{item.short}</span></span>
+                  </button>
+                );
+              })}
+            </div>
           ))}
-        </div>
-      )}
 
-      {detailEmp ? (
-        <EmployeeDetailPage employeeId={detailEmp.id} employeeName={detailEmp.name} employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} onBack={()=>setDetailEmp(null)} />
-      ) : (
-        <>
-          {tab==='dashboard'       && <PnlDashboard empMeta={empMeta} onOpenEmployee={(id,name)=>setDetailEmp({id,name})} />}
-          {tab==='salary_pipeline' && <SalaryPipelineTab employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
-          {tab==='salary_profiles' && <SalaryProfilesTab employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
-          {tab==='deductions'      && <DeductionLedgerTab employees={employees} empMeta={empMeta} />}
-          {tab==='visa'      && <CostTable title="Visa Costs" table="employee_visa_costs" employees={employees} dateField="cost_date" recoverableSupport
-            fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
-          {tab==='flights'   && <CostTable title="Flight Tickets" table="employee_flights" employees={employees} dateField="flight_date" recoverableSupport
-            fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
-          {tab==='training'  && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date" recoverableSupport
-            fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
-          {tab==='other'     && <OtherCostsTable employees={employees} />}
-          {tab==='monthly'   && <MonthlyCostsTable employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
-          {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
-          {tab==='billing'    && <ClientBillingTab employees={employees} />}
-          {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
-        </>
-      )}
+          <div className="sidebar-footer">
+            <strong>Simple rule</strong>
+            <span>Dashboard shows the truth. Payroll fixes salary. Costs and Revenue explain the P&amp;L.</span>
+          </div>
+        </aside>
+
+        <main className="satco-main">
+          <div className="topbar">
+            <div>
+              <div className="topbar-brand">
+                <div className="brand-logo-wrap"><SatcoLogo /></div>
+                <div>
+                  <div className="portal-name">FINANCE PORTAL</div>
+                  <div className="brand-subtitle">SATCO Employee Finance &amp; P&amp;L</div>
+                </div>
+              </div>
+              <div className="eyebrow">Finance Portal</div>
+              <h1 className="page-title">{detailEmp ? (detailEmp.name || detailEmp.id) : activeMeta.label}</h1>
+              <div className="page-desc">{detailEmp ? 'Single employee view with salary, costs, recoveries, income, and monthly profit/loss.' : activeMeta.desc}</div>
+            </div>
+            <div className="top-actions">
+              <span className="pill">👥 {employeeCount || 0} employees</span>
+              {pendingCount > 0 && <span className="pill warn">⏳ {pendingCount} pending IDs</span>}
+              <span className={'pill '+(hrIsConnected?'good':'warn')}>{hrIsConnected?'✓ HR connected':'⚠ Local salary data'}</span>
+              <button onClick={()=>db.auth.signOut()} className="signout-btn">Sign Out</button>
+            </div>
+          </div>
+
+          {!detailEmp && (
+            <div className="mobile-section-picker">
+              <select value={tab} onChange={e=>{setTab(e.target.value);setDetailEmp(null);}}>
+                {PORTAL_NAV_GROUPS.map(group=>(
+                  <optgroup key={group.title} label={group.title}>
+                    {group.items.map(key=><option key={key} value={key}>{PORTAL_TAB_MAP[key].label}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v6','done');setShowMig(false);}} />}
+          {tempCandError && (
+            <div className="alert-card danger">
+              <b>Pending candidates could not be loaded from HR.</b> Temporary employee IDs will not appear until HR access is fixed.
+              <div style={{marginTop:'4px',fontSize:'12px'}}>Technical detail: <code>{tempCandError}</code></div>
+            </div>
+          )}
+
+          <PortalGuide active={detailEmp ? 'detail' : tab} />
+          <div className="content-card">{renderContent()}</div>
+        </main>
+      </div>
     </div>
   );
 }
