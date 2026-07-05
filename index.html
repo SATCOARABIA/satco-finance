@@ -4815,7 +4815,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   const [summary,      setSummary]      = useState([]);
   const [monthly,      setMonthly]      = useState([]);
   const [deposits,     setDeposits]     = useState([]);
-  const [recoverySrc,  setRecoverySrc]  = useState({visa:[],flights:[],training:[],other:[],deductions:[],invoices:[],invoiceLines:[],invoiceRecoveries:[]});
+  const [recoverySrc,  setRecoverySrc]  = useState({visa:[],flights:[],training:[],other:[],deductions:[],monthlyCosts:[],timesheets:[],invoices:[],invoiceLines:[],invoiceRecoveries:[]});
   const [loading,      setLoading]      = useState(true);
   const [selectedEmp,  setSelectedEmp]  = useState(null);
   const [filters,      setFilters]      = useState({});
@@ -4828,7 +4828,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
 
   const load = async () => {
     setLoading(true);
-    const [s,m,d,visa,flights,training,other,ded,inv,lns,rec,tempCands] = await Promise.all([
+    const [s,m,d,visa,flights,training,other,ded,timesheets,inv,lns,rec,tempCands] = await Promise.all([
       db.from('employee_pnl_summary').select('*').order('employee_id',{ascending:true}),
       db.from('employee_pnl_monthly').select('*').order('month',{ascending:false}),
       db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
@@ -4836,7 +4836,8 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       db.from('employee_flights').select('employee_id,cost,recoverable'),
       db.from('employee_training_costs').select('employee_id,cost,recoverable'),
       db.from('employee_other_costs').select('employee_id,amount,recoverable,cost_type,recovered_amount,notes'),
-      db.from('employee_monthly_costs').select('employee_id,salary_deductions'),
+      db.from('employee_monthly_costs').select('employee_id,month,salary,food,accommodation,transport,other,salary_deductions'),
+      db.from('employee_timesheets').select('employee_id,hours,rate'),
       db.from('employee_client_invoices').select('id,employee_id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr'),
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
       db.from('employee_client_recoveries').select('invoice_id,employee_id,amount_aed'),
@@ -4911,7 +4912,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     if (d.data) setDeposits(d.data);
     setRecoverySrc({
       visa: visa.data||[], flights: flights.data||[], training: training.data||[],
-      other: other.data||[], deductions: ded.data||[],
+      other: other.data||[], deductions: ded.data||[], monthlyCosts: ded.data||[], timesheets: timesheets.data||[],
       invoices: inv.data||[], invoiceLines: lns.data||[], invoiceRecoveries: rec.data||[],
     });
     setLoading(false);
@@ -5002,38 +5003,83 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     return m;
   },[recoverySrc]);
 
+
+  // P&L numbers shown on the dashboard are calculated from the original source tables,
+  // not from the employee_pnl_monthly/summary helper views. Those helper views can contain
+  // duplicate/stale rows after Excel imports or manual repairs, which is why the dashboard
+  // was showing inflated figures. This source-of-truth map matches the employee detail page:
+  // income = Timesheets / Income, salary cost = Monthly Costs net payout, plus visa/flight/training/other actual costs.
+  const rawPnlMap = useMemo(()=>{
+    const m = {};
+    const n = (v)=>Number(v)||0;
+    const ensure = (id) => {
+      id = canonEmpId(id);
+      if (!id) return null;
+      if (!m[id]) m[id] = { income:0, salary:0, visa:0, flights:0, training:0, other:0, expense:0 };
+      return m[id];
+    };
+    (recoverySrc.timesheets||[]).forEach(r=>{
+      const t = ensure(r.employee_id); if (!t) return;
+      t.income += n(r.hours) * n(r.rate);
+    });
+    (recoverySrc.monthlyCosts||[]).forEach(r=>{
+      const t = ensure(r.employee_id); if (!t) return;
+      const salaryNet = n(r.salary) + n(r.food) + n(r.accommodation) + n(r.transport) + n(r.other) - n(r.salary_deductions);
+      t.salary += salaryNet;
+      t.expense += salaryNet;
+    });
+    (recoverySrc.visa||[]).forEach(r=>{ const t=ensure(r.employee_id); if(t){ const v=n(r.cost); t.visa+=v; t.expense+=v; } });
+    (recoverySrc.flights||[]).forEach(r=>{ const t=ensure(r.employee_id); if(t){ const v=n(r.cost); t.flights+=v; t.expense+=v; } });
+    (recoverySrc.training||[]).forEach(r=>{ const t=ensure(r.employee_id); if(t){ const v=n(r.cost); t.training+=v; t.expense+=v; } });
+    (recoverySrc.other||[]).forEach(r=>{
+      const type = String(r.cost_type||'');
+      // Security deposits are recoveries/cash received, not operating cost. WPS overpayment recovery
+      // is also not an extra cost because the WPS paid amount is already inside Monthly Costs salary.
+      if (type==='security_deposit' || type==='wps_overpayment_recovery') return;
+      const t=ensure(r.employee_id); if(t){ const v=n(r.amount); t.other+=v; t.expense+=v; }
+    });
+    Object.values(m).forEach(t=>{
+      ['income','salary','visa','flights','training','other','expense'].forEach(k=>{ t[k]=Math.round((t[k]||0)*100)/100; });
+      t.net = Math.round((t.income - t.expense)*100)/100;
+    });
+    return m;
+  },[recoverySrc]);
+
   const filterFields = [{key:'employee_id',label:'Emp ID',width:'100px'},{key:'full_name',label:'Name',width:'180px'}];
   const filteredSummary = useMemo(()=>applyFilters(summary,filters),[summary,filters]);
   const PNL_VISIBLE_LIMIT = 75;
   const visiblePnlSummary = showAllPnlRows ? filteredSummary : filteredSummary.slice(0, PNL_VISIBLE_LIMIT);
 
-  // Per-employee lifetime totals broken out by category (Visa, Flights, Training, Salary, Income) —
-  // aggregated from employee_pnl_monthly, which already carries each month's category breakdown.
+  // Per-employee lifetime totals broken out by category. Use the raw source-of-truth
+  // calculations above so duplicated helper-view rows cannot inflate the dashboard.
   const categoryTotals = useMemo(()=>{
     const m = {};
-    const ensure = (id) => { id=canonEmpId(id); if (!id) return { visa:0, flights:0, training:0, salary:0, income:0 }; if (!m[id]) m[id] = { visa:0, flights:0, training:0, salary:0, income:0 }; return m[id]; };
-    monthly.forEach(r=>{
-      const t = ensure(r.employee_id);
-      t.visa     += Number(r.visa_cost)||0;
-      t.flights  += Number(r.flight_cost)||0;
-      t.training += Number(r.training_cost)||0;
-      t.salary   += Number(r.salary)||0;
-      t.income   += Number(r.total_income)||0;
+    Object.entries(rawPnlMap||{}).forEach(([id,t])=>{
+      m[id] = {
+        visa:Number(t.visa)||0,
+        flights:Number(t.flights)||0,
+        training:Number(t.training)||0,
+        salary:Number(t.salary)||0,
+        income:Number(t.income)||0,
+        other:Number(t.other)||0,
+        expense:Number(t.expense)||0,
+      };
     });
     return m;
-  },[monthly]);
+  },[rawPnlMap]);
 
   const empMonthly = useMemo(()=>
     [...monthly.filter(r=>canonEmpId(r.employee_id)===canonEmpId(selectedEmp))].sort((a,b)=>a.month<b.month?1:a.month>b.month?-1:0),
     [monthly,selectedEmp]);
 
   const G = summary.reduce((a,r)=>{
-    const dep=depositMap[r.employee_id]||0;
-    const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
-    // Expense reduces as company recovers visa/onboarding costs from salary deductions
-    const effExpense=Math.max(0,(r.lifetime_expense||0)-dep-rec.recovered);
-    const effNet=(r.lifetime_net||0)+2*dep+rec.recovered;
-    return {income:a.income+(r.lifetime_income||0)+dep,expense:a.expense+effExpense,net:a.net+effNet};
+    const id = canonEmpId(r.employee_id);
+    const raw = rawPnlMap[id];
+    const rec = recoveryMap[id]||{recoverable:0,recovered:0};
+    const income = raw ? Number(raw.income)||0 : Number(r.lifetime_income)||0;
+    const grossExpense = raw ? Number(raw.expense)||0 : Number(r.lifetime_expense)||0;
+    const netExpense = Math.max(0, grossExpense - (Number(rec.recovered)||0));
+    return {income:a.income+income, expense:a.expense+netExpense, net:a.net+(income-netExpense)};
   },{income:0,expense:0,net:0});
   const totalDeposits=Object.values(depositMap).reduce((s,v)=>s+v,0);
 
@@ -5048,13 +5094,20 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     {key:'idle_months',label:'Idle Months'},
   ];
   const pnlExportRows = useMemo(()=>filteredSummary.map(r=>{
-    const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
-    const dep=depositMap[r.employee_id]||0;
-    const cat=categoryTotals[r.employee_id]||{visa:0,salary:0,income:0};
+    const id=canonEmpId(r.employee_id);
+    const rec=recoveryMap[id]||{recoverable:0,recovered:0};
+    const dep=depositMap[id]||0;
+    const raw=rawPnlMap[id];
+    const cat=categoryTotals[id]||{visa:0,salary:0,income:0,expense:0};
+    const income = raw ? Number(raw.income)||0 : Number(r.lifetime_income)||0;
+    const grossExpense = raw ? Number(raw.expense)||0 : Number(r.lifetime_expense)||0;
+    const netExpense = Math.max(0, grossExpense - (Number(rec.recovered)||0));
+    const net = income - netExpense;
     // rec.recovered already includes deposits received (folded in once when recoveryMap is built) — do not add dep again.
-    return {...r, deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered, balance_to_recover:rec.recoverable-rec.recovered,
+    return {...r, lifetime_income:income, lifetime_expense:netExpense, lifetime_net:net,
+      deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered, balance_to_recover:rec.recoverable-rec.recovered,
       visa_total:cat.visa, salary_total:cat.salary, income_total:cat.income};
-  }),[filteredSummary,recoveryMap,depositMap,categoryTotals]);
+  }),[filteredSummary,recoveryMap,depositMap,categoryTotals,rawPnlMap]);
 
   const renderNotesCell=(monthKey)=>{
     const n=empNotes[monthKey];
@@ -5077,7 +5130,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         </div>
       )}
       <div className="finance-kpi-grid">
-        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>{totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>incl. AED {fmt(totalDeposits)} deposits received</div>}</div>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>{totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>AED {fmt(totalDeposits)} deposits shown under recovered, not income</div>}</div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div></div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Net Profit / Loss</div><div style={{fontSize:'22px',marginTop:'6px'}}><AmountTag value={G.net} /></div></div>
       </div>
@@ -5107,16 +5160,19 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                 : filteredSummary.length===0
                   ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : visiblePnlSummary.map(r=>{
-                      const dep=depositMap[r.employee_id]||0;
-                      const rec=recoveryMap[r.employee_id]||{recoverable:0,recovered:0};
+                      const id=canonEmpId(r.employee_id);
+                      const dep=depositMap[id]||0;
+                      const rec=recoveryMap[id]||{recoverable:0,recovered:0};
                       const balance=rec.recoverable-rec.recovered;
-                      const adjIncome=(r.lifetime_income||0)+dep;
-                      // Expense reduces progressively as company recovers visa/onboarding costs from salary deductions
-                      const adjExpense=Math.max(0,(r.lifetime_expense||0)-dep-rec.recovered);
-                      const adjNet=(r.lifetime_net||0)+2*dep+rec.recovered;
-                      const meta=empMeta&&(empMeta[r.employee_id]||empMeta[canonEmpId(r.employee_id)]);
-                      const tcMeta=tempCandMeta[canonEmpId(r.employee_id)]||tempCandMeta[r.employee_id];
-                      const cat=categoryTotals[r.employee_id]||{visa:0,flights:0,training:0,salary:0,income:0};
+                      const raw=rawPnlMap[id];
+                      const adjIncome=raw ? (Number(raw.income)||0) : (Number(r.lifetime_income)||0);
+                      // Expense is sourced from original cost tables, then reduced by actual recoveries/deposits received once.
+                      const grossExpense=raw ? (Number(raw.expense)||0) : (Number(r.lifetime_expense)||0);
+                      const adjExpense=Math.max(0,grossExpense-(Number(rec.recovered)||0));
+                      const adjNet=adjIncome-adjExpense;
+                      const meta=empMeta&&(empMeta[r.employee_id]||empMeta[id]);
+                      const tcMeta=tempCandMeta[id]||tempCandMeta[r.employee_id];
+                      const cat=categoryTotals[id]||{visa:0,flights:0,training:0,salary:0,income:0,expense:grossExpense};
                       // rec.recovered already includes deposits received (added once when recoveryMap is built) — this is the single source of truth, no further addition needed.
                       return (
                         <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}>
@@ -5127,7 +5183,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                           <td style={{...S.td,padding:'7px 6px',color:'#166534'}}>{cat.income>0?fmt(cat.income):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>
-                            <div title={rec.recovered>0?`Gross: AED ${fmt((r.lifetime_expense||0)-dep)} · Recovered: AED ${fmt(rec.recovered)} · Net shown: AED ${fmt(adjExpense)}`:''}>{fmt(adjExpense)}</div>
+                            <div title={rec.recovered>0?`Gross: AED ${fmt(grossExpense)} · Recovered: AED ${fmt(rec.recovered)} · Net shown: AED ${fmt(adjExpense)}`:''}>{fmt(adjExpense)}</div>
                             {rec.recovered>0&&<div style={{fontSize:'9.5px',color:'#94a3b8',fontWeight:600,lineHeight:'1.2',marginTop:'2px'}}>-{fmt(rec.recovered)} rcvd</div>}
                           </td>
                           <td style={{...S.td,padding:'7px 6px'}}><AmountTag value={adjNet} /></td>
