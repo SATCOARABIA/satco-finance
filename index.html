@@ -1016,14 +1016,14 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
         </div>
       )}
 
-      <div className="drag-scroll" style={{overflowX:'auto'}}>
+      <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
           <thead className="tbl-sticky-th"><tr>
-            {!hideEmpFilter && <th style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>Emp ID</th>}
-            {!hideEmpFilter && <th style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>Name</th>}
-            {fields.map(f=><th key={f.key} style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{f.label}</th>)}
-            {recoverableSupport && <th style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>Recoverable</th>}
-            <th style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}></th>
+            {!hideEmpFilter && <th style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>Emp ID</th>}
+            {!hideEmpFilter && <th style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>Name</th>}
+            {fields.map(f=><th key={f.key} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{f.label}</th>)}
+            {recoverableSupport && <th style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>Recoverable</th>}
+            <th style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}></th>
           </tr></thead>
           <tbody>
             {loading
@@ -1694,10 +1694,10 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
         </div>
       )}
 
-      <div className="drag-scroll" style={{overflowX:'auto'}}>
+      <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
           <thead className="tbl-sticky-th"><tr>
-            {(hideEmpFilter?['Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']:['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}
+            {(hideEmpFilter?['Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']:['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}
           </tr></thead>
           <tbody>
             {loading
@@ -1910,9 +1910,9 @@ function TimesheetsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
         </div>
       )}
 
-      <div className="drag-scroll" style={{overflowX:'auto'}}>
+      <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Month','Client/Project','Mode','Hours','Rate','Income','Remarks','']:['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+          <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Month','Client/Project','Mode','Hours','Rate','Income','Remarks','']:['Emp ID','Name','Month','Client/Project','Mode','Hours','Rate','Income','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -2127,9 +2127,9 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
         </div>
       )}
 
-      <div className="drag-scroll" style={{overflowX:'auto'}}>
+      <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks','']:['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+          <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks','']:['Emp ID','Name','Cost Type','Date','Amount','Recoverable','Recovered','Outstanding','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -2825,9 +2825,9 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
           </div>
         )}
 
-        <div className="drag-scroll" style={{overflowX:'auto'}}>
+        <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-            <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']:['Emp ID','Name','Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+            <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']:['Emp ID','Name','Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
             <tbody>
               {loading
                 ? <tr><td colSpan={hideEmpFilter?11:12} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -5230,7 +5230,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
           <button style={S.btnExp} onClick={()=>exportCSV(pnlExportRows,'pnl_summary',pnlCsvCols)}>Export CSV</button>
         </div>
         <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
-        <div className="drag-scroll" style={{overflowX:'auto'}}>
+        <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px',tableLayout:'fixed'}}>
             <thead className="tbl-sticky-th"><tr>
               {[
@@ -5240,7 +5240,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                 ['Recoverable','74px'],['Recovered / Deposits Received','84px'],
                 ['Balance to Recover','80px'],['Idle Months','64px'],['',36],
               ].map(([h,w])=>(
-                <th key={h} style={{...S.th,whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere',lineHeight:'1.3',width:w,verticalAlign:'bottom',position:'sticky',top:'var(--stk-3)',zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>
+                <th key={h} style={{...S.th,whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere',lineHeight:'1.3',width:w,verticalAlign:'bottom',position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
