@@ -86,10 +86,10 @@
   .brand-logo { width:100%; height:100%; object-fit:contain; display:block; image-rendering:auto; }
   .portal-name { font-size:17px; line-height:1; font-weight:950; letter-spacing:.03em; color:#fff; }
   .brand-card .portal-name { color:#fff; }
-  .topbar-brand { display:flex; align-items:center; gap:13px; min-width:0; margin-bottom:10px; }
-  .topbar-brand .brand-logo-wrap { width:260px; height:56px; border:1px solid var(--line); box-shadow:0 10px 28px rgba(15,23,42,.08); }
-  .topbar-brand .portal-name { color:#0f172a; font-size:20px; letter-spacing:.04em; }
-  .topbar-brand .brand-subtitle { color:#64748b; font-size:12px; font-weight:800; margin-top:3px; }
+  .topbar-brand { display:flex; align-items:center; gap:9px; min-width:0; margin-bottom:0; }
+  .topbar-brand .brand-logo-wrap { width:140px; height:32px; border:1px solid var(--line); box-shadow:0 6px 16px rgba(15,23,42,.06); }
+  .topbar-brand .portal-name { color:#0f172a; font-size:13px; letter-spacing:.03em; }
+  .topbar-brand .brand-subtitle { color:#64748b; font-size:9.5px; font-weight:800; margin-top:0; }
 
   .nav-group { margin-top:18px; }
   .nav-title { color:var(--muted); font-size:11px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; margin:0 0 8px 8px; }
@@ -108,34 +108,36 @@
   .sidebar-footer strong { display:block; font-size:13px; margin-bottom:4px; }
   .sidebar-footer span { display:block; color:var(--muted); font-size:12px; line-height:1.4; }
 
-  .satco-main { min-width:0; padding:24px; }
+  .satco-main { min-width:0; padding:12px 20px 20px; }
   .topbar {
-    display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px;
+    display:flex; justify-content:space-between; gap:14px; align-items:center; margin:0 0 8px;
+    position:sticky; top:0; z-index:40; padding:8px 0;
+    background:linear-gradient(180deg,#f8fbfd 0%,#eef2f7 92%); border-bottom:1px solid var(--line);
   }
-  .eyebrow { color:#64748b; font-size:12px; font-weight:900; letter-spacing:.09em; text-transform:uppercase; margin-bottom:6px; }
-  .page-title { margin:0; font-size:28px; letter-spacing:-.04em; line-height:1.1; }
-  .page-desc { margin-top:7px; color:#64748b; max-width:760px; font-size:14px; line-height:1.5; }
-  .top-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
+  .eyebrow { display:none; }
+  .page-title { margin:0; font-size:18px; letter-spacing:-.03em; line-height:1.15; }
+  .page-desc { margin-top:2px; color:#64748b; max-width:760px; font-size:11.5px; line-height:1.35; }
+  .top-actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
   .pill {
-    display:inline-flex; align-items:center; gap:7px; min-height:34px; padding:7px 11px; border-radius:999px;
-    border:1px solid var(--line); background:#fff; color:#334155; font-size:12px; font-weight:800;
+    display:inline-flex; align-items:center; gap:6px; min-height:24px; padding:4px 9px; border-radius:999px;
+    border:1px solid var(--line); background:#fff; color:#334155; font-size:11px; font-weight:800;
   }
   .pill.good { color:#166534; background:#f0fdf4; border-color:#bbf7d0; }
   .pill.warn { color:#92400e; background:#fffbeb; border-color:#fde68a; }
   .signout-btn {
-    min-height:34px; padding:7px 12px; border-radius:999px; border:1px solid var(--line);
-    background:#fff; color:#475569; font-weight:900; font-size:12px; cursor:pointer;
+    min-height:24px; padding:4px 10px; border-radius:999px; border:1px solid var(--line);
+    background:#fff; color:#475569; font-weight:900; font-size:11px; cursor:pointer;
   }
   .signout-btn:hover { border-color:#94a3b8; color:#0f172a; }
 
   .dashboard-home-btn {
-    min-height:34px; padding:7px 13px; border-radius:999px; border:1px solid #bfdbfe;
-    background:#eff6ff; color:#1d4ed8; font-weight:950; font-size:12px; cursor:pointer;
+    min-height:24px; padding:4px 10px; border-radius:999px; border:1px solid #bfdbfe;
+    background:#eff6ff; color:#1d4ed8; font-weight:950; font-size:11px; cursor:pointer;
     box-shadow:0 8px 18px rgba(37,99,235,.08);
   }
   .dashboard-home-btn:hover { background:#dbeafe; border-color:#93c5fd; color:#1e40af; }
 
-  .mobile-section-picker { display:none; margin:0 0 14px; }
+  .mobile-section-picker { display:none; margin:0 0 8px; }
   .mobile-section-picker select { width:100%; padding:12px 14px; border-radius:14px; border:1px solid var(--line); background:#fff; font-weight:800; }
   .guide-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
   .guide-card { background:#fff; border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 24px rgba(15,23,42,.04); }
@@ -175,7 +177,7 @@
   .alert-card.danger { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
   .content-card {
     background:rgba(255,255,255,.92); border:1px solid var(--line); border-radius:24px;
-    box-shadow:var(--shadow); padding:18px; overflow:hidden;
+    box-shadow:var(--shadow); padding:12px; overflow:hidden;
   }
   .content-card > div:first-child[style*="background:#fff"], .content-card > div:first-child[style*="background: '#fff'"] {
     box-shadow:none;
@@ -551,13 +553,13 @@ function applyFilters(rows, filters) {
 function FilterBar({ fields, values, onChange, onClear }) {
   const hasAny = fields.some(f => values[f.key]);
   return (
-    <div style={{ background:'#f8fafc', borderBottom:'1px solid #e2e8f0', padding:'8px 16px', display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'flex-end' }}>
+    <div style={{ background:'#f8fafc', borderBottom:'1px solid #e2e8f0', padding:'5px 12px', display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'flex-end' }}>
       {fields.map(f => (
         <div key={f.key}>
-          <div style={{ fontSize:'10px', fontWeight:700, color:'#94a3b8', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:'2px' }}>{f.label}</div>
+          <div style={{ fontSize:'9px', fontWeight:700, color:'#94a3b8', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:'1px' }}>{f.label}</div>
           {f.options ? (
             <select value={values[f.key]||''} onChange={e=>onChange({...values,[f.key]:e.target.value})}
-              style={{...S.input, padding:'4px 8px', fontSize:'12px', height:'28px', width:f.width||'140px'}}>
+              style={{...S.input, padding:'3px 7px', fontSize:'11px', height:'23px', width:f.width||'140px'}}>
               <option value="">All</option>
               {f.options.map(o=>{
                 const v = typeof o==='string'?o:o.value;
@@ -568,12 +570,12 @@ function FilterBar({ fields, values, onChange, onClear }) {
           ) : (
             <input value={values[f.key]||''} onChange={e=>onChange({...values,[f.key]:e.target.value})}
               placeholder="All"
-              style={{...S.input, padding:'4px 8px', fontSize:'12px', height:'28px', width:f.width||'120px'}} />
+              style={{...S.input, padding:'3px 7px', fontSize:'11px', height:'23px', width:f.width||'120px'}} />
           )}
         </div>
       ))}
       {hasAny && (
-        <button onClick={onClear} style={{...S.btnPri, background:'#dc2626', padding:'4px 10px', fontSize:'11px', height:'28px', alignSelf:'flex-end'}}>
+        <button onClick={onClear} style={{...S.btnPri, background:'#dc2626', padding:'3px 9px', fontSize:'10.5px', height:'23px', alignSelf:'flex-end'}}>
           ✕ Clear
         </button>
       )}
@@ -882,7 +884,7 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
 
   return (
     <div style={S.card}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>{title}</div>
           <div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total AED {fmt(total)}{recoverableSupport && totalRecoverable>0 && <span style={{color:'#92400e',fontWeight:700}}> · Recoverable AED {fmt(totalRecoverable)}</span>}</div>
@@ -896,7 +898,7 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
 
       {draft && (
-        <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+        <div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
           <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 2fr',gap:'10px',marginBottom:'8px'}}>
             <div>
               <label style={S.label}>Employee</label>
@@ -1389,7 +1391,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
 
   return (
     <div style={S.card}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Costs (Salary, Food, Accommodation, Transport)</div>
           <div style={{fontSize:'12px',color:'#64748b'}}>
@@ -1423,7 +1425,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
 
       {draft && (
-        <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+        <div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
           <div style={{marginBottom:'10px'}}>
             <label style={S.label}>Employee</label>
             <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
@@ -1761,7 +1763,7 @@ function TimesheetsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
 
   return (
     <div style={S.card}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>Timesheets — Income</div>
           <div style={{fontSize:'12px',color:'#64748b'}}>{rows.length} entries · Total AED {fmt(totalIncome)}</div>
@@ -1775,7 +1777,7 @@ function TimesheetsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
 
       {draft && (
-        <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+        <div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
           <div style={{marginBottom:'10px'}}>
             <label style={S.label}>Employee</label>
             <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
@@ -1974,7 +1976,7 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
 
   return (
     <div style={S.card}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>Onboarding & Misc Costs</div>
           <div style={{fontSize:'12px',color:'#64748b'}}>
@@ -1992,13 +1994,13 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
 
       {draft && (
-        <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
-          <div style={{marginBottom:'10px'}}>
-            <label style={S.label}>Employee</label>
-            <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
-              onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))} />
-          </div>
-          <div style={{display:'grid',gridTemplateColumns:'2fr 1fr',gap:'10px',marginBottom:'10px'}}>
+        <div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1.8fr 1.3fr 1fr',gap:'10px',marginBottom:'8px',alignItems:'end'}}>
+            <div>
+              <label style={S.label}>Employee</label>
+              <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+                onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))} />
+            </div>
             <div><label style={S.label}>Cost Type</label>
               <select value={draft.cost_type} onChange={e=>setDraft(d=>({...d,cost_type:e.target.value}))} style={{...S.input,width:'100%'}}>
                 {OTHER_COST_TYPES.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
@@ -2007,7 +2009,7 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
             <div><label style={S.label}>Date</label><input type="date" value={draft.cost_date} onChange={e=>setDraft(d=>({...d,cost_date:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
           </div>
           {isDeposit && (
-            <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'12px 14px',marginBottom:'10px'}}>
+            <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'10px 12px',marginBottom:'8px'}}>
               <div style={{fontWeight:700,fontSize:'12.5px',color:'#166534',marginBottom:'8px'}}>Security Deposit — Auto Currency Converter</div>
               <div style={{display:'grid',gridTemplateColumns:'140px 1fr 1fr auto',gap:'8px',alignItems:'end'}}>
                 <div><label style={S.label}>Currency</label>
@@ -2022,9 +2024,11 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
               {fxStatus&&<div style={{marginTop:'8px',fontSize:'11.5px',color:fxStatus.startsWith('1 ')?'#166534':'#dc2626',fontWeight:600}}>{fxStatus}</div>}
             </div>
           )}
-          {!isDeposit&&(<div style={{marginBottom:'10px'}}><label style={S.label}>Amount (AED)</label><input type="number" value={draft.amount||''} onChange={e=>setDraft(d=>({...d,amount:e.target.value}))} style={{...S.input,width:'200px'}} /></div>)}
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 2fr',gap:'10px',marginBottom:'10px',alignItems:'end'}}>
-            <div style={{display:'flex',alignItems:'center',gap:'8px',paddingTop:'18px'}}>
+          <div style={{display:'grid',gridTemplateColumns: isDeposit ? '1fr 1fr 2fr' : '1fr 1fr 1fr 2fr',gap:'10px',marginBottom:'8px',alignItems:'end'}}>
+            {!isDeposit && (
+              <div><label style={S.label}>Amount (AED)</label><input type="number" value={draft.amount||''} onChange={e=>setDraft(d=>({...d,amount:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            )}
+            <div style={{display:'flex',alignItems:'center',gap:'8px',paddingBottom:'6px'}}>
               <input type="checkbox" id="recov" checked={!!draft.recoverable} onChange={e=>setDraft(d=>({...d,recoverable:e.target.checked}))} style={{width:'16px',height:'16px'}} />
               <label htmlFor="recov" style={{fontSize:'12.5px',fontWeight:600,color:'#475569'}}>Recoverable from salary</label>
             </div>
@@ -2611,7 +2615,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
       <div style={S.card}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
           <div>
             <div style={{fontWeight:800,fontSize:'14px'}}>Client Hourly Billing — Invoice, Receipt Split &amp; WPS Recovery</div>
             <div style={{fontSize:'12px',color:'#64748b'}}>{filtered.length} invoice(s) · Received AED {fmt2(totalReceived)}</div>
@@ -4309,7 +4313,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
       {activeSection === 'generate' && (
         <div style={S.card}>
           {/* Header row */}
-          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:'10px'}}>
+          <div style={{padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:'10px'}}>
             <div>
               <div style={{fontWeight:800,fontSize:'14px'}}>{WPS_CO.name}</div>
               <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>MOL ID: {WPS_CO.mol_id} · {activeMaster.length} active employees</div>
@@ -4521,7 +4525,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
       {/* ═══════════════════════════════════════════════════════════════════ */}
       {activeSection === 'letter' && (
         <div style={S.card}>
-          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'10px'}}>
+          <div style={{padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'10px'}}>
             <div>
               <div style={{fontWeight:800,fontSize:'14px'}}>✉️ WPS Bank Letter</div>
               <div style={{fontSize:'12px',color:'#64748b'}}>Edit fields below, then print / save as PDF</div>
@@ -4618,7 +4622,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
       {/* ═══════════════════════════════════════════════════════════════════ */}
       {activeSection === 'master' && (
         <div style={S.card}>
-          <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'10px'}}>
+          <div style={{padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'10px'}}>
             <div>
               <div style={{fontWeight:800,fontSize:'14px'}}>👥 Employee WPS Master</div>
               <div style={{fontSize:'12px',color:'#64748b'}}>{activeMaster.length} active · {master.filter(m=>m.active===false).length} inactive</div>
@@ -4648,7 +4652,7 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
 
           {/* Editor */}
           {draft && (
-            <div style={{padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+            <div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
               <div style={{fontWeight:800,fontSize:'13px',marginBottom:'12px',color:'#92400e'}}>
                 {draft.id ? `Correct Master Entry — ${draft.full_name||draft.employee_id}` : 'Add Employee to WPS Master'}
               </div>
@@ -5136,7 +5140,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       </div>
 
       <div style={{...S.card,marginBottom:'16px'}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
           <div style={{fontWeight:800,fontSize:'14px'}}>Lifetime Profitability by Employee</div>
           <button style={S.btnExp} onClick={()=>exportCSV(pnlExportRows,'pnl_summary',pnlCsvCols)}>Export CSV</button>
         </div>
@@ -5219,7 +5223,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
 
       {selectedEmp&&(
         <div style={S.card}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
             <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Breakdown — {selectedEmp} <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8'}}>(most recent first)</span></div>
             <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
               {notesLoading&&<span style={{fontSize:'12px',color:'#94a3b8'}}>Loading notes…</span>}
