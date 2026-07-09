@@ -284,24 +284,26 @@ function readStkVar(name) {
   return isNaN(v) ? 0 : v;
 }
 function setStkVar(name, px) {
-  const next = Math.round(px);
-  const prev = readStkVar(name);
-  document.documentElement.style.setProperty(name, next + 'px');
-  // Only nudge downstream publishers if the value actually moved — otherwise
-  // 'stk-recalc' listeners re-set the same value and fire again forever.
-  if (next !== prev) window.dispatchEvent(new Event('stk-recalc'));
+  document.documentElement.style.setProperty(name, Math.round(px) + 'px');
 }
 // Callback ref used directly on the per-table toolbar bars (plain DOM nodes,
 // not React components), so a single stable function works everywhere.
+// Each publisher is fully independent (own ResizeObserver + resize listener,
+// no cross-variable event chaining) — chaining synchronous events between
+// publishers previously caused a real infinite-recursion crash when a value
+// oscillated (e.g. a wrapping toolbar row nudging the page's scrollbar on/off).
+// A couple of delayed re-checks after mount cover the one-time race where the
+// app topbar hasn't finished measuring itself yet.
 function measureToStk2(el) {
   if (!el) return;
   const compute = () => setStkVar('--stk-2', readStkVar('--stk-1') + el.offsetHeight);
   compute();
+  requestAnimationFrame(compute);
+  setTimeout(compute, 300);
   if (!el.__stkRO) {
     el.__stkRO = new ResizeObserver(compute);
     el.__stkRO.observe(el);
     window.addEventListener('resize', compute);
-    window.addEventListener('stk-recalc', compute);
   }
 }
 // Hook version for real components (App's topbar, FilterBar) that can hold refs.
@@ -312,11 +314,12 @@ function useStkPublish(varName, baseVarName) {
     if (!el) return;
     const compute = () => setStkVar(varName, (baseVarName ? readStkVar(baseVarName) : 0) + el.offsetHeight);
     compute();
+    const raf = requestAnimationFrame(compute);
+    const t = setTimeout(compute, 300);
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     window.addEventListener('resize', compute);
-    window.addEventListener('stk-recalc', compute);
-    return () => { ro.disconnect(); window.removeEventListener('resize', compute); window.removeEventListener('stk-recalc', compute); };
+    return () => { ro.disconnect(); window.removeEventListener('resize', compute); cancelAnimationFrame(raf); clearTimeout(t); };
   }, []);
   return ref;
 }
