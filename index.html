@@ -298,12 +298,21 @@ function measureToStk2(el) {
   if (!el) return;
   const compute = () => setStkVar('--stk-2', readStkVar('--stk-1') + el.offsetHeight);
   compute();
-  requestAnimationFrame(compute);
-  setTimeout(compute, 300);
   if (!el.__stkRO) {
     el.__stkRO = new ResizeObserver(compute);
     el.__stkRO.observe(el);
     window.addEventListener('resize', compute);
+    // Belt-and-suspenders: --stk-1 (app topbar height) can still change shortly
+    // after this element mounts — e.g. async employee data arriving changes
+    // whether the "pending IDs" pill renders, which can change the topbar's
+    // height. ResizeObserver only watches THIS element, not --stk-1, so poll
+    // for a few seconds after mount and self-stop once the tab is switched
+    // away (element removed from the DOM) or things settle.
+    let ticks = 0;
+    const iv = setInterval(() => {
+      if (!el.isConnected || ++ticks > 20) { clearInterval(iv); return; }
+      compute();
+    }, 250);
   }
 }
 // Hook version for real components (App's topbar, FilterBar) that can hold refs.
@@ -323,12 +332,14 @@ function useStkPublish(varName, baseVarName) {
     if (!el) return;
     const compute = () => setStkVar(varName, (baseVarName ? readStkVar(baseVarName) : 0) + el.offsetHeight);
     compute();
-    const raf = requestAnimationFrame(compute);
-    const t = setTimeout(compute, 300);
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     window.addEventListener('resize', compute);
-    return () => { ro.disconnect(); window.removeEventListener('resize', compute); cancelAnimationFrame(raf); clearTimeout(t); };
+    // Same belt-and-suspenders re-check as measureToStk2 — covers a base var
+    // (e.g. --stk-1 or --stk-2) finishing its own measurement a beat later.
+    let ticks = 0;
+    const iv = setInterval(() => { if (++ticks > 20) { clearInterval(iv); return; } compute(); }, 250);
+    return () => { ro.disconnect(); window.removeEventListener('resize', compute); clearInterval(iv); };
   }, [node]);
   return ref;
 }
