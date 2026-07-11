@@ -172,7 +172,7 @@
   .module-card-desc { margin-top:4px; color:#64748b; font-size:11.5px; line-height:1.3; }
   .dashboard-section-label { display:flex; align-items:center; gap:8px; margin:18px 0 12px; color:#334155; font-size:13px; font-weight:950; letter-spacing:.06em; text-transform:uppercase; }
   .dashboard-section-label:after { content:""; height:1px; background:var(--line); flex:1; }
-  .finance-kpi-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+  .finance-kpi-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
   .pnl-row-limit { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 18px; border-top:1px solid #e2e8f0; background:#f8fafc; color:#64748b; font-size:12px; font-weight:800; }
   .pnl-row-limit button { border:1px solid var(--line); background:#fff; border-radius:999px; padding:7px 11px; color:#0f172a; font-size:12px; font-weight:900; cursor:pointer; }
 
@@ -432,9 +432,11 @@ SELECT
 FROM public.employees e
 WHERE e.employee_id IS NOT NULL;
 
--- Current/latest mobilization bridge for Finance portal
+-- Full mobilization/demobilization history bridge for Finance portal (v2 — returns every
+-- assignment row per employee, not just the latest, so Finance can reconstruct every
+-- demob→remob gap for Camp Cost tracking, not only the employee's current status).
 CREATE VIEW public.v_finance_employee_mob_demob AS
-SELECT DISTINCT ON (m.employee_id)
+SELECT
   m.employee_id,
   m.mobilization_date,
   m.demobilization_date,
@@ -442,7 +444,7 @@ SELECT DISTINCT ON (m.employee_id)
   m.supply
 FROM public.mob_demob m
 WHERE m.employee_id IS NOT NULL
-ORDER BY m.employee_id, (m.demobilization_date IS NULL) DESC, m.mobilization_date DESC NULLS LAST;
+ORDER BY m.employee_id, m.mobilization_date ASC NULLS FIRST, m.demobilization_date ASC NULLS FIRST;
 
 -- Temporary candidate bridge for Finance deposits/advances before final employee ID
 CREATE VIEW public.v_temp_candidates AS
@@ -606,6 +608,11 @@ function exportMultiSectionCSV(sections, filename) {
 
 // ── HELPERS ──────────────────────────────────────────────────────
 const fmt      = (n) => (Number(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+// Recoverable Amount cap (v9): a Visa/Flight/Training cost row can record what was actually
+// recovered from the employee separately from what was actually spent (row.cost) — e.g. spent
+// AED 7,014.72 but only AED 6,000 was agreed to be recovered, with the remaining AED 1,014.72 a
+// straight company write-off. Blank/null recoverable_amount just falls back to the full cost.
+const recoverableCap = (row, amountKey) => (row && row.recoverable_amount!==null && row.recoverable_amount!==undefined && row.recoverable_amount!=='') ? Number(row.recoverable_amount)||0 : Number(row&&row[amountKey])||0;
 const monthStr = (d) => d ? d.slice(0,7) : '';
 const firstOfMonth = (m) => m ? m + '-01' : null;
 
@@ -898,13 +905,81 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON employee_idle_days TO authenticated;
 ALTER TABLE employee_deduction_ledger ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_deduction_ledger;
 CREATE POLICY "Allow authenticated full access" ON employee_deduction_ledger
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+-- v7: Track WPS underpayments (company owes the employee for the month, the mirror image of
+-- wps_overpayment_recovery) so Client Billing can show a net "who owes whom" figure per employee
+-- and the P&L Dashboard can carry it as a payable instead of silently showing "Clear".
+ALTER TABLE employee_other_costs DROP CONSTRAINT IF EXISTS employee_other_costs_cost_type_check;
+ALTER TABLE employee_other_costs ADD CONSTRAINT employee_other_costs_cost_type_check
+  CHECK (cost_type IN (
+    'security_deposit','agent_commission','salary_advance','local_transport',
+    'medical_test_expense','food_accommodation_presite','site_accommodation',
+    'visit_visa_extra','wps_overpayment_recovery','wps_underpayment_payable',
+    'camp_food_accommodation','other'
+  ));
+
+-- v8: Camp Costs — food, accommodation & transport paid to the client/camp for every day an
+-- employee is demobilized from a site and not yet remobilized elsewhere ("sitting in camp").
+-- One global default daily rate, plus optional per-employee overrides.
+CREATE TABLE IF NOT EXISTS camp_rate_defaults (
+  id integer PRIMARY KEY DEFAULT 1,
+  food_rate_per_day numeric NOT NULL DEFAULT 0,
+  accommodation_rate_per_day numeric NOT NULL DEFAULT 0,
+  transport_rate_per_day numeric NOT NULL DEFAULT 0,
+  updated_at timestamptz DEFAULT now(),
+  CONSTRAINT camp_rate_defaults_singleton CHECK (id = 1)
+);
+ALTER TABLE camp_rate_defaults ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON camp_rate_defaults;
+CREATE POLICY "Allow authenticated full access" ON camp_rate_defaults FOR ALL TO authenticated USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE, DELETE ON camp_rate_defaults TO authenticated;
+
+CREATE TABLE IF NOT EXISTS employee_camp_rates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id text NOT NULL UNIQUE,
+  full_name text,
+  food_rate_per_day numeric,
+  accommodation_rate_per_day numeric,
+  transport_rate_per_day numeric,
+  remarks text,
+  updated_at timestamptz DEFAULT now(),
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE employee_camp_rates ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_camp_rates;
+CREATE POLICY "Allow authenticated full access" ON employee_camp_rates FOR ALL TO authenticated USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE, DELETE ON employee_camp_rates TO authenticated;
+
+-- v9: Recoverable Amount — lets a single Visa/Flight/Training cost row cap what's actually
+-- recoverable from the employee below the real amount spent (e.g. spent AED 7,014.72 on visa +
+-- insurance, but only AED 6,000 was agreed to be recovered from salary; the remaining AED 1,014.72
+-- is a straight company write-off). Falls back to the full cost when left blank, so nothing
+-- changes for existing recoverable rows until someone deliberately sets a lower cap.
+ALTER TABLE employee_visa_costs ADD COLUMN IF NOT EXISTS recoverable_amount numeric;
+ALTER TABLE employee_flights ADD COLUMN IF NOT EXISTS recoverable_amount numeric;
+ALTER TABLE employee_training_costs ADD COLUMN IF NOT EXISTS recoverable_amount numeric;`;
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v6 Required — adds Salary Profiles + Deduction Ledger</div>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v9 Required — adds Recoverable Amount capping</div>
       <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
-      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v6)</button>
+      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v9)</button>
+    </div>
+  );
+}
+
+function HrBridgeCampBanner({ onDismiss }) {
+  return (
+    <div style={{background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#1d4ed8',marginBottom:'6px'}}>HR Bridge Update Required — Camp Costs needs full mobilization history</div>
+      <div style={{fontSize:'12px',color:'#1e3a8a',marginBottom:'10px'}}>
+        The Camp Costs tab calculates how many days each employee has spent off-site (demobilized, not yet remobilized) using mobilization/demobilization records from HR.
+        Today the HR bridge view only exposes each employee's <em>latest</em> record, so past camp periods that have already closed won't be reconstructed — only the current one, if any.
+        To capture full history, open your <strong>HR Supabase project → SQL Editor</strong> and re-run the HR bridge setup SQL (found under <strong>Salary Master → Show full HR bridge SQL</strong> on this portal, or via the button below) — it's safe to re-run.
+        Until then, Camp Costs still works for employees currently off-site, using whatever mobilization record HR already exposes.
+      </div>
+      <button onClick={onDismiss} style={{...S.btnPri,background:'#1d4ed8',fontSize:'12px',padding:'7px 14px'}}>Got it — dismiss</button>
     </div>
   );
 }
@@ -940,20 +1015,26 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
     {key:'employee_id', label:'Emp ID'},
     {key:'full_name',   label:'Name'},
     ...fields.map(f=>({key:f.key, label:f.label})),
-    ...(recoverableSupport?[{key:'recoverable',label:'Recoverable'}]:[]),
+    ...(recoverableSupport?[{key:'recoverable',label:'Recoverable'},{key:'recoverable_amount',label:'Recoverable Amount (AED, blank = full cost)'}]:[]),
   ];
 
   const blank = () => {
     const d = {employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||''};
     fields.forEach(f=>d[f.key]=f.type==='number'?'':'');
-    if (recoverableSupport) d.recoverable = false;
+    if (recoverableSupport) { d.recoverable = false; d.recoverable_amount = ''; }
     setDraft(d);
   };
   const save = async () => {
     if (!draft.employee_id) return alert('Employee ID required');
     const clean = {...draft}; delete clean.id;
     fields.forEach(f=>{if(f.type==='number') clean[f.key]=Number(clean[f.key])||0;});
-    if (recoverableSupport) clean.recoverable = !!draft.recoverable;
+    if (recoverableSupport) {
+      clean.recoverable = !!draft.recoverable;
+      // Blank/unchecked = recover the full cost (unchanged behavior). A value here caps what's
+      // actually recoverable below (or above, e.g. a combined agreed cap) the row's own cost —
+      // see the v9 migration note for why this exists.
+      clean.recoverable_amount = (clean.recoverable && draft.recoverable_amount!=='' && draft.recoverable_amount!=null) ? Number(draft.recoverable_amount) : null;
+    }
     const {error} = draft.id
       ? await db.from(table).update(clean).eq('id',draft.id)
       : await db.from(table).insert(clean);
@@ -964,8 +1045,11 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
     if (!window.confirm('Delete?')) return;
     await db.from(table).delete().eq('id',id); load();
   };
+  // Recoverable total uses the per-row recoverable_amount cap when set, otherwise the full cost —
+  // this is what lets one row's recovery differ from what was actually spent.
+  const recoverableAmt = (r) => (r.recoverable_amount!==null && r.recoverable_amount!==undefined && r.recoverable_amount!=='') ? Number(r.recoverable_amount)||0 : Number(r.cost)||0;
   const total = rows.reduce((s,r)=>s+(Number(r.cost)||0),0);
-  const totalRecoverable = recoverableSupport ? rows.filter(r=>r.recoverable).reduce((s,r)=>s+(Number(r.cost)||0),0) : 0;
+  const totalRecoverable = recoverableSupport ? rows.filter(r=>r.recoverable).reduce((s,r)=>s+recoverableAmt(r),0) : 0;
 
   return (
     <div style={S.card}>
@@ -1004,9 +1088,21 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
             ))}
           </div>
           {recoverableSupport && (
-            <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',background:'#fff',border:'1px solid #fbbf24',borderRadius:'8px',padding:'10px 14px'}}>
-              <input type="checkbox" id="rcv-cost" checked={!!draft.recoverable} onChange={e=>setDraft(d=>({...d,recoverable:e.target.checked}))} style={{width:'16px',height:'16px'}} />
-              <label htmlFor="rcv-cost" style={{fontSize:'12.5px',fontWeight:700,color:'#92400e'}}>Recoverable from employee's salary (will count toward their Balance to Recover; actual recovery is tracked via Monthly Costs → Deductions)</label>
+            <div style={{marginBottom:'10px',background:'#fff',border:'1px solid #fbbf24',borderRadius:'8px',padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                <input type="checkbox" id="rcv-cost" checked={!!draft.recoverable} onChange={e=>setDraft(d=>({...d,recoverable:e.target.checked}))} style={{width:'16px',height:'16px'}} />
+                <label htmlFor="rcv-cost" style={{fontSize:'12.5px',fontWeight:700,color:'#92400e'}}>Recoverable from employee's salary (will count toward their Balance to Recover; actual recovery is tracked via Monthly Costs → Deductions)</label>
+              </div>
+              {draft.recoverable && (
+                <div style={{marginTop:'8px',paddingTop:'8px',borderTop:'1px solid #fde68a'}}>
+                  <label style={S.label}>Recoverable Amount (AED) — leave blank to recover the full cost above</label>
+                  <input type="number" step="0.01" placeholder={draft.cost?`Full cost: AED ${draft.cost}`:''} value={draft.recoverable_amount||''} onChange={e=>setDraft(d=>({...d,recoverable_amount:e.target.value}))} style={{...S.input,width:'220px'}} />
+                  {draft.recoverable_amount!=='' && draft.recoverable_amount!=null && Number(draft.cost)>Number(draft.recoverable_amount) && (
+                    <div style={{fontSize:'11.5px',color:'#dc2626',marginTop:'4px'}}>AED {fmt((Number(draft.cost)||0)-(Number(draft.recoverable_amount)||0))} of the actual cost will NOT be recovered — a straight company write-off, still counted in Total Cost above.</div>
+                  )}
+                  <div style={{fontSize:'11px',color:'#94a3b8',marginTop:'4px'}}>Can also be set higher than this row's own cost, e.g. to represent one combined recovery cap agreed across several cost entries for the same employee.</div>
+                </div>
+              )}
             </div>
           )}
           <div style={{display:'flex',gap:'8px'}}>
@@ -1045,7 +1141,7 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
                               {f.type==='number' ? 'AED '+fmt(r[f.key]) : (r[f.key]||'—')}
                             </td>
                           ))}
-                          {recoverableSupport && <td style={S.td}>{r.recoverable?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span>:'—'}</td>}
+                          {recoverableSupport && <td style={S.td}>{r.recoverable?<span title={r.recoverable_amount!=null&&r.recoverable_amount!==''&&Number(r.recoverable_amount)!==Number(r.cost)?`Capped — AED ${fmt(recoverableAmt(r))} of AED ${fmt(r.cost)} actual cost`:''} style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px',whiteSpace:'nowrap'}}>Yes{r.recoverable_amount!=null&&r.recoverable_amount!==''&&Number(r.recoverable_amount)!==Number(r.cost)?` · AED ${fmt(recoverableAmt(r))}`:''}</span>:'—'}</td>}
                           <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
                             <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r});}}>&#9998;</button>
                             <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
@@ -1298,8 +1394,43 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
   const [showAllowMgr, setShowAllowMgr]   = useState(false);
   const [salaryProfiles, setSalaryProfiles] = useState({}); // { employee_id: { basic_salary, fixed_allowance } }
   const [pendingDeductions, setPendingDeductions] = useState({}); // { employee_id: [deduction rows] }
+  const [empRecoverable, setEmpRecoverable] = useState(null); // {recoverable, recovered, balance} for whichever employee is in the draft
   const hrSalaryByEmp = useMemo(()=>salaryMapFromRows(hrSalaryRows||[]), [hrSalaryRows]);
   useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
+
+  // Reminder: Visa/Flights/Training/Onboarding costs marked recoverable, minus what's already been
+  // deducted or received as a deposit — surfaced here because Salary Deductions (below) is the one
+  // place that reminder can actually be acted on.
+  useEffect(()=>{
+    let alive = true;
+    if (!draft || !draft.employee_id) { setEmpRecoverable(null); return; }
+    const empId = draft.employee_id;
+    (async () => {
+      const [visa, flights, training, other, monthly] = await Promise.all([
+        db.from('employee_visa_costs').select('cost,recoverable,recoverable_amount').eq('employee_id',empId),
+        db.from('employee_flights').select('cost,recoverable,recoverable_amount').eq('employee_id',empId),
+        db.from('employee_training_costs').select('cost,recoverable,recoverable_amount').eq('employee_id',empId),
+        db.from('employee_other_costs').select('amount,recoverable,cost_type,recovered_amount').eq('employee_id',empId),
+        db.from('employee_monthly_costs').select('month,salary_deductions').eq('employee_id',empId),
+      ]);
+      if (!alive) return;
+      let recoverable = 0, recovered = 0;
+      (visa.data||[]).filter(r=>r.recoverable).forEach(r=>{ recoverable += recoverableCap(r,'cost'); });
+      (flights.data||[]).filter(r=>r.recoverable).forEach(r=>{ recoverable += recoverableCap(r,'cost'); });
+      (training.data||[]).filter(r=>r.recoverable).forEach(r=>{ recoverable += recoverableCap(r,'cost'); });
+      (other.data||[]).forEach(r=>{
+        if (r.cost_type==='security_deposit') { recovered += Number(r.amount)||0; return; }
+        if (r.recoverable) { recoverable += Number(r.amount)||0; recovered += Number(r.recovered_amount)||0; }
+      });
+      (monthly.data||[]).forEach(m=>{
+        // Exclude the month currently being entered so the reminder reflects the balance BEFORE this entry's deduction.
+        if (draft.month && String(m.month||'').slice(0,7)===String(draft.month||'').slice(0,7)) return;
+        recovered += Number(m.salary_deductions)||0;
+      });
+      setEmpRecoverable({ recoverable, recovered, balance: Math.max(0, recoverable-recovered) });
+    })();
+    return ()=>{ alive = false; };
+  },[draft&&draft.employee_id, draft&&draft.month]);
 
   const load = async () => {
     setLoading(true);
@@ -1646,6 +1777,14 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
             </div>
           )}
 
+          {/* ── Recoverable Balance Reminder — Visa/Flights/Training/Onboarding costs marked recoverable ── */}
+          {draft.employee_id && empRecoverable && empRecoverable.balance>0.5 && (
+            <div style={{background:'#eff6ff',border:'2px solid #bfdbfe',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
+              <div style={{fontWeight:800,color:'#1d4ed8',marginBottom:'4px'}}>💡 Reminder — outstanding recoverable balance: AED {fmt(empRecoverable.balance)}</div>
+              <div style={{color:'#1e3a8a'}}>Visa, Flight, Training and Onboarding &amp; Misc costs marked recoverable for this employee total AED {fmt(empRecoverable.recoverable)}, of which AED {fmt(empRecoverable.recovered)} has already been recovered (deductions, deposits, or a capped recoverable amount). Consider including some or all of the remaining AED {fmt(empRecoverable.balance)} in "Salary Deductions" below — see this employee's full breakdown on their Employee Detail page.</div>
+            </div>
+          )}
+
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
             <div><label style={S.label}>Food</label><input type="number" value={draft.food||''} onChange={e=>setDraft(d=>({...d,food:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             <div><label style={S.label}>Accommodation</label><input type="number" value={draft.accommodation||''} onChange={e=>setDraft(d=>({...d,accommodation:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
@@ -1976,6 +2115,8 @@ const OTHER_COST_TYPES = [
   {value:'site_accommodation',         label:'Site Accommodation (if not by client)'},
   {value:'visit_visa_extra',           label:'Visit Visa — Other Cost'},
   {value:'wps_overpayment_recovery',   label:'⏱️ WPS Overpaid vs Client Billing (auto, from Client Billing tab)'},
+  {value:'wps_underpayment_payable',   label:'⏱️ WPS Underpaid vs Client Billing — payable to employee (auto, from Client Billing tab)'},
+  {value:'camp_food_accommodation',    label:'🏕️ Camp Food/Accommodation/Transport — off-site days (auto, from Camp Costs tab)'},
   {value:'other',                      label:'Other'},
 ];
 const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o.label]));
@@ -2450,20 +2591,38 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       const impliedRate = received/totalCcy;
       const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
       const empShare = received-satcoAed;
-      const overpaid = wps-empShare;
+      const overpaid = wps-empShare; // positive = employee owes company, negative = company owes employee
       const synced = syncMap[inv.id];
-      if (overpaid > 0.5) {
-        const roundedAmt = Math.round(overpaid*100)/100;
+      const wantType = overpaid > 0.5 ? 'over' : overpaid < -0.5 ? 'under' : null;
+      if (wantType) {
+        const roundedAmt = Math.round(Math.abs(overpaid)*100)/100;
+        const wantCostType = wantType==='over' ? 'wps_overpayment_recovery' : 'wps_underpayment_payable';
+        const wantNote = wantType==='over'
+          ? `WPS overpaid vs employee's actual share for ${monthStr(inv.month)} [INV:${inv.id}]`
+          : `WPS underpaid vs employee's actual share for ${monthStr(inv.month)} — payable to employee [INV:${inv.id}]`;
         if (!synced) {
           fixes.push(db.from('employee_other_costs').insert({
-            employee_id:inv.employee_id, full_name:inv.full_name, cost_type:'wps_overpayment_recovery',
+            employee_id:inv.employee_id, full_name:inv.full_name, cost_type:wantCostType,
             cost_date:inv.wps_paid_date||inv.month||new Date().toISOString().slice(0,10),
-            amount:roundedAmt, recoverable:true, recovered_amount:0,
-            notes:`WPS overpaid vs employee's actual share for ${monthStr(inv.month)} [INV:${inv.id}]`,
+            amount:roundedAmt, recoverable: wantType==='over', recovered_amount:0,
+            notes:wantNote,
           }));
+        } else if (synced.type !== wantType) {
+          // Direction flipped since the last save (e.g. WPS amount corrected) — replace the stale row.
+          fixes.push(db.from('employee_other_costs').delete().eq('employee_id',inv.employee_id).ilike('notes', `%[INV:${inv.id}]%`).then(()=>
+            db.from('employee_other_costs').insert({
+              employee_id:inv.employee_id, full_name:inv.full_name, cost_type:wantCostType,
+              cost_date:inv.wps_paid_date||inv.month||new Date().toISOString().slice(0,10),
+              amount:roundedAmt, recoverable: wantType==='over', recovered_amount:0,
+              notes:wantNote,
+            })
+          ));
         } else if (Math.abs(synced.amount-roundedAmt) > 0.5) {
-          fixes.push(db.from('employee_other_costs').update({ amount:roundedAmt }).eq('employee_id',inv.employee_id).eq('cost_type','wps_overpayment_recovery').ilike('notes', `%[INV:${inv.id}]%`));
+          fixes.push(db.from('employee_other_costs').update({ amount:roundedAmt }).eq('employee_id',inv.employee_id).eq('cost_type',wantCostType).ilike('notes', `%[INV:${inv.id}]%`));
         }
+      } else if (synced) {
+        // No longer over- or under-paid (e.g. WPS amount corrected to match exactly) — remove the stale row.
+        fixes.push(db.from('employee_other_costs').delete().eq('employee_id',inv.employee_id).ilike('notes', `%[INV:${inv.id}]%`));
       }
     }
     if (fixes.length) await Promise.all(fixes);
@@ -2476,7 +2635,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       db.from('employee_client_invoices').select('*').order('month',{ascending:false}),
       db.from('employee_client_invoice_lines').select('*').order('sort_order',{ascending:true}),
       db.from('employee_client_recoveries').select('*').order('recovery_month',{ascending:false}),
-      db.from('employee_other_costs').select('id,amount,recovered_amount,notes').eq('cost_type','wps_overpayment_recovery'),
+      db.from('employee_other_costs').select('id,cost_type,amount,recovered_amount,notes').in('cost_type',['wps_overpayment_recovery','wps_underpayment_payable']),
     ]);
     const invData = inv.data||[];
     if (!inv.error) setInvoices(invData);
@@ -2486,12 +2645,15 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       setLinesMap(linesByInvoice);
     }
     if (!rec.error) setRecoveries(rec.data||[]);
-    // Map each synced employee_other_costs recovery row back to its invoice id, parsed from the [INV:id] tag in notes.
+    // Map each synced employee_other_costs row (recovery OR payable) back to its invoice id, parsed
+    // from the [INV:id] tag in notes. type:'over' = employee owes company, type:'under' = company
+    // owes employee — both keep the same {amount, recovered} shape so the rest of this component can
+    // treat "outstanding" the same way regardless of direction.
     let syncMap = {};
     if (!oc.error) {
       (oc.data||[]).forEach(r=>{
         const match = String(r.notes||'').match(/\[INV:([^\]]+)\]/);
-        if (match) syncMap[match[1]] = { amount:Number(r.amount)||0, recovered:Number(r.recovered_amount)||0 };
+        if (match) syncMap[match[1]] = { amount:Number(r.amount)||0, recovered:Number(r.recovered_amount)||0, type: r.cost_type==='wps_underpayment_payable'?'under':'over' };
       });
       setSyncedRecovery(syncMap);
     }
@@ -2502,11 +2664,11 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
     if (!inv.error && !lns.error && !oc.error) {
       const fixedCount = await autoRepairSync(invData, linesByInvoice, syncMap);
       if (fixedCount > 0) {
-        const { data: ocFresh } = await db.from('employee_other_costs').select('id,amount,recovered_amount,notes').eq('cost_type','wps_overpayment_recovery');
+        const { data: ocFresh } = await db.from('employee_other_costs').select('id,cost_type,amount,recovered_amount,notes').in('cost_type',['wps_overpayment_recovery','wps_underpayment_payable']);
         const freshMap = {};
         (ocFresh||[]).forEach(r=>{
           const match = String(r.notes||'').match(/\[INV:([^\]]+)\]/);
-          if (match) freshMap[match[1]] = { amount:Number(r.amount)||0, recovered:Number(r.recovered_amount)||0 };
+          if (match) freshMap[match[1]] = { amount:Number(r.amount)||0, recovered:Number(r.recovered_amount)||0, type: r.cost_type==='wps_underpayment_payable'?'under':'over' };
         });
         setSyncedRecovery(freshMap);
       }
@@ -2612,28 +2774,39 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       if (lerr) return alert('Saved invoice but line items failed: '+lerr.message);
     }
 
-    // Sync recoverable WPS overpayment into the shared P&L recovery pool (employee_other_costs).
+    // Sync WPS over/underpayment into the shared P&L recovery pool (employee_other_costs).
     // Updated in place (never delete+recreate) so any recovered_amount already logged against
     // this invoice is preserved — recreating the row used to silently reset progress to zero.
+    // Positive overpaid = employee owes company (wps_overpayment_recovery, recoverable from salary).
+    // Negative overpaid = company owes employee (wps_underpayment_payable, a payable, not a deduction).
     if (splitCalc) {
       const wps = Number(draft.wps_paid_aed)||0;
       const overpaid = wps - splitCalc.paavanAed;
-      const { data: existing } = await db.from('employee_other_costs').select('id,recovered_amount').eq('employee_id',draft.employee_id).eq('cost_type','wps_overpayment_recovery').ilike('notes', `%[INV:${invoiceId}]%`);
+      const { data: existing } = await db.from('employee_other_costs').select('id,cost_type,recovered_amount').eq('employee_id',draft.employee_id).ilike('notes', `%[INV:${invoiceId}]%`);
       const existingRow = existing && existing[0];
-      if (overpaid > 0.5) {
+      const wantType = overpaid > 0.5 ? 'over' : overpaid < -0.5 ? 'under' : null;
+      if (wantType) {
+        const wantCostType = wantType==='over' ? 'wps_overpayment_recovery' : 'wps_underpayment_payable';
+        const wantNote = wantType==='over'
+          ? `WPS overpaid vs employee's actual share for ${monthStr(draft.month)} [INV:${invoiceId}]`
+          : `WPS underpaid vs employee's actual share for ${monthStr(draft.month)} — payable to employee [INV:${invoiceId}]`;
         const payload = {
           employee_id:draft.employee_id, full_name:draft.full_name,
-          cost_type:'wps_overpayment_recovery', cost_date:draft.wps_paid_date||draft.month||new Date().toISOString().slice(0,10),
-          amount:Math.round(overpaid*100)/100, recoverable:true,
-          notes:`WPS overpaid vs employee's actual share for ${monthStr(draft.month)} [INV:${invoiceId}]`,
+          cost_type:wantCostType, cost_date:draft.wps_paid_date||draft.month||new Date().toISOString().slice(0,10),
+          amount:Math.round(Math.abs(overpaid)*100)/100, recoverable: wantType==='over',
+          notes:wantNote,
         };
-        if (existingRow) {
+        if (existingRow && existingRow.cost_type===wantCostType) {
           await db.from('employee_other_costs').update(payload).eq('id',existingRow.id);
         } else {
+          // No existing row, or the direction flipped since the last save (e.g. WPS amount
+          // corrected from an overpayment to an underpayment) — replace it rather than carry
+          // recovered progress over to the wrong direction.
+          if (existingRow) await db.from('employee_other_costs').delete().eq('id',existingRow.id);
           await db.from('employee_other_costs').insert({...payload, recovered_amount:0});
         }
       } else if (existingRow) {
-        // No longer overpaid (e.g. WPS amount corrected) — remove the stale recovery row.
+        // No longer over- or under-paid (e.g. WPS amount corrected to match exactly) — remove the stale row.
         await db.from('employee_other_costs').delete().eq('id',existingRow.id);
       }
     }
@@ -2696,6 +2869,31 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
   };
 
   const totalReceived = filtered.reduce((s,r)=>s+(Number(r.received_amount_aed)||0),0);
+
+  // Net WPS position across the currently filtered invoices: Employee Share vs what was actually
+  // paid via WPS. WPS is paid at month-end, at least ~15 days before the client invoice is even
+  // received/converted at the real exchange rate — so the two numbers routinely disagree, and this
+  // is the single figure that says who owes whom, right now, across every invoice shown below.
+  const netSummary = useMemo(()=>{
+    let empShareTotal=0, wpsTotal=0, invoiceCount=0;
+    filtered.forEach(inv=>{
+      const lns = linesMap[inv.id]||[];
+      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
+      const eur = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
+      const received = Number(inv.received_amount_aed)||0;
+      const impliedRate = received && eur ? received/eur : null;
+      const satcoAed = impliedRate ? hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate : null;
+      const empShare = satcoAed!==null ? received-satcoAed : null;
+      const wps = Number(inv.wps_paid_aed)||0;
+      if (empShare===null || !wps) return;
+      empShareTotal += empShare; wpsTotal += wps; invoiceCount++;
+    });
+    return { empShareTotal, wpsTotal, net: empShareTotal-wpsTotal, invoiceCount };
+  },[filtered, linesMap]);
+  const netSummaryScopeName = useMemo(()=>{
+    const ids = [...new Set(filtered.map(r=>r.employee_id).filter(Boolean))];
+    return ids.length===1 ? (filtered.find(r=>r.employee_id===ids[0])||{}).full_name : null;
+  },[filtered]);
 
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
@@ -2825,6 +3023,20 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
           </div>
         )}
 
+        {netSummary.invoiceCount>0 && (
+          <div style={{margin:'14px 14px 0',padding:'12px 16px',borderRadius:'10px',border:'1px solid '+(Math.abs(netSummary.net)<=0.5?'#bbf7d0':netSummary.net>0?'#bfdbfe':'#fde68a'),background:Math.abs(netSummary.net)<=0.5?'#f0fdf4':netSummary.net>0?'#eff6ff':'#fffbeb'}}>
+            <div style={{fontWeight:800,fontSize:'12.5px',marginBottom:'4px',color:'#0f172a'}}>Net WPS Position{netSummaryScopeName?` — ${netSummaryScopeName}`:' — All Employees'}</div>
+            <div style={{fontSize:'12.5px',color:'#475569',marginBottom:'6px'}}>Across {netSummary.invoiceCount} invoice(s) shown below: Employee Share AED {fmt2(netSummary.empShareTotal)} vs WPS Paid AED {fmt2(netSummary.wpsTotal)}</div>
+            <div style={{fontSize:'15px',fontWeight:800}}>
+              {Math.abs(netSummary.net)<=0.5
+                ? <span style={{color:'#166534'}}>Settled — WPS paid matches employee share</span>
+                : netSummary.net>0
+                  ? <span style={{color:'#1d4ed8'}}>Company owes Employee: AED {fmt2(netSummary.net)}</span>
+                  : <span style={{color:'#92400e'}}>Employee owes Company: AED {fmt2(Math.abs(netSummary.net))}</span>}
+            </div>
+          </div>
+        )}
+
         <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
             <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']:['Emp ID','Name','Month','Invoice #','Projects','Hours','Invoiced','Received AED','SATCO Share','Employee Share','WPS Paid','Recovery Status','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
@@ -2870,6 +3082,10 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                                   <span style={{background:'#fef3c7',color:'#92400e',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>
                                     {fmt2(outstandingSynced!==null ? outstandingSynced : Math.max(0,overpaid-recovered))} left
                                   </span>
+                                ) : overpaid<-0.5 ? (
+                                  <span title="WPS paid was less than the employee's actual share — company owes the employee" style={{background:'#dbeafe',color:'#1d4ed8',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>
+                                    Owe employee {fmt2(outstandingSynced!==null ? outstandingSynced : Math.abs(overpaid))}
+                                  </span>
                                 ) : <span style={{color:'#166534',fontWeight:700,fontSize:'11px'}}>Clear</span>}
                               </td>
                               <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
@@ -2882,6 +3098,13 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                             {expandedId===inv.id && (
                               <tr>
                                 <td colSpan={hideEmpFilter?11:12} style={{padding:'12px 18px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+                                  {overpaid<-0.5 ? (
+                                    <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:'8px',padding:'10px 14px',fontSize:'12.5px',color:'#1d4ed8'}}>
+                                      <div style={{fontWeight:700,marginBottom:'4px'}}>WPS Underpayment — Payable to {inv.full_name}</div>
+                                      <div>SATCO paid AED {fmt2(wps)} via WPS this month, but {inv.full_name.split(' ')[0]}'s actual share was AED {fmt2(empShare)} — the company owes the difference of <strong>AED {fmt2(outstandingSynced!==null ? outstandingSynced : Math.abs(overpaid))}</strong>. This is tracked as a payable on the P&amp;L Dashboard and clears automatically once the WPS Paid amount for this invoice is corrected or topped up.</div>
+                                    </div>
+                                  ) : (
+                                    <>
                                   <div style={{fontWeight:700,fontSize:'12px',marginBottom:'8px',color:'#475569'}}>Progressive WPS Recovery — {inv.full_name}</div>
                                   <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',marginBottom:'8px'}}>
                                     <thead><tr><th style={S.th}>Recovery Month</th><th style={S.th}>Amount (AED)</th><th style={S.th}>Remarks</th><th style={S.th}></th></tr></thead>
@@ -2912,6 +3135,8 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                                   ) : (
                                     <button style={{...S.btnPri,fontSize:'11.5px',padding:'6px 12px'}} onClick={()=>setRecDraft({invoice_id:inv.id,employee_id:inv.employee_id,recovery_month:'',amount_aed:'',remarks:''})}>+ Log Monthly Recovery</button>
                                   )}
+                                    </>
+                                  )}
                                 </td>
                               </tr>
                             )}
@@ -2921,6 +3146,330 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                     </React.Fragment>
                   ))
               }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── CAMP COSTS TAB ───────────────────────────────────────────────
+// When an employee is demobilized from a client site and not yet remobilized elsewhere, SATCO
+// pays the client/camp for their food, accommodation and transport for every day they sit off-site.
+// This reconstructs those demob→remob gaps ("camp periods") from HR's mobilization/demobilization
+// history, prices them at a configurable AED/day rate (company default, or a per-employee override),
+// and syncs the resulting cost into employee_other_costs — the same shared pool the P&L Dashboard and
+// Client Billing already read from — so it shows up both as a company expense and against that
+// specific employee's cost history automatically.
+function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEmpFilter }) {
+  const [defaults, setDefaults] = useState({ food_rate_per_day:0, accommodation_rate_per_day:0, transport_rate_per_day:0 });
+  const [overrides, setOverrides] = useState([]);
+  const [overrideDraft, setOverrideDraft] = useState(null);
+  const [showOverrides, setShowOverrides] = useState(!hideEmpFilter);
+  const [synced, setSynced] = useState({}); // `${employee_id}|${demob_date}` -> {id, amount, notes}
+  const [loading, setLoading] = useState(true);
+  const [savingRates, setSavingRates] = useState(false);
+  const [filters, setFilters] = useState(initialFilter||{});
+  useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
+
+  const load = async () => {
+    setLoading(true);
+    const [def, ov, oc] = await Promise.all([
+      db.from('camp_rate_defaults').select('*').eq('id',1).maybeSingle(),
+      db.from('employee_camp_rates').select('*'),
+      db.from('employee_other_costs').select('id,employee_id,amount,notes').eq('cost_type','camp_food_accommodation'),
+    ]);
+    setDefaults(def.data || { food_rate_per_day:0, accommodation_rate_per_day:0, transport_rate_per_day:0 });
+    setOverrides(ov.data||[]);
+    const syncMap = {};
+    (oc.data||[]).forEach(r=>{
+      const m = String(r.notes||'').match(/\[CAMP:([^\]]+)\]/);
+      if (m) syncMap[`${r.employee_id}|${m[1]}`] = { id:r.id, amount:Number(r.amount)||0, notes:r.notes };
+    });
+    setSynced(syncMap);
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const overridesByEmp = useMemo(()=>{
+    const m = {};
+    overrides.forEach(o=>{ m[o.employee_id]=o; });
+    return m;
+  },[overrides]);
+
+  const rateFor = (employeeId) => {
+    const ov = overridesByEmp[employeeId];
+    const has = (v) => v!==null && v!==undefined && v!=='';
+    return {
+      food:          ov && has(ov.food_rate_per_day)          ? Number(ov.food_rate_per_day)          : Number(defaults.food_rate_per_day)||0,
+      accommodation: ov && has(ov.accommodation_rate_per_day) ? Number(ov.accommodation_rate_per_day) : Number(defaults.accommodation_rate_per_day)||0,
+      transport:     ov && has(ov.transport_rate_per_day)     ? Number(ov.transport_rate_per_day)     : Number(defaults.transport_rate_per_day)||0,
+    };
+  };
+
+  // Reconstruct every demob→remob gap for one employee from their mob/demob history. With only the
+  // latest HR record available (pre-migration), this still correctly finds the current ongoing gap,
+  // if any — full historical (already-closed) periods need the HR bridge full-history migration.
+  const periodsFor = (employeeId) => {
+    const rows = (mobDemobByEmp[employeeId]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
+    const todayStr = new Date().toISOString().slice(0,10);
+    const out = [];
+    rows.forEach((row,i)=>{
+      if (!row.demobilization_date) return;
+      const next = rows[i+1];
+      const remobDate = next && next.mobilization_date ? next.mobilization_date : null;
+      const endDate = remobDate || todayStr;
+      if (endDate <= row.demobilization_date) return;
+      const demob = new Date(row.demobilization_date+'T00:00:00Z');
+      const end = new Date(endDate+'T00:00:00Z');
+      const days = Math.max(0, Math.round((end-demob)/86400000));
+      if (days<=0) return;
+      out.push({ employee_id:employeeId, demob_date:row.demobilization_date, remob_date:remobDate, ongoing:!remobDate, left_location:row.location||null, days });
+    });
+    return out;
+  };
+
+  // All camp periods across the whole roster (sync always covers everyone, regardless of the
+  // current filter, so switching/clearing filters never leaves stale/unsynced rows behind).
+  const rosterPeriods = useMemo(()=>{
+    const out = [];
+    employees.forEach(e=>{ periodsFor(e.employee_id).forEach(p=>out.push({...p, full_name:e.full_name})); });
+    return out;
+  },[employees, mobDemobByEmp]);
+
+  // Auto-sync computed camp costs into employee_other_costs, mirroring Client Billing's WPS
+  // auto-repair pattern: insert if missing, update if the amount/description drifted, delete if the
+  // underlying period no longer exists or the cost dropped to zero.
+  useEffect(()=>{
+    if (loading || !employees.length) return;
+    (async () => {
+      const fixes = [];
+      const seenKeys = new Set();
+      rosterPeriods.forEach(p=>{
+        const rate = rateFor(p.employee_id);
+        const dailyTotal = rate.food+rate.accommodation+rate.transport;
+        const amount = Math.round(p.days*dailyTotal*100)/100;
+        const key = `${p.employee_id}|${p.demob_date}`;
+        seenKeys.add(key);
+        const note = `Camp cost — off-site from ${p.demob_date}${p.remob_date?` to ${p.remob_date}`:' (ongoing)'}${p.left_location?`, left ${p.left_location}`:''} — ${p.days} day(s) x AED ${fmt2(dailyTotal)}/day [CAMP:${p.demob_date}]`;
+        const existing = synced[key];
+        if (amount<=0) {
+          if (existing) fixes.push(db.from('employee_other_costs').delete().eq('id',existing.id));
+          return;
+        }
+        if (!existing) {
+          fixes.push(db.from('employee_other_costs').insert({
+            employee_id:p.employee_id, full_name:p.full_name, cost_type:'camp_food_accommodation',
+            cost_date:p.remob_date||p.demob_date, amount, recoverable:false, recovered_amount:0, notes:note,
+          }));
+        } else if (Math.abs(existing.amount-amount)>0.5 || existing.notes!==note) {
+          fixes.push(db.from('employee_other_costs').update({ amount, notes:note }).eq('id',existing.id));
+        }
+      });
+      Object.entries(synced).forEach(([key,row])=>{
+        if (!seenKeys.has(key)) fixes.push(db.from('employee_other_costs').delete().eq('id',row.id));
+      });
+      if (fixes.length) {
+        await Promise.all(fixes);
+        const { data: ocFresh } = await db.from('employee_other_costs').select('id,employee_id,amount,notes').eq('cost_type','camp_food_accommodation');
+        const freshMap = {};
+        (ocFresh||[]).forEach(r=>{
+          const m = String(r.notes||'').match(/\[CAMP:([^\]]+)\]/);
+          if (m) freshMap[`${r.employee_id}|${m[1]}`] = { id:r.id, amount:Number(r.amount)||0, notes:r.notes };
+        });
+        setSynced(freshMap);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[rosterPeriods, defaults, overridesByEmp, loading]);
+
+  const saveDefaults = async () => {
+    setSavingRates(true);
+    const { error } = await db.from('camp_rate_defaults').upsert({
+      id:1,
+      food_rate_per_day:Number(defaults.food_rate_per_day)||0,
+      accommodation_rate_per_day:Number(defaults.accommodation_rate_per_day)||0,
+      transport_rate_per_day:Number(defaults.transport_rate_per_day)||0,
+    });
+    setSavingRates(false);
+    if (error) return alert(error.message);
+    load();
+  };
+
+  const blankOverride = () => setOverrideDraft({ employee_id:initialFilter&&initialFilter.employee_id||'', full_name:initialFilter&&initialFilter.full_name||'', food_rate_per_day:'', accommodation_rate_per_day:'', transport_rate_per_day:'', remarks:'' });
+  const editOverride = (o) => setOverrideDraft({ ...o });
+  const saveOverride = async () => {
+    if (!overrideDraft.employee_id) return alert('Employee is required');
+    const payload = {
+      employee_id:overrideDraft.employee_id, full_name:overrideDraft.full_name||'',
+      food_rate_per_day: overrideDraft.food_rate_per_day===''||overrideDraft.food_rate_per_day==null ? null : Number(overrideDraft.food_rate_per_day),
+      accommodation_rate_per_day: overrideDraft.accommodation_rate_per_day===''||overrideDraft.accommodation_rate_per_day==null ? null : Number(overrideDraft.accommodation_rate_per_day),
+      transport_rate_per_day: overrideDraft.transport_rate_per_day===''||overrideDraft.transport_rate_per_day==null ? null : Number(overrideDraft.transport_rate_per_day),
+      remarks:overrideDraft.remarks||null,
+    };
+    const { error } = await db.from('employee_camp_rates').upsert(payload, { onConflict:'employee_id' });
+    if (error) return alert(error.message);
+    setOverrideDraft(null);
+    load();
+  };
+  const removeOverride = async (id) => {
+    if (!window.confirm('Remove this rate override? This employee will fall back to the default rate.')) return;
+    await db.from('employee_camp_rates').delete().eq('id',id);
+    load();
+  };
+
+  const filterFields = hideEmpFilter ? [] : [
+    {key:'employee_id', label:'Emp ID', width:'100px'},
+    {key:'full_name',   label:'Name',   width:'150px'},
+  ];
+  const scopedPeriods = useMemo(()=>{
+    const base = hideEmpFilter && filters.employee_id ? rosterPeriods.filter(p=>p.employee_id===filters.employee_id) : rosterPeriods;
+    return applyFilters(base, hideEmpFilter?{}:filters).sort((a,b)=>b.demob_date<a.demob_date?-1:1);
+  },[rosterPeriods, filters, hideEmpFilter]);
+
+  const summary = useMemo(()=>{
+    let totalDays=0, totalCost=0, ongoingCount=0, ongoingCost=0;
+    scopedPeriods.forEach(p=>{
+      const rate = rateFor(p.employee_id);
+      const cost = p.days*(rate.food+rate.accommodation+rate.transport);
+      totalDays += p.days; totalCost += cost;
+      if (p.ongoing) { ongoingCount++; ongoingCost += cost; }
+    });
+    return { totalDays, totalCost, ongoingCount, ongoingCost, periodCount:scopedPeriods.length };
+  },[scopedPeriods, defaults, overridesByEmp]);
+
+  const csvCols = [
+    {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},{key:'left_location',label:'Left Site/Location'},
+    {key:'demob_date',label:'Demob Date'},{key:'remob_date',label:'Remob Date'},{key:'days',label:'Camp Days'},
+    {key:'daily_rate',label:'Rate/day (AED)'},{key:'cost',label:'Camp Cost (AED)'},
+  ];
+  const csvRows = scopedPeriods.map(p=>{
+    const rate = rateFor(p.employee_id);
+    const dailyTotal = rate.food+rate.accommodation+rate.transport;
+    return { ...p, remob_date:p.remob_date||'(ongoing)', daily_rate:fmt2(dailyTotal), cost:fmt2(p.days*dailyTotal) };
+  });
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
+      <div style={S.card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+          <div style={{fontWeight:800,fontSize:'13px'}}>Camp Cost Rates (AED/day)</div>
+          <div style={{fontSize:'11.5px',color:'#64748b',marginTop:'2px'}}>Applied to every day an employee is demobilized from site and not yet remobilized. Set a company default below, and optionally override it for specific employees.</div>
+        </div>
+        <div style={{padding:'14px 16px'}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr) auto',gap:'12px',alignItems:'end',marginBottom:'10px'}}>
+            <div><label style={S.label}>Food (AED/day)</label><input type="number" step="0.01" min="0" value={defaults.food_rate_per_day} onChange={e=>setDefaults(d=>({...d,food_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Accommodation (AED/day)</label><input type="number" step="0.01" min="0" value={defaults.accommodation_rate_per_day} onChange={e=>setDefaults(d=>({...d,accommodation_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <div><label style={S.label}>Transport (AED/day)</label><input type="number" step="0.01" min="0" value={defaults.transport_rate_per_day} onChange={e=>setDefaults(d=>({...d,transport_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <button style={{...S.btnPri,opacity:savingRates?0.6:1}} disabled={savingRates} onClick={saveDefaults}>{savingRates?'Saving…':'Save Default Rates'}</button>
+          </div>
+          <div style={{fontSize:'12px',color:'#166534',fontWeight:700}}>Default total: AED {fmt2((Number(defaults.food_rate_per_day)||0)+(Number(defaults.accommodation_rate_per_day)||0)+(Number(defaults.transport_rate_per_day)||0))}/day</div>
+
+          <div style={{marginTop:'14px',paddingTop:'12px',borderTop:'1px solid #e2e8f0'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'8px'}}>
+              <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1',fontSize:'12px',padding:'6px 12px'}} onClick={()=>setShowOverrides(v=>!v)}>{showOverrides?'▲ Hide':'▼ Show'} Per-Employee Rate Overrides ({overrides.length})</button>
+              {!overrideDraft && <button style={{...S.btnPri,fontSize:'12px',padding:'6px 12px'}} onClick={blankOverride}>+ Add Override</button>}
+            </div>
+            {showOverrides && (
+              <div style={{marginTop:'10px'}}>
+                {overrideDraft && (
+                  <div style={{background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:'8px',padding:'12px',marginBottom:'10px'}}>
+                    {!hideEmpFilter && (
+                      <div style={{marginBottom:'8px'}}>
+                        <label style={S.label}>Employee</label>
+                        <EmployeePicker employees={employees} value={overrideDraft.employee_id} name={overrideDraft.full_name}
+                          onChange={(id,name)=>setOverrideDraft(d=>({...d,employee_id:id,full_name:name}))} />
+                      </div>
+                    )}
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'8px'}}>
+                      <div><label style={S.label}>Food (AED/day) — blank = default</label><input type="number" step="0.01" value={overrideDraft.food_rate_per_day} onChange={e=>setOverrideDraft(d=>({...d,food_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                      <div><label style={S.label}>Accommodation (AED/day)</label><input type="number" step="0.01" value={overrideDraft.accommodation_rate_per_day} onChange={e=>setOverrideDraft(d=>({...d,accommodation_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                      <div><label style={S.label}>Transport (AED/day)</label><input type="number" step="0.01" value={overrideDraft.transport_rate_per_day} onChange={e=>setOverrideDraft(d=>({...d,transport_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                    </div>
+                    <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={overrideDraft.remarks||''} onChange={e=>setOverrideDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                    <div style={{display:'flex',gap:'8px'}}>
+                      <button style={S.btnPri} onClick={saveOverride}>Save Override</button>
+                      <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setOverrideDraft(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
+                  <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Food</th><th style={S.th}>Accom.</th><th style={S.th}>Transport</th><th style={S.th}>Remarks</th><th style={S.th}></th></tr></thead>
+                  <tbody>
+                    {overrides.length===0
+                      ? <tr><td colSpan={6} style={{padding:'10px',color:'#94a3b8',textAlign:'center'}}>No overrides — every employee uses the default rate above.</td></tr>
+                      : overrides.map(o=>(
+                        <tr key={o.id} style={{borderTop:'1px solid #e2e8f0'}}>
+                          <td style={S.td}>{o.full_name||o.employee_id} <span style={{color:'#94a3b8',fontFamily:'ui-monospace,monospace',fontSize:'11px'}}>({o.employee_id})</span></td>
+                          <td style={S.td}>{o.food_rate_per_day!=null?fmt2(o.food_rate_per_day):'—'}</td>
+                          <td style={S.td}>{o.accommodation_rate_per_day!=null?fmt2(o.accommodation_rate_per_day):'—'}</td>
+                          <td style={S.td}>{o.transport_rate_per_day!=null?fmt2(o.transport_rate_per_day):'—'}</td>
+                          <td style={S.tdWrap}>{o.remarks||'—'}</td>
+                          <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                            <button style={S.iconBtn} onClick={()=>editOverride(o)}>&#9998;</button>
+                            <button style={S.iconBtn} onClick={()=>removeOverride(o.id)}>&#128465;</button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
+          <div>
+            <div style={{fontWeight:800,fontSize:'14px'}}>Camp Costs — Food, Accommodation &amp; Transport While Off-Site</div>
+            <div style={{fontSize:'12px',color:'#64748b'}}>{summary.periodCount} period(s) · {summary.ongoingCount} currently in camp</div>
+          </div>
+          <button style={S.btnExp} onClick={()=>exportCSV(csvRows,'camp_costs',csvCols)}>Export CSV</button>
+        </div>
+        <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
+
+        {summary.periodCount>0 && (
+          <div style={{margin:'14px',padding:'12px 16px',borderRadius:'10px',border:'1px solid #fde68a',background:'#fffbeb'}}>
+            <div style={{fontWeight:800,fontSize:'12.5px',marginBottom:'4px',color:'#92400e'}}>Camp Cost Owed to Client/Camp{!hideEmpFilter?' — All Employees':''}</div>
+            <div style={{fontSize:'12.5px',color:'#78350f',marginBottom:'6px'}}>{summary.totalDays} total camp day(s) across {summary.periodCount} period(s), of which {summary.ongoingCount} employee(s) are in camp right now.</div>
+            <div style={{fontSize:'15px',fontWeight:800,color:'#92400e'}}>Total: AED {fmt2(summary.totalCost)}{summary.ongoingCost>0 && <span style={{fontSize:'12px',fontWeight:700,color:'#b45309'}}> &nbsp;(AED {fmt2(summary.ongoingCost)} still accruing — ongoing)</span>}</div>
+          </div>
+        )}
+
+        <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+            <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Left Site/Location','Demob Date','Status','Camp Days','Rate/day','Camp Cost','Synced']:['Emp ID','Name','Left Site/Location','Demob Date','Status','Camp Days','Rate/day','Camp Cost','Synced']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+            <tbody>
+              {loading
+                ? <tr><td colSpan={hideEmpFilter?7:9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                : scopedPeriods.length===0
+                  ? <tr><td colSpan={hideEmpFilter?7:9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No camp periods found. This needs a demob date recorded in HR with no (or a later) remobilization date.</td></tr>
+                  : scopedPeriods.map(p=>{
+                      const rate = rateFor(p.employee_id);
+                      const dailyTotal = rate.food+rate.accommodation+rate.transport;
+                      const cost = p.days*dailyTotal;
+                      const key = `${p.employee_id}|${p.demob_date}`;
+                      const isSynced = !!synced[key];
+                      return (
+                        <tr key={key} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}>
+                          {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{p.employee_id}</td>}
+                          {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{p.full_name}</td>}
+                          <td style={S.td}>{p.left_location||'—'}</td>
+                          <td style={S.td}>{p.demob_date}</td>
+                          <td style={S.td}>
+                            {p.ongoing
+                              ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>Still in camp</span>
+                              : <span style={{color:'#166534',fontWeight:700,fontSize:'11px'}}>Remobilized {p.remob_date}</span>}
+                          </td>
+                          <td style={{...S.td,fontWeight:700}}>{p.days}</td>
+                          <td style={S.td} title={`Food ${fmt2(rate.food)} + Accommodation ${fmt2(rate.accommodation)} + Transport ${fmt2(rate.transport)}`}>{fmt2(dailyTotal)}</td>
+                          <td style={{...S.td,fontWeight:700,color:'#92400e'}}>{fmt2(cost)}</td>
+                          <td style={S.td}>{isSynced ? <span style={{color:'#166534',fontWeight:700,fontSize:'11px'}}>✓ Synced</span> : <span style={{color:'#94a3b8',fontSize:'11px'}}>—</span>}</td>
+                        </tr>
+                      );
+                    })}
             </tbody>
           </table>
         </div>
@@ -3621,9 +4170,9 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   const loadRecoveryContext = async () => {
     const currentMonth = firstOfMonth(month);
     const [visa, flights, training, other, monthly, invoices, invoiceLines, invoiceRecoveries] = await Promise.all([
-      db.from('employee_visa_costs').select('employee_id,cost,recoverable'),
-      db.from('employee_flights').select('employee_id,cost,recoverable'),
-      db.from('employee_training_costs').select('employee_id,cost,recoverable'),
+      db.from('employee_visa_costs').select('employee_id,cost,recoverable,recoverable_amount'),
+      db.from('employee_flights').select('employee_id,cost,recoverable,recoverable_amount'),
+      db.from('employee_training_costs').select('employee_id,cost,recoverable,recoverable_amount'),
       db.from('employee_other_costs').select('employee_id,amount,recoverable,cost_type,recovered_amount,notes'),
       db.from('employee_monthly_costs').select('employee_id,month,salary_deductions'),
       db.from('employee_client_invoices').select('id,employee_id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr'),
@@ -3642,9 +4191,9 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     const addRecovered = (id, amt) => { if (!id) return; ensure(id).recoveredBefore += Number(amt)||0; };
     const addDeposit = (id, amt) => { if (!id) return; const r=ensure(id); r.deposits += Number(amt)||0; r.recoveredBefore += Number(amt)||0; };
 
-    (visa.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, r.cost));
-    (flights.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, r.cost));
-    (training.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, r.cost));
+    (visa.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, recoverableCap(r,'cost')));
+    (flights.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, recoverableCap(r,'cost')));
+    (training.data||[]).filter(r=>r.recoverable).forEach(r=>addRecoverable(r.employee_id, recoverableCap(r,'cost')));
     (other.data||[]).forEach(r => {
       if (r.cost_type === 'security_deposit') addDeposit(r.employee_id, r.amount);
       else if (r.recoverable && r.cost_type !== 'wps_overpayment_recovery') {
@@ -4921,9 +5470,9 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       db.from('employee_pnl_summary').select('*').order('employee_id',{ascending:true}),
       db.from('employee_pnl_monthly').select('*').order('month',{ascending:false}),
       db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
-      db.from('employee_visa_costs').select('employee_id,cost,recoverable'),
-      db.from('employee_flights').select('employee_id,cost,recoverable'),
-      db.from('employee_training_costs').select('employee_id,cost,recoverable'),
+      db.from('employee_visa_costs').select('employee_id,cost,recoverable,recoverable_amount'),
+      db.from('employee_flights').select('employee_id,cost,recoverable,recoverable_amount'),
+      db.from('employee_training_costs').select('employee_id,cost,recoverable,recoverable_amount'),
       db.from('employee_other_costs').select('employee_id,amount,recoverable,cost_type,recovered_amount,notes'),
       db.from('employee_monthly_costs').select('employee_id,month,salary,food,accommodation,transport,other,salary_deductions'),
       db.from('employee_timesheets').select('employee_id,hours,rate'),
@@ -5055,10 +5604,10 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   //    like every other recoverable cost type.
   const recoveryMap = useMemo(()=>{
     const m = {};
-    const ensure = (id) => { id=canonEmpId(id); if (!id) return { recoverable:0, recovered:0 }; if (!m[id]) m[id] = { recoverable:0, recovered:0 }; return m[id]; };
-    recoverySrc.visa.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
-    recoverySrc.flights.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
-    recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += Number(r.cost)||0; });
+    const ensure = (id) => { id=canonEmpId(id); if (!id) return { recoverable:0, recovered:0, payable:0 }; if (!m[id]) m[id] = { recoverable:0, recovered:0, payable:0 }; return m[id]; };
+    recoverySrc.visa.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
+    recoverySrc.flights.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
+    recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
     recoverySrc.other.forEach(r=>{ if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') ensure(r.employee_id).recoverable += Number(r.amount)||0; });
     recoverySrc.other.forEach(r=>{ if (r.cost_type==='security_deposit') ensure(r.employee_id).recovered += Number(r.amount)||0; });
     // Manual WPS-overpayment rows (no [INV:id] tag) — use the stored amount/recovered_amount directly.
@@ -5068,9 +5617,17 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         ensure(r.employee_id).recovered  += Number(r.recovered_amount)||0;
       }
     });
+    // Manual WPS-underpayment rows (no [INV:id] tag) — the mirror image: a payable to the employee,
+    // not a recoverable. recoverable is always false on these rows so they never leak into the
+    // recoverable loops above.
+    recoverySrc.other.forEach(r=>{
+      if (r.cost_type==='wps_underpayment_payable' && !/\[INV:[^\]]+\]/.test(String(r.notes||''))) {
+        ensure(r.employee_id).payable += Number(r.amount)||0;
+      }
+    });
     recoverySrc.deductions.forEach(r=>{ ensure(r.employee_id).recovered += Number(r.salary_deductions)||0; });
 
-    // WPS overpayment per invoice, computed directly (Received → implied FX rate → SATCO share → Employee share → vs WPS paid)
+    // WPS over/underpayment per invoice, computed directly (Received → implied FX rate → SATCO share → Employee share → vs WPS paid)
     const linesByInvoice = {};
     recoverySrc.invoiceLines.forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
     recoverySrc.invoices.forEach(inv=>{
@@ -5085,6 +5642,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       const empShare = received-satcoAed;
       const overpaid = wps-empShare;
       if (overpaid > 0.5) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100;
+      else if (overpaid < -0.5) ensure(inv.employee_id).payable += Math.round(Math.abs(overpaid)*100)/100;
     });
     // Logged recoveries against those invoices count as recovered.
     recoverySrc.invoiceRecoveries.forEach(r=>{ ensure(r.employee_id).recovered += Number(r.amount_aed)||0; });
@@ -5164,12 +5722,12 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   const G = summary.reduce((a,r)=>{
     const id = canonEmpId(r.employee_id);
     const raw = rawPnlMap[id];
-    const rec = recoveryMap[id]||{recoverable:0,recovered:0};
+    const rec = recoveryMap[id]||{recoverable:0,recovered:0,payable:0};
     const income = raw ? Number(raw.income)||0 : Number(r.lifetime_income)||0;
     const grossExpense = raw ? Number(raw.expense)||0 : Number(r.lifetime_expense)||0;
     const netExpense = Math.max(0, grossExpense - (Number(rec.recovered)||0));
-    return {income:a.income+income, expense:a.expense+netExpense, net:a.net+(income-netExpense)};
-  },{income:0,expense:0,net:0});
+    return {income:a.income+income, expense:a.expense+netExpense, net:a.net+(income-netExpense), payable:a.payable+(Number(rec.payable)||0)};
+  },{income:0,expense:0,net:0,payable:0});
   const totalDeposits=Object.values(depositMap).reduce((s,v)=>s+v,0);
 
   // Export P&L summary
@@ -5180,11 +5738,12 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     {key:'lifetime_net',label:'Net P/L (AED)'},{key:'lifetime_onboarding_cost',label:'Onboarding Cost'},
     {key:'advance_outstanding',label:'Advance Outstanding'},{key:'deposits_received',label:'Deposits Received (info only — already included in Recovered)'},
     {key:'recoverable_total',label:'Recoverable'},{key:'recovered_plus_deposits',label:'Recovered / Deposits Received'},{key:'balance_to_recover',label:'Balance to Recover'},
+    {key:'wps_payable',label:'WPS Payable to Employee (Underpayment)'},
     {key:'idle_months',label:'Idle Months'},
   ];
   const pnlExportRows = useMemo(()=>filteredSummary.map(r=>{
     const id=canonEmpId(r.employee_id);
-    const rec=recoveryMap[id]||{recoverable:0,recovered:0};
+    const rec=recoveryMap[id]||{recoverable:0,recovered:0,payable:0};
     const dep=depositMap[id]||0;
     const raw=rawPnlMap[id];
     const cat=categoryTotals[id]||{visa:0,salary:0,income:0,expense:0};
@@ -5195,6 +5754,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     // rec.recovered already includes deposits received (folded in once when recoveryMap is built) — do not add dep again.
     return {...r, lifetime_income:income, lifetime_expense:netExpense, lifetime_net:net,
       deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered, balance_to_recover:rec.recoverable-rec.recovered,
+      wps_payable:rec.payable,
       visa_total:cat.visa, salary_total:cat.salary, income_total:cat.income};
   }),[filteredSummary,recoveryMap,depositMap,categoryTotals,rawPnlMap]);
 
@@ -5222,6 +5782,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>{totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>AED {fmt(totalDeposits)} deposits shown under recovered, not income</div>}</div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div></div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Net Profit / Loss</div><div style={{fontSize:'22px',marginTop:'6px'}}><AmountTag value={G.net} /></div></div>
+        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>WPS Payable to Employees</div><div style={{fontSize:'22px',fontWeight:800,color:G.payable>0?'#1d4ed8':'#94a3b8',marginTop:'6px'}}>AED {fmt(G.payable)}</div><div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>Company owes staff — WPS paid less than their Client Billing share</div></div>
       </div>
 
       <div style={{...S.card,marginBottom:'16px'}}>
@@ -5238,20 +5799,20 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                 ['Income Total','80px'],
                 ['Total Income','82px'],['Total Expense','82px'],['Net P/L','82px'],
                 ['Recoverable','74px'],['Recovered / Deposits Received','84px'],
-                ['Balance to Recover','80px'],['Idle Months','64px'],['',36],
+                ['Balance to Recover','80px'],['WPS Payable to Employee','80px'],['Idle Months','64px'],['',36],
               ].map(([h,w])=>(
                 <th key={h} style={{...S.th,whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere',lineHeight:'1.3',width:w,verticalAlign:'bottom',position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ? <tr><td colSpan={14} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
                 : filteredSummary.length===0
-                  ? <tr><td colSpan={13} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
+                  ? <tr><td colSpan={14} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : visiblePnlSummary.map(r=>{
                       const id=canonEmpId(r.employee_id);
                       const dep=depositMap[id]||0;
-                      const rec=recoveryMap[id]||{recoverable:0,recovered:0};
+                      const rec=recoveryMap[id]||{recoverable:0,recovered:0,payable:0};
                       const balance=rec.recoverable-rec.recovered;
                       const raw=rawPnlMap[id];
                       const adjIncome=raw ? (Number(raw.income)||0) : (Number(r.lifetime_income)||0);
@@ -5279,6 +5840,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                           <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||rec.recovered>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}{dep>0&&<div style={{fontSize:'10px',color:'#94a3b8',fontWeight:600}}>incl. {fmt(dep)} deposit</div>}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{rec.payable>0?<span title="WPS paid was less than this employee's Client Billing share — company owes this to the employee" style={{background:'#dbeafe',color:'#1d4ed8',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(rec.payable)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer',padding:'7px 6px'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
                         </tr>
@@ -5406,7 +5968,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── EMPLOYEE DETAIL PAGE (single-page entry for one employee) ─────
-function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSalaryRows, onBack }) {
+function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSalaryRows, mobDemobByEmp, onBack }) {
   const meta = empMeta && empMeta[employeeId];
   const filt = { employee_id: employeeId, full_name: employeeName||'' };
   const [exporting, setExporting] = useState(false);
@@ -5418,16 +5980,17 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
   const loadRecovery = async () => {
     setRecLoading(true);
     const [visa, flights, training, other, monthly, invoices, invoiceLines, invoiceRecoveries] = await Promise.all([
-      db.from('employee_visa_costs').select('cost,recoverable').eq('employee_id',employeeId),
-      db.from('employee_flights').select('cost,recoverable').eq('employee_id',employeeId),
-      db.from('employee_training_costs').select('cost,recoverable').eq('employee_id',employeeId),
+      db.from('employee_visa_costs').select('cost,recoverable,recoverable_amount').eq('employee_id',employeeId),
+      db.from('employee_flights').select('cost,recoverable,recoverable_amount').eq('employee_id',employeeId),
+      db.from('employee_training_costs').select('cost,recoverable,recoverable_amount').eq('employee_id',employeeId),
       db.from('employee_other_costs').select('amount,recoverable,cost_type,recovered_amount,notes').eq('employee_id',employeeId),
       db.from('employee_monthly_costs').select('salary_deductions,salary,food,accommodation,transport,other').eq('employee_id',employeeId),
       db.from('employee_client_invoices').select('id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr').eq('employee_id',employeeId),
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
       db.from('employee_client_recoveries').select('amount_aed').eq('employee_id',employeeId),
     ]);
-    const recoverableSum = (rows, amtKey) => (rows||[]).filter(r=>r.recoverable).reduce((s,r)=>s+(Number(r[amtKey])||0),0);
+    // Uses the recoverable_amount cap when set (see recoverableCap), otherwise the full cost.
+    const recoverableSum = (rows, amtKey) => (rows||[]).filter(r=>r.recoverable).reduce((s,r)=>s+recoverableCap(r,amtKey),0);
     const visaRecoverable     = recoverableSum(visa.data, 'cost');
     const flightsRecoverable  = recoverableSum(flights.data, 'cost');
     const trainingRecoverable = recoverableSum(training.data, 'cost');
@@ -5449,6 +6012,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
     const linesByInvoice = {};
     (invoiceLines.data||[]).forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
     let invoiceWpsRecoverable = 0;
+    let invoiceWpsPayable = 0;
     (invoices.data||[]).forEach(inv=>{
       const lns = linesByInvoice[inv.id]||[];
       const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
@@ -5461,8 +6025,15 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       const empShare = received-satcoAed;
       const overpaid = wps-empShare;
       if (overpaid > 0.5) invoiceWpsRecoverable += Math.round(overpaid*100)/100;
+      else if (overpaid < -0.5) invoiceWpsPayable += Math.round(Math.abs(overpaid)*100)/100;
     });
     const wpsOverpaymentRecoverable = manualWpsRecoverable + invoiceWpsRecoverable;
+
+    // WPS underpayment — the mirror image: months where WPS paid was less than the employee's
+    // actual Client Billing share, so the company owes the employee, not the other way round.
+    const manualWpsPayableRows = (other.data||[]).filter(r=>r.cost_type==='wps_underpayment_payable' && !/\[INV:[^\]]+\]/.test(String(r.notes||'')));
+    const manualWpsPayable = manualWpsPayableRows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+    const wpsUnderpaymentPayable = manualWpsPayable + invoiceWpsPayable;
 
     const totalRecoverable = visaRecoverable + flightsRecoverable + trainingRecoverable + otherRecoverable + wpsOverpaymentRecoverable;
 
@@ -5475,6 +6046,10 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       visaRecoverable, flightsRecoverable, trainingRecoverable, otherRecoverable, wpsOverpaymentRecoverable, totalRecoverable,
       recoveredFromDeductions, depositsReceived, recoveredFromInvoices, totalRecovered,
       balance: totalRecoverable - totalRecovered,
+      wpsUnderpaymentPayable,
+      // Net WPS position across this employee's whole history: positive = company still owes the
+      // employee net of what's been recovered the other way; negative = employee still owes company.
+      netWpsPosition: wpsUnderpaymentPayable - Math.max(0, wpsOverpaymentRecoverable - (recoveredFromInvoices)),
     });
 
     // Lifetime totals (all entries, not just recoverable ones) for the Totals summary card.
@@ -5616,24 +6191,26 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
         </div>
       </div>
 
-      {!recLoading && recovery && recovery.totalRecoverable>0 && (
+      {!recLoading && recovery && (recovery.totalRecoverable>0 || recovery.wpsUnderpaymentPayable>0) && (
         <div style={{...S.card,marginBottom:'16px',padding:'14px 18px',background:'#fffbeb',border:'1px solid #fbbf24'}}>
-          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px',color:'#92400e'}}>Recovery Summary — costs recoverable from {employeeName.split(' ')[0]}'s salary</div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'10px',fontSize:'12.5px',marginBottom:'10px'}}>
+          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px',color:'#92400e'}}>Recovery Summary — money owed between {employeeName.split(' ')[0]} and SATCO</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'10px',fontSize:'12.5px',marginBottom:'10px'}}>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Visa (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.visaRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Flights (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.flightsRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Training (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.trainingRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Onboarding/Misc (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.otherRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>WPS Overpaid vs Billing</div><div style={{fontWeight:700}}>AED {fmt(recovery.wpsOverpaymentRecoverable)}</div></div>
+            <div><div style={{color:'#94a3b8',fontWeight:600}}>WPS Underpaid (payable to employee)</div><div style={{fontWeight:700,color:recovery.wpsUnderpaymentPayable>0?'#1d4ed8':'inherit'}}>AED {fmt(recovery.wpsUnderpaymentPayable)}</div></div>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'10px',fontSize:'13px',paddingTop:'10px',borderTop:'1px solid #fde68a'}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'10px',fontSize:'13px',paddingTop:'10px',borderTop:'1px solid #fde68a'}}>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Total Recoverable</div><div style={{fontWeight:800,fontSize:'16px'}}>AED {fmt(recovery.totalRecoverable)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Recovered (salary deductions)</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.recoveredFromDeductions)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>+ Deposits Received</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.depositsReceived)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>+ WPS Recoveries Logged</div><div style={{fontWeight:800,fontSize:'16px',color:'#166534'}}>AED {fmt(recovery.recoveredFromInvoices)}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Balance to Recover</div><div style={{fontWeight:800,fontSize:'16px',color:recovery.balance>0?'#dc2626':'#166534'}}>AED {fmt(Math.abs(recovery.balance))}{recovery.balance<0?' (over-recovered)':''}</div></div>
+            <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Net WPS Position</div><div style={{fontWeight:800,fontSize:'16px',color:Math.abs(recovery.netWpsPosition)<=0.5?'#166534':recovery.netWpsPosition>0?'#1d4ed8':'#dc2626'}}>{Math.abs(recovery.netWpsPosition)<=0.5?'Settled':(recovery.netWpsPosition>0?'Owe employee ':'Employee owes ')+'AED '+fmt(Math.abs(recovery.netWpsPosition))}</div></div>
           </div>
-          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}><strong>P&amp;L impact:</strong> As amounts are recovered from this employee&apos;s salary, the <em>Total Expense</em> on the P&amp;L Dashboard reduces by the same amount and Net P/L improves — the P&amp;L always shows the company&apos;s <em>net</em> cost, not the gross upfront cost. Recovered = Deductions entered each month in Monthly Costs + Deposits Received + WPS Overpaid recovered + WPS recoveries logged on Client Billing. To recover costs, enter the deduction amount when adding/editing the monthly salary record.</div>
+          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}><strong>P&amp;L impact:</strong> As amounts are recovered from this employee&apos;s salary, the <em>Total Expense</em> on the P&amp;L Dashboard reduces by the same amount and Net P/L improves — the P&amp;L always shows the company&apos;s <em>net</em> cost, not the gross upfront cost. Recovered = Deductions entered each month in Monthly Costs + Deposits Received + WPS Overpaid recovered + WPS recoveries logged on Client Billing. WPS Underpaid is carried separately as a payable (money the company owes the employee, since WPS is paid before the client invoice settles) and is not deducted from expense. To recover costs, enter the deduction amount when adding/editing the monthly salary record.</div>
         </div>
       )}
 
@@ -5654,6 +6231,8 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
         <TimesheetsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
 
         <ClientBillingTab employees={employees} initialFilter={filt} hideEmpFilter />
+
+        <CampCostsTab employees={employees} empMeta={empMeta} mobDemobByEmp={mobDemobByEmp||{}} initialFilter={filt} hideEmpFilter />
       </div>
     </div>
   );
@@ -7306,6 +7885,7 @@ const PORTAL_TABS = [
   { key:'flights', icon:'✈️', label:'Flights', short:'Tickets', desc:'Mobilization, demobilization, leave, and emergency ticket costs.' },
   { key:'training', icon:'🎓', label:'Trainings', short:'Courses', desc:'Training names, dates, costs, and recovery status.' },
   { key:'other', icon:'🧰', label:'Onboarding & Misc', short:'Other spend', desc:'Deposits, advances, medicals, PPE, and miscellaneous employee costs.' },
+  { key:'camp', icon:'🏕️', label:'Camp Costs', short:'Off-site days', desc:'Food, accommodation and transport paid to the client/camp for days an employee is demobilized and not yet remobilized.' },
   { key:'timesheets', icon:'⏱️', label:'Timesheets / Income', short:'Revenue input', desc:'Enter employee time and income for monthly P&L.' },
   { key:'billing', icon:'🧾', label:'Client Billing', short:'Invoices', desc:'Create client invoices, track rates, recovery, and billing status.' },
 ];
@@ -7313,7 +7893,7 @@ const PORTAL_TAB_MAP = Object.fromEntries(PORTAL_TABS.map(t=>[t.key,t]));
 const PORTAL_NAV_GROUPS = [
   { title:'Start here', items:['dashboard','salary_pipeline'] },
   { title:'Payroll', items:['salary_profiles','deductions','wps'] },
-  { title:'Employee Costs', items:['monthly','visa','flights','training','other'] },
+  { title:'Employee Costs', items:['monthly','visa','flights','training','other','camp'] },
   { title:'Revenue', items:['timesheets','billing'] },
 ];
 
@@ -7339,7 +7919,9 @@ function App() {
   const [empMeta,   setEmpMeta]   = useState({});
   const [hrSalaryRows, setHrSalaryRows] = useState([]);
   const [hrSalaryStatus, setHrSalaryStatus] = useState({ source:null, error:null });
-  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v6')!=='done');
+  const [mobDemobByEmp, setMobDemobByEmp] = useState({}); // employee_id -> [{mobilization_date,demobilization_date,location,supply}] full history, oldest first
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v9')!=='done');
+  const [showHrBridge, setShowHrBridge] = useState(()=>localStorage.getItem('satco_hr_bridge_camp_v1')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
   useEffect(()=>{
@@ -7391,9 +7973,24 @@ function App() {
 
       // If HR has created the optional assignment bridge, enrich empMeta.
       // Missing/blocked bridge should not break the Finance portal.
+      // The bridge view now returns every mob/demob row per employee (not just the latest),
+      // ordered oldest-first, so we also group it into mobDemobByEmp for Camp Cost tracking —
+      // the forEach below still ends on the most recent row per employee, so empMeta's
+      // "current" mobilization_date/demobilization_date/location keeps working exactly as before.
       try {
         const { data:md } = await hrDb.from('v_finance_employee_mob_demob').select('*');
-        if (alive && md) md.forEach(m=>{ const id=canonEmpId(m.employee_id); if (meta[id]) meta[id] = { ...meta[id], ...m, employee_id:id }; });
+        if (alive && md) {
+          md.forEach(m=>{ const id=canonEmpId(m.employee_id); if (meta[id]) meta[id] = { ...meta[id], ...m, employee_id:id }; });
+          const grouped = {};
+          md.forEach(m=>{
+            const id = canonEmpId(m.employee_id);
+            if (!id) return;
+            if (!grouped[id]) grouped[id] = [];
+            grouped[id].push({ mobilization_date:m.mobilization_date||null, demobilization_date:m.demobilization_date||null, location:m.location||null, supply:m.supply||null });
+          });
+          Object.keys(grouped).forEach(id=>grouped[id].sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||''))));
+          setMobDemobByEmp(grouped);
+        }
       } catch (_) {}
 
       // Optional pending Temp IDs from HR hiring pipeline.
@@ -7448,7 +8045,7 @@ function App() {
           <div className="detail-backbar">
             <button className="quick-back" onClick={()=>setDetailEmp(null)}>← Back to portal</button>
           </div>
-          <EmployeeDetailPage employeeId={detailEmp.id} employeeName={detailEmp.name} employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} onBack={()=>setDetailEmp(null)} />
+          <EmployeeDetailPage employeeId={detailEmp.id} employeeName={detailEmp.name} employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} mobDemobByEmp={mobDemobByEmp} onBack={()=>setDetailEmp(null)} />
         </>
       );
     }
@@ -7469,6 +8066,7 @@ function App() {
         {tab==='training'  && <CostTable title="Training Costs" table="employee_training_costs" employees={employees} dateField="training_date" recoverableSupport
           fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
         {tab==='other'     && <OtherCostsTable employees={employees} />}
+        {tab==='camp'      && <CampCostsTab employees={employees} empMeta={empMeta} mobDemobByEmp={mobDemobByEmp} />}
         {tab==='monthly'   && <MonthlyCostsTable employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
         {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
         {tab==='billing'    && <ClientBillingTab employees={employees} />}
@@ -7549,7 +8147,8 @@ function App() {
             </div>
           )}
 
-          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v6','done');setShowMig(false);}} />}
+          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v9','done');setShowMig(false);}} />}
+          {showHrBridge&&<HrBridgeCampBanner onDismiss={()=>{localStorage.setItem('satco_hr_bridge_camp_v1','done');setShowHrBridge(false);}} />}
           {tempCandError && (
             <div className="alert-card danger">
               <b>Temporary HR candidates could not be loaded.</b> Temp-ID employees will appear once the HR candidate bridge/view is accessible.
