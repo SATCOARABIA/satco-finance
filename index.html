@@ -833,14 +833,13 @@ ALTER TABLE employee_training_costs
 -- Fix: "Onboarding & Misc Costs" save was failing with
 --   new row for relation "employee_other_costs" violates check constraint "employee_other_costs_cost_type_check"
 -- because the DB constraint's allowed list was created before "wps_overpayment_recovery" and "other"
--- were added to the app. Re-create the constraint to match every cost_type value the app can send.
-ALTER TABLE employee_other_costs DROP CONSTRAINT IF EXISTS employee_other_costs_cost_type_check;
-ALTER TABLE employee_other_costs ADD CONSTRAINT employee_other_costs_cost_type_check
-  CHECK (cost_type IN (
-    'security_deposit','agent_commission','salary_advance','local_transport',
-    'medical_test_expense','food_accommodation_presite','site_accommodation',
-    'visit_visa_extra','wps_overpayment_recovery','other'
-  ));
+-- were added to the app.
+-- NOTE: this used to recreate the constraint here with only 10 allowed values, then recreate it
+-- AGAIN further below (v7) with the full 12-value list. Running both in sequence on a database
+-- that already has rows using the newer values (wps_underpayment_payable, camp_food_accommodation)
+-- made THIS narrower step fail with "violated by some row" even though the final constraint further
+-- down is correct. Removed the redundant narrow recreation — the v7 block below is the only one
+-- that runs now, and it already includes every value the app can send.
 
 -- New: recurring site allowances (mobile, food, transport, etc.) that auto-apply every month
 -- an employee is on a given site, until their HR demobilization date stops them.
