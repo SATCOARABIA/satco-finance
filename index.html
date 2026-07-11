@@ -3386,7 +3386,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
       const ongoing = !s.to_date;
       const suggestedCloseDate = ongoing ? hrRemobDateAfter(s.employee_id, s.from_date) : null;
       return {
-        ...s, camp_name: s.camp_name||(camp&&camp.name)||'(camp deleted)', days,
+        ...s, camp_name: s.camp_name||(camp&&camp.name)||(s.camp_id?'(camp deleted)':null), needsCamp: !s.camp_id, days,
         foodAccomCost, transportRate, transportCost, cost, avgDailyRate, ongoing, suggestedCloseDate,
       };
     });
@@ -3548,6 +3548,61 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
     return out;
   },[employees, mobDemobByEmp, ongoingStayEmpIds, todayStr]);
 
+  // Reconstruct EVERY demob→remob gap (closed periods as well as the current ongoing one, if any)
+  // from HR's full mobilization/demobilization history for one employee — same logic the old
+  // flat-rate version used, just repurposed here to find what's missing rather than to auto-book a
+  // cost. Needs the HR bridge's full-history view (v_finance_employee_mob_demob v2); on the older
+  // "latest record only" bridge this will only ever find the current gap, same as unloggedOffSite.
+  const hrGapsFor = (employeeId) => {
+    const rows = (mobDemobByEmp[employeeId]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
+    const out = [];
+    rows.forEach((row,i)=>{
+      if (!row.demobilization_date) return;
+      const next = rows[i+1];
+      const remobDate = next && next.mobilization_date ? next.mobilization_date : null;
+      const endDate = remobDate || todayStr;
+      if (endDate <= row.demobilization_date) return;
+      const days = Math.max(0, Math.round((new Date(endDate+'T00:00:00Z') - new Date(row.demobilization_date+'T00:00:00Z'))/86400000));
+      if (days<=0) return;
+      out.push({ employee_id:employeeId, from_date:row.demobilization_date, to_date:remobDate, left_location:row.location||null, days });
+    });
+    return out;
+  };
+
+  // Every HR gap, across the whole roster, that doesn't already have a matching Camp Stay logged
+  // (matched on employee + From Date, regardless of whether a camp/To Date has been filled in yet —
+  // editing an imported stub still counts as "logged"). This is what "Import from HR History" below
+  // creates in bulk, so historical dates never need retyping — only the camp needs picking afterward.
+  const existingStayKeys = useMemo(()=> new Set(stays.map(s=>`${s.employee_id}|${s.from_date}`)), [stays]);
+  const missingHrGaps = useMemo(()=>{
+    const out = [];
+    employees.forEach(e=>{
+      hrGapsFor(e.employee_id).forEach(g=>{
+        if (!existingStayKeys.has(`${g.employee_id}|${g.from_date}`)) out.push({...g, full_name:e.full_name});
+      });
+    });
+    return out;
+  },[employees, mobDemobByEmp, existingStayKeys, todayStr]);
+
+  const [importingHistory, setImportingHistory] = useState(false);
+  // Bulk-creates a Camp Stay stub (dates only, no camp assigned yet) for every HR gap not already
+  // logged — so past off-site periods only need a camp picked per row, never full re-entry of dates.
+  const importFromHrHistory = async () => {
+    if (!missingHrGaps.length) return;
+    if (!window.confirm(`Import ${missingHrGaps.length} camp stay(s) from HR's mobilization history? Dates and employees will be filled in; you'll still need to open each one and pick a camp (cost shows as transport-only until you do).`)) return;
+    setImportingHistory(true);
+    const rows = missingHrGaps.map(g=>({
+      employee_id:g.employee_id, full_name:g.full_name,
+      camp_id:null, camp_name:null,
+      from_date:g.from_date, to_date:g.to_date,
+      remarks:`Imported from HR mobilization history${g.left_location?` — left ${g.left_location}`:''} — assign a camp to complete costing.`,
+    }));
+    const { error } = await db.from('employee_camp_stays').insert(rows);
+    setImportingHistory(false);
+    if (error) return alert(error.message);
+    load();
+  };
+
   const filterFields = [
     ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID', width:'100px'},{key:'full_name',label:'Name',width:'150px'}]),
     {key:'camp_name', label:'Camp', width:'150px'},
@@ -3703,6 +3758,18 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
         </div>
       )}
 
+      {missingHrGaps.length>0 && (
+        <div style={{...S.card,padding:'14px 16px',background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'10px'}}>
+            <div>
+              <div style={{fontWeight:800,fontSize:'12.5px',color:'#166534',marginBottom:'4px'}}>Historical Off-Site Periods from HR — Not Yet Logged ({missingHrGaps.length})</div>
+              <div style={{fontSize:'11.5px',color:'#166534'}}>Found in HR's mobilization history (past periods as well as any current one) with no matching Camp Stay below. Import fills in employee and dates for every one of them in one click — you'll still need to open each row afterward and pick which camp it was, since HR has no record of that.</div>
+            </div>
+            <button style={{...S.btnPri,background:'#166534',opacity:importingHistory?0.6:1,whiteSpace:'nowrap'}} disabled={importingHistory} onClick={importFromHrHistory}>{importingHistory?'Importing…':`Import ${missingHrGaps.length} from HR History`}</button>
+          </div>
+        </div>
+      )}
+
       <div style={S.card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
           <div>
@@ -3774,7 +3841,9 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
                         <tr key={s.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}>
                           {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{s.employee_id}</td>}
                           {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{s.full_name}</td>}
-                          <td style={S.td}>{s.camp_name}</td>
+                          <td style={S.td}>
+                            {s.camp_name || <span style={{background:'#fef3c7',color:'#92400e',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>⚠ Assign camp</span>}
+                          </td>
                           <td style={S.td}>{s.from_date}</td>
                           <td style={S.td}>{s.to_date||'—'}</td>
                           <td style={S.td}>
