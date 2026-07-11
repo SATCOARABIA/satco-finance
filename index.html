@@ -10,6 +10,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.2"></script>
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
   :root {
     --stk-1: 64px;   /* app topbar height (measured live via JS, this is just the first-paint fallback) */
@@ -1081,13 +1083,18 @@ CREATE TABLE IF NOT EXISTS employee_camp_stays (
 ALTER TABLE employee_camp_stays ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_camp_stays;
 CREATE POLICY "Allow authenticated full access" ON employee_camp_stays FOR ALL TO authenticated USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT, UPDATE, DELETE ON employee_camp_stays TO authenticated;`;
+GRANT SELECT, INSERT, UPDATE, DELETE ON employee_camp_stays TO authenticated;
+
+-- v12: PPE cost tracking — adds a cost column so PPE issuance (coveralls/shoes/goggles)
+-- flows into the P&L Dashboard's Total Expense and the employee's detailed expense sheet,
+-- the same way Visa/Flights/Training already do.
+ALTER TABLE employee_ppe_issued ADD COLUMN IF NOT EXISTS total_cost numeric DEFAULT 0;`;
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v11 Required — adds PPE Issuance, Hiring Pipeline History &amp; Camps (master list + per-employee camp stays)</div>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v12 Required — adds PPE Issuance, Hiring Pipeline History, Camps (master list + per-employee camp stays) &amp; PPE Cost tracking</div>
       <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
-      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v11)</button>
+      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v12)</button>
     </div>
   );
 }
@@ -3321,6 +3328,33 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
   const [filters, setFilters] = useState(initialFilter||{});
   useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
+  // mobDemobByEmp arrives as a prop, fetched once from HR when the whole app first loaded — so
+  // newly-entered HR assignments don't show up here until a full page reload. This lets the tab
+  // pull the latest straight from HR on demand instead, without reloading the page. Reuses hrDb,
+  // which (like every table/view reference in this file) is a top-level constant, so it's reachable
+  // from any component without threading it through props.
+  const [hrOverride, setHrOverride] = useState(null);
+  const [refreshingHr, setRefreshingHr] = useState(false);
+  const effectiveMobDemobByEmp = hrOverride || mobDemobByEmp;
+  const refreshFromHr = async () => {
+    setRefreshingHr(true);
+    try {
+      const { data: md, error } = await hrDb.from('v_finance_employee_mob_demob').select('*');
+      if (error) { alert('Could not reach HR: '+error.message); return; }
+      const grouped = {};
+      (md||[]).forEach(m=>{
+        const id = canonEmpId(m.employee_id);
+        if (!id) return;
+        if (!grouped[id]) grouped[id] = [];
+        grouped[id].push({ mobilization_date:m.mobilization_date||null, demobilization_date:m.demobilization_date||null, location:m.location||null, supply:m.supply||null });
+      });
+      Object.keys(grouped).forEach(id=>grouped[id].sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||''))));
+      setHrOverride(grouped);
+    } finally {
+      setRefreshingHr(false);
+    }
+  };
+
   const load = async () => {
     setLoading(true);
     const [cm, st, def, ov, oc] = await Promise.all([
@@ -3363,7 +3397,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
   // that day. Mirrors the same bridge data already used to *open* a stay (demobilization_date), just
   // looking at the other end of the gap.
   const hrRemobDateAfter = (employeeId, fromDate) => {
-    const rows = mobDemobByEmp[employeeId]||[];
+    const rows = effectiveMobDemobByEmp[employeeId]||[];
     const candidates = rows.map(r=>r.mobilization_date).filter(d=>d && d>fromDate).sort();
     return candidates[0]||null;
   };
@@ -3390,7 +3424,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
         foodAccomCost, transportRate, transportCost, cost, avgDailyRate, ongoing, suggestedCloseDate,
       };
     });
-  },[stays, campsById, transportOverrideByEmp, transportDefault, todayStr, mobDemobByEmp]);
+  },[stays, campsById, transportOverrideByEmp, transportDefault, todayStr, effectiveMobDemobByEmp]);
 
   // Auto-sync computed stay costs into employee_other_costs — the same shared pool the P&L
   // Dashboard and Client Billing read from — mirroring Client Billing's WPS auto-repair pattern:
@@ -3538,7 +3572,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
     const out = [];
     employees.forEach(e=>{
       if (ongoingStayEmpIds.has(e.employee_id)) return;
-      const rows = (mobDemobByEmp[e.employee_id]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
+      const rows = (effectiveMobDemobByEmp[e.employee_id]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
       const last = rows[rows.length-1];
       if (last && last.demobilization_date) {
         const days = Math.max(0, Math.round((new Date(todayStr+'T00:00:00Z') - new Date(last.demobilization_date+'T00:00:00Z'))/86400000));
@@ -3546,7 +3580,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
       }
     });
     return out;
-  },[employees, mobDemobByEmp, ongoingStayEmpIds, todayStr]);
+  },[employees, effectiveMobDemobByEmp, ongoingStayEmpIds, todayStr]);
 
   // Reconstruct EVERY demob→remob gap (closed periods as well as the current ongoing one, if any)
   // from HR's full mobilization/demobilization history for one employee — same logic the old
@@ -3554,7 +3588,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
   // cost. Needs the HR bridge's full-history view (v_finance_employee_mob_demob v2); on the older
   // "latest record only" bridge this will only ever find the current gap, same as unloggedOffSite.
   const hrGapsFor = (employeeId) => {
-    const rows = (mobDemobByEmp[employeeId]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
+    const rows = (effectiveMobDemobByEmp[employeeId]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
     const out = [];
     rows.forEach((row,i)=>{
       if (!row.demobilization_date) return;
@@ -3582,7 +3616,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
       });
     });
     return out;
-  },[employees, mobDemobByEmp, existingStayKeys, todayStr]);
+  },[employees, effectiveMobDemobByEmp, existingStayKeys, todayStr]);
 
   const [importingHistory, setImportingHistory] = useState(false);
   // Bulk-creates a Camp Stay stub (dates only, no camp assigned yet) for every HR gap not already
@@ -3628,8 +3662,201 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
   ];
   const csvRows = scopedStays.map(s=>({ ...s, to_date:s.to_date||'(ongoing)', avgDailyRate:fmt2(s.avgDailyRate), cost:fmt2(s.cost) }));
 
+  const monthLabelFor = (monthKey) => {
+    if (!monthKey) return '';
+    const [y,m] = monthKey.split('-').map(Number);
+    return new Date(y, m-1, 1).toLocaleString('en-GB',{month:'long',year:'numeric'});
+  };
+
+  // Splits every scoped stay into per-calendar-month rows (one per employee/camp/month) using the
+  // same campStaySegments proration the cost sync uses — so "how many days in camp in July" and
+  // "what that cost" always agree with the synced expense figure. This is the source data for the
+  // Monthly Camp Cost Report below, meant to be handed to the client or camp provider to check
+  // their invoice against.
+  const monthlyBreakdown = useMemo(()=>{
+    const rows = [];
+    scopedStays.forEach(s=>{
+      const end = s.to_date || todayStr;
+      const camp = s.camp_id ? campsById[s.camp_id] : null;
+      const monthlyFood  = camp ? Number(camp.monthly_food_rate)||0 : 0;
+      const monthlyAccom = camp ? Number(camp.monthly_accommodation_rate)||0 : 0;
+      const monthlyTotal = monthlyFood+monthlyAccom;
+      const transportRate = transportRateFor(s.employee_id);
+      campStaySegments(s.from_date, end).forEach(seg=>{
+        const dailyFoodAccom = monthlyTotal>0 ? monthlyTotal/daysInMonth(seg.monthKey) : 0;
+        const foodAccomCost = Math.round(seg.days*dailyFoodAccom*100)/100;
+        const transportCost = Math.round(seg.days*transportRate*100)/100;
+        rows.push({
+          employee_id:s.employee_id, full_name:s.full_name, month:seg.monthKey,
+          camp_name:s.camp_name, days:seg.days,
+          food_accom_cost:foodAccomCost, transport_cost:transportCost,
+          total_cost:Math.round((foodAccomCost+transportCost)*100)/100,
+        });
+      });
+    });
+    return rows.sort((a,b)=> a.month!==b.month ? (a.month<b.month?-1:1) : (a.employee_id<b.employee_id?-1:a.employee_id>b.employee_id?1:0));
+  },[scopedStays, campsById, transportOverrideByEmp, transportDefault, todayStr]);
+
+  const reportMonths = useMemo(()=>{
+    const set = new Set(monthlyBreakdown.map(r=>r.month));
+    return [...set].sort().reverse();
+  },[monthlyBreakdown]);
+
+  const [reportMonthFilter, setReportMonthFilter] = useState('');
+  const scopedMonthlyRows = useMemo(()=>
+    reportMonthFilter ? monthlyBreakdown.filter(r=>r.month===reportMonthFilter) : monthlyBreakdown
+  ,[monthlyBreakdown, reportMonthFilter]);
+
+  const monthlyReportTotals = useMemo(()=> scopedMonthlyRows.reduce((a,r)=>({
+    days:a.days+r.days, foodAccom:a.foodAccom+r.food_accom_cost, transport:a.transport+r.transport_cost, total:a.total+r.total_cost,
+  }),{days:0,foodAccom:0,transport:0,total:0}),[scopedMonthlyRows]);
+
+  const monthlyReportRowsForExport = () => scopedMonthlyRows.map(r=>({...r, month_label:monthLabelFor(r.month)}));
+
+  // Real .xlsx via SheetJS (already loaded for this app) rather than a CSV — a proper spreadsheet
+  // reads better when forwarded to a client or camp provider for an invoicing cross-check.
+  const exportMonthlyExcel = () => {
+    const rows = monthlyReportRowsForExport();
+    const sheetData = rows.map(r=>({
+      'Emp ID':r.employee_id, 'Name':r.full_name, 'Month':r.month_label, 'Camp':r.camp_name||'',
+      'Camp Days':r.days, 'Food + Accom (AED)':r.food_accom_cost, 'Transport (AED)':r.transport_cost, 'Total (AED)':r.total_cost,
+    }));
+    sheetData.push({});
+    sheetData.push({ 'Camp':'TOTAL', 'Camp Days':monthlyReportTotals.days, 'Food + Accom (AED)':Math.round(monthlyReportTotals.foodAccom*100)/100, 'Transport (AED)':Math.round(monthlyReportTotals.transport*100)/100, 'Total (AED)':Math.round(monthlyReportTotals.total*100)/100 });
+    const ws = XLSX.utils.json_to_sheet(sheetData);
+    ws['!cols'] = [{wch:10},{wch:22},{wch:18},{wch:20},{wch:10},{wch:16},{wch:14},{wch:12}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Camp Cost Report');
+    XLSX.writeFile(wb, `camp_cost_report_${reportMonthFilter||'all_months'}.xlsx`);
+  };
+
+  // PDF via jsPDF + autoTable (loaded in <head> alongside the existing docx/xlsx includes) — a
+  // formatted, printable report rather than a raw data export, for the same forward-to-client use.
+  const exportMonthlyPDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation:'landscape', unit:'pt', format:'a4' });
+    doc.setFontSize(14); doc.setFont(undefined,'bold');
+    doc.text('SATCO Arabia — Camp Cost Report', 40, 40);
+    doc.setFontSize(10); doc.setFont(undefined,'normal');
+    doc.text(`Period: ${reportMonthFilter?monthLabelFor(reportMonthFilter):'All months'}   ·   Generated: ${new Date().toLocaleDateString('en-GB')}`, 40, 58);
+    const bodyRows = monthlyReportRowsForExport().map(r=>[r.employee_id, r.full_name, r.month_label, r.camp_name||'—', r.days, fmt2(r.food_accom_cost), fmt2(r.transport_cost), fmt2(r.total_cost)]);
+    bodyRows.push(['','','','TOTAL', monthlyReportTotals.days, fmt2(monthlyReportTotals.foodAccom), fmt2(monthlyReportTotals.transport), fmt2(monthlyReportTotals.total)]);
+    doc.autoTable({
+      startY: 72,
+      head: [['Emp ID','Name','Month','Camp','Camp Days','Food+Accom (AED)','Transport (AED)','Total (AED)']],
+      body: bodyRows,
+      styles: { fontSize:8.5 },
+      headStyles: { fillColor:[15,23,42] },
+      didParseCell: (data)=>{ if (data.section==='body' && data.row.index===bodyRows.length-1) { data.cell.styles.fontStyle='bold'; data.cell.styles.fillColor=[254,243,199]; } },
+    });
+    doc.save(`camp_cost_report_${reportMonthFilter||'all_months'}.pdf`);
+  };
+
+  // Word (.docx) on SATCO letterhead — the same header/footer banner used for client invoices —
+  // so this report can be downloaded month-wise and submitted straight to the client or camp
+  // provider for an invoicing cross-check, ready to print or forward as-is.
+  const [exportingDocx, setExportingDocx] = useState(false);
+  const exportMonthlyDocx = async () => {
+    setExportingDocx(true);
+    try {
+      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, AlignmentType,
+              BorderStyle, WidthType, ShadingType, VerticalAlign, ImageRun, Header, Footer } = window.docx;
+
+      const border = { style: BorderStyle.SINGLE, size: 1, color: "999999" };
+      const borders = { top: border, bottom: border, left: border, right: border };
+      const cellMargins = { top: 60, bottom: 60, left: 100, right: 100 };
+      const colWidths = [1000, 2200, 1300, 1700, 1300, 1600, 1400, 1400];
+      const tableWidth = colWidths.reduce((a,b)=>a+b,0);
+
+      function headerCell(text, width) {
+        return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, shading:{fill:'E8E8E8',type:ShadingType.CLEAR}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
+          children:[new Paragraph({alignment:AlignmentType.CENTER, children:[new TextRun({text, bold:true, size:16})]})] });
+      }
+      function cell(text, width, opts) {
+        opts = opts||{};
+        return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER, shading: opts.shade?{fill:opts.shade,type:ShadingType.CLEAR}:undefined,
+          children:[new Paragraph({alignment:opts.align||AlignmentType.LEFT, children:[new TextRun({text:String(text), bold:!!opts.bold, size:16})]})] });
+      }
+
+      const rows = monthlyReportRowsForExport();
+      const bodyRows = rows.map(r=>new TableRow({ children:[
+        cell(r.employee_id, colWidths[0]),
+        cell(r.full_name||'', colWidths[1]),
+        cell(r.month_label, colWidths[2], {align:AlignmentType.CENTER}),
+        cell(r.camp_name||'—', colWidths[3]),
+        cell(String(r.days), colWidths[4], {align:AlignmentType.CENTER}),
+        cell(fmt2(r.food_accom_cost), colWidths[5], {align:AlignmentType.RIGHT}),
+        cell(fmt2(r.transport_cost), colWidths[6], {align:AlignmentType.RIGHT}),
+        cell(fmt2(r.total_cost), colWidths[7], {align:AlignmentType.RIGHT, bold:true}),
+      ]}));
+      const totalsRow = new TableRow({ children:[
+        cell('', colWidths[0], {shade:'FEF3C7'}), cell('TOTAL', colWidths[1], {bold:true, shade:'FEF3C7'}), cell('', colWidths[2], {shade:'FEF3C7'}), cell('', colWidths[3], {shade:'FEF3C7'}),
+        cell(String(monthlyReportTotals.days), colWidths[4], {align:AlignmentType.CENTER, bold:true, shade:'FEF3C7'}),
+        cell(fmt2(monthlyReportTotals.foodAccom), colWidths[5], {align:AlignmentType.RIGHT, bold:true, shade:'FEF3C7'}),
+        cell(fmt2(monthlyReportTotals.transport), colWidths[6], {align:AlignmentType.RIGHT, bold:true, shade:'FEF3C7'}),
+        cell(fmt2(monthlyReportTotals.total), colWidths[7], {align:AlignmentType.RIGHT, bold:true, shade:'FEF3C7'}),
+      ]});
+
+      const headerImage = new ImageRun({
+        type: 'png', data: base64ToUint8Array(LETTERHEAD_HEADER_B64),
+        transformation: { width: 540, height: 59 },
+        altText: { title: 'SATCO Letterhead', description: 'SATCO Arabia General Contracting letterhead', name: 'Letterhead Header' },
+      });
+      const footerImage = new ImageRun({
+        type: 'png', data: base64ToUint8Array(LETTERHEAD_FOOTER_B64),
+        transformation: { width: 540, height: 37 },
+        altText: { title: 'SATCO Footer', description: 'SATCO Arabia General Contracting contact footer', name: 'Letterhead Footer' },
+      });
+
+      const periodLabel = reportMonthFilter ? monthLabelFor(reportMonthFilter) : 'All months';
+      const doc = new Document({
+        styles: { default: { document: { run: { font:'Arial', size:20 } } } },
+        sections: [{
+          properties: { page: { size:{width:16838,height:11906}, orientation:'landscape', margin:{top:1500,right:900,bottom:1200,left:900,header:500,footer:400} } },
+          headers: { default: new Header({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[headerImage] }) ] }) },
+          footers: { default: new Footer({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[footerImage] }) ] }) },
+          children: [
+            new Paragraph({ alignment:AlignmentType.CENTER, spacing:{before:120,after:60},
+              children:[ new TextRun({ text:'CAMP COST REPORT', bold:true, size:26 }) ] }),
+            new Paragraph({ alignment:AlignmentType.CENTER, spacing:{after:240},
+              children:[ new TextRun({ text:`Period: ${periodLabel}   ·   Generated: ${new Date().toLocaleDateString('en-GB')}`, size:18 }) ] }),
+            new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:colWidths, rows:[
+              new TableRow({ children:[
+                headerCell('Emp ID', colWidths[0]), headerCell('Name', colWidths[1]), headerCell('Month', colWidths[2]), headerCell('Camp', colWidths[3]),
+                headerCell('Camp Days', colWidths[4]), headerCell('Food+Accom (AED)', colWidths[5]), headerCell('Transport (AED)', colWidths[6]), headerCell('Total (AED)', colWidths[7]),
+              ]}),
+              ...bodyRows,
+              totalsRow,
+            ]}),
+            new Paragraph({ spacing:{before:240,after:60}, children:[new TextRun({text:'For submission to the client / camp provider — please cross-check against the camp invoice for the same period.', italics:true, size:16})] }),
+            new Paragraph({ spacing:{before:200}, children:[new TextRun({text:'Best regards,', size:18})] }),
+            new Paragraph({ spacing:{after:60}, children:[new TextRun({text:'SATCO Arabia General Contracting — Finance Department', bold:true, size:18})] }),
+            new Paragraph({ children:[new TextRun({text:'Computer generated report — no original signature or stamp required.', italics:true, size:16})] }),
+          ],
+        }],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Camp_Cost_Report_${reportMonthFilter||'all_months'}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExportingDocx(false);
+    }
+  };
+
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
+      <div style={{display:'flex',justifyContent:'flex-end'}}>
+        <button
+          title="mobDemobByEmp is fetched from HR once when the portal first loads — new HR entries won't appear here until you refresh, either the whole page or just this data with this button."
+          style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1',fontSize:'12px',padding:'6px 12px',opacity:refreshingHr?0.6:1}}
+          disabled={refreshingHr} onClick={refreshFromHr}
+        >{refreshingHr?'Refreshing…':'↻ Refresh Mob/Demob from HR'}</button>
+      </div>
       <div style={S.card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'8px'}}>
           <div>
@@ -3875,6 +4102,53 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
           </table>
         </div>
       </div>
+
+      <div style={S.card}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
+          <div>
+            <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Camp Cost Report</div>
+            <div style={{fontSize:'12px',color:'#64748b'}}>Camp days and cost per employee, split by calendar month — forward to the client or camp provider to cross-check their invoice.</div>
+          </div>
+          <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+            <select value={reportMonthFilter} onChange={e=>setReportMonthFilter(e.target.value)} style={{...S.input,minWidth:'170px'}}>
+              <option value="">All months</option>
+              {reportMonths.map(m=><option key={m} value={m}>{monthLabelFor(m)}</option>)}
+            </select>
+            <button style={S.btnExp} disabled={!scopedMonthlyRows.length} onClick={exportMonthlyExcel}>Export Excel</button>
+            <button style={{...S.btnExp,background:'#7c2d12'}} disabled={!scopedMonthlyRows.length} onClick={exportMonthlyPDF}>Export PDF</button>
+            <button style={{...S.btnExp,background:'#1d4ed8'}} disabled={!scopedMonthlyRows.length||exportingDocx} onClick={exportMonthlyDocx}>{exportingDocx?'Preparing…':'Export Word (Letterhead)'}</button>
+          </div>
+        </div>
+
+        {scopedMonthlyRows.length>0 && (
+          <div style={{margin:'14px',padding:'12px 16px',borderRadius:'10px',border:'1px solid #fde68a',background:'#fffbeb'}}>
+            <div style={{fontSize:'12.5px',color:'#78350f',marginBottom:'6px'}}>{scopedMonthlyRows.length} row(s) · {monthlyReportTotals.days} total camp day(s){reportMonthFilter?` in ${monthLabelFor(reportMonthFilter)}`:' across all months'}</div>
+            <div style={{fontSize:'15px',fontWeight:800,color:'#92400e'}}>Total: AED {fmt2(monthlyReportTotals.total)} <span style={{fontSize:'12px',fontWeight:600,color:'#78350f'}}>(Food+Accom {fmt2(monthlyReportTotals.foodAccom)} + Transport {fmt2(monthlyReportTotals.transport)})</span></div>
+          </div>
+        )}
+
+        <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'480px'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+            <thead className="tbl-sticky-th"><tr>{['Emp ID','Name','Month','Camp','Camp Days','Food+Accom','Transport','Total'].map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+            <tbody>
+              {scopedMonthlyRows.length===0
+                ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No camp stay data for this selection.</td></tr>
+                : scopedMonthlyRows.map((r,i)=>(
+                  <tr key={i} style={{borderTop:'1px solid #f1f5f9'}}>
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                    <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                    <td style={S.td}>{monthLabelFor(r.month)}</td>
+                    <td style={S.td}>{r.camp_name || <span style={{color:'#94a3b8'}}>—</span>}</td>
+                    <td style={{...S.td,fontWeight:700}}>{r.days}</td>
+                    <td style={S.td}>{fmt2(r.food_accom_cost)}</td>
+                    <td style={S.td}>{fmt2(r.transport_cost)}</td>
+                    <td style={{...S.td,fontWeight:700,color:'#92400e'}}>{fmt2(r.total_cost)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3901,16 +4175,17 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
   ];
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'issue_date'),[filtered]);
-  const COLS = hideEmpFilter?6:8;
+  const COLS = hideEmpFilter?7:9;
 
   const csvCols = [
     {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
     {key:'issue_date',label:'Issue Date'},{key:'coverall_size',label:'Coverall Size'},
     {key:'coverall_qty',label:'Coverall Qty'},{key:'shoes_size',label:'Shoes Size'},
-    {key:'shoes_qty',label:'Shoes Qty'},{key:'goggles_qty',label:'Goggles Qty'},{key:'notes',label:'Remarks'},
+    {key:'shoes_qty',label:'Shoes Qty'},{key:'goggles_qty',label:'Goggles Qty'},
+    {key:'total_cost',label:'Cost (AED)'},{key:'notes',label:'Remarks'},
   ];
 
-  const blank = ()=>setDraft({employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||'',issue_date:new Date().toISOString().slice(0,10),coverall_size:'',coverall_qty:'',shoes_size:'',shoes_qty:'',goggles_qty:'',notes:''});
+  const blank = ()=>setDraft({employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||'',issue_date:new Date().toISOString().slice(0,10),coverall_size:'',coverall_qty:'',shoes_size:'',shoes_qty:'',goggles_qty:'',total_cost:'',notes:''});
 
   const save = async () => {
     if (!draft.employee_id) return alert('Employee is required');
@@ -3919,7 +4194,7 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
       issue_date:draft.issue_date||new Date().toISOString().slice(0,10),
       coverall_size:draft.coverall_size||null, coverall_qty:Number(draft.coverall_qty)||0,
       shoes_size:draft.shoes_size||null, shoes_qty:Number(draft.shoes_qty)||0,
-      goggles_qty:Number(draft.goggles_qty)||0, notes:draft.notes||null,
+      goggles_qty:Number(draft.goggles_qty)||0, total_cost:Number(draft.total_cost)||0, notes:draft.notes||null,
     };
     const {error} = draft.id
       ? await db.from('employee_ppe_issued').update(clean).eq('id',draft.id)
@@ -3934,7 +4209,7 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',position:'sticky',top:'var(--stk-1)',zIndex:'15',flexWrap:'wrap',gap:'10px'}} className="tbl-sticky-toolbar" ref={measureToStk2}>
         <div>
           <div style={{fontWeight:800,fontSize:'14px'}}>PPE &amp; Uniforms Issued</div>
-          <div style={{fontSize:'12px',color:'#64748b'}}>{filtered.length} issuance record(s) — coveralls, safety shoes, goggles</div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>{filtered.length} issuance record(s) — coveralls, safety shoes, goggles — total AED {filtered.reduce((s,r)=>s+(Number(r.total_cost)||0),0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
         </div>
         <div style={{display:'flex',gap:'8px'}}>
           {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered,'ppe_issued',csvCols)}>Export CSV</button>}
@@ -3954,12 +4229,13 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
             </div>
             <div><label style={S.label}>Issue Date</label><input type="date" value={draft.issue_date} onChange={e=>setDraft(d=>({...d,issue_date:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr',gap:'10px',marginBottom:'8px',alignItems:'end'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr 1fr',gap:'10px',marginBottom:'8px',alignItems:'end'}}>
             <div><label style={S.label}>Coverall Size</label><input value={draft.coverall_size||''} onChange={e=>setDraft(d=>({...d,coverall_size:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="e.g. L, XL" /></div>
             <div><label style={S.label}>Coverall Qty</label><input type="number" value={draft.coverall_qty||''} onChange={e=>setDraft(d=>({...d,coverall_qty:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
             <div><label style={S.label}>Shoes Size</label><input value={draft.shoes_size||''} onChange={e=>setDraft(d=>({...d,shoes_size:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
             <div><label style={S.label}>Shoes Qty</label><input type="number" value={draft.shoes_qty||''} onChange={e=>setDraft(d=>({...d,shoes_qty:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
             <div><label style={S.label}>Goggles Qty</label><input type="number" value={draft.goggles_qty||''} onChange={e=>setDraft(d=>({...d,goggles_qty:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Cost (AED)</label><input type="number" value={draft.total_cost||''} onChange={e=>setDraft(d=>({...d,total_cost:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="Total cost of items issued" /></div>
           </div>
           <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
           <div style={{display:'flex',gap:'8px'}}>
@@ -3971,7 +4247,7 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
 
       <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-          <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Date','Coverall','Shoes','Goggles','Remarks','']:['Emp ID','Name','Date','Coverall','Shoes','Goggles','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+          <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Date','Coverall','Shoes','Goggles','Cost (AED)','Remarks','']:['Emp ID','Name','Date','Coverall','Shoes','Goggles','Cost (AED)','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
           <tbody>
             {loading
               ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
@@ -3988,6 +4264,7 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
                           <td style={S.td}>{r.coverall_size?`${r.coverall_size} × ${r.coverall_qty||0}`:'—'}</td>
                           <td style={S.td}>{r.shoes_size?`${r.shoes_size} × ${r.shoes_qty||0}`:'—'}</td>
                           <td style={S.td}>{r.goggles_qty||'—'}</td>
+                          <td style={{...S.td,fontWeight:700,color:'#dc2626'}}>{r.total_cost?('AED '+Number(r.total_cost).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'—'}</td>
                           <td style={S.tdWrap}>{r.notes||'—'}</td>
                           <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
                             <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r,issue_date:r.issue_date||''});}}>&#9998;</button>
@@ -6128,7 +6405,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   const [summary,      setSummary]      = useState([]);
   const [monthly,      setMonthly]      = useState([]);
   const [deposits,     setDeposits]     = useState([]);
-  const [recoverySrc,  setRecoverySrc]  = useState({visa:[],flights:[],training:[],other:[],deductions:[],monthlyCosts:[],timesheets:[],invoices:[],invoiceLines:[],invoiceRecoveries:[]});
+  const [recoverySrc,  setRecoverySrc]  = useState({visa:[],flights:[],training:[],other:[],deductions:[],monthlyCosts:[],timesheets:[],invoices:[],invoiceLines:[],invoiceRecoveries:[],ppe:[]});
   const [loading,      setLoading]      = useState(true);
   const [selectedEmp,  setSelectedEmp]  = useState(null);
   const [filters,      setFilters]      = useState({});
@@ -6141,7 +6418,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
 
   const load = async () => {
     setLoading(true);
-    const [s,m,d,visa,flights,training,other,ded,timesheets,inv,lns,rec,tempCands] = await Promise.all([
+    const [s,m,d,visa,flights,training,other,ded,timesheets,inv,lns,rec,tempCands,ppe] = await Promise.all([
       db.from('employee_pnl_summary').select('*').order('employee_id',{ascending:true}),
       db.from('employee_pnl_monthly').select('*').order('month',{ascending:false}),
       db.from('employee_other_costs').select('employee_id,amount').eq('cost_type','security_deposit'),
@@ -6155,6 +6432,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
       db.from('employee_client_recoveries').select('invoice_id,employee_id,amount_aed'),
       hrDb.from('v_temp_candidates').select('temp_employee_id,candidate_name,position_display'),
+      db.from('employee_ppe_issued').select('employee_id,total_cost'),
     ]);
     if (tempCands.error) { console.error('Temp candidate pull failed (v_temp_candidates):', tempCands.error); setTempCandError(tempCands.error.message || String(tempCands.error)); }
     else setTempCandError(null);
@@ -6227,6 +6505,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       visa: visa.data||[], flights: flights.data||[], training: training.data||[],
       other: other.data||[], deductions: ded.data||[], monthlyCosts: ded.data||[], timesheets: timesheets.data||[],
       invoices: inv.data||[], invoiceLines: lns.data||[], invoiceRecoveries: rec.data||[],
+      ppe: ppe.data||[],
     });
     setLoading(false);
   };
@@ -6367,7 +6646,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     const ensure = (id) => {
       id = canonEmpId(id);
       if (!id) return null;
-      if (!m[id]) m[id] = { income:0, salary:0, visa:0, flights:0, training:0, other:0, expense:0 };
+      if (!m[id]) m[id] = { income:0, salary:0, visa:0, flights:0, training:0, other:0, ppe:0, expense:0 };
       return m[id];
     };
     (recoverySrc.timesheets||[]).forEach(r=>{
@@ -6383,6 +6662,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     (recoverySrc.visa||[]).forEach(r=>{ const t=ensure(r.employee_id); if(t){ const v=n(r.cost); t.visa+=v; t.expense+=v; } });
     (recoverySrc.flights||[]).forEach(r=>{ const t=ensure(r.employee_id); if(t){ const v=n(r.cost); t.flights+=v; t.expense+=v; } });
     (recoverySrc.training||[]).forEach(r=>{ const t=ensure(r.employee_id); if(t){ const v=n(r.cost); t.training+=v; t.expense+=v; } });
+    (recoverySrc.ppe||[]).forEach(r=>{ const t=ensure(r.employee_id); if(t){ const v=n(r.total_cost); t.ppe+=v; t.expense+=v; } });
     (recoverySrc.other||[]).forEach(r=>{
       const type = String(r.cost_type||'');
       // Security deposits are recoveries/cash received, not operating cost. WPS overpayment recovery
@@ -6396,7 +6676,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       const t=ensure(r.employee_id); if(t){ const v=n(r.amount); t.other+=v; t.expense+=v; }
     });
     Object.values(m).forEach(t=>{
-      ['income','salary','visa','flights','training','other','expense'].forEach(k=>{ t[k]=Math.round((t[k]||0)*100)/100; });
+      ['income','salary','visa','flights','training','other','ppe','expense'].forEach(k=>{ t[k]=Math.round((t[k]||0)*100)/100; });
       t.net = Math.round((t.income - t.expense)*100)/100;
     });
     return m;
@@ -6419,6 +6699,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         salary:Number(t.salary)||0,
         income:Number(t.income)||0,
         other:Number(t.other)||0,
+        ppe:Number(t.ppe)||0,
         expense:Number(t.expense)||0,
       };
     });
@@ -6700,12 +6981,12 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
   const [exporting, setExporting] = useState(false);
   const [recovery, setRecovery] = useState(null);
   const [recLoading, setRecLoading] = useState(true);
-  const [lifetimeTotals, setLifetimeTotals] = useState({visa:0,flights:0,training:0,salary:0,other:0});
+  const [lifetimeTotals, setLifetimeTotals] = useState({visa:0,flights:0,training:0,salary:0,other:0,ppe:0});
   const [incomeTotal, setIncomeTotal] = useState(0);
 
   const loadRecovery = async () => {
     setRecLoading(true);
-    const [visa, flights, training, other, monthly, invoices, invoiceLines, invoiceRecoveries] = await Promise.all([
+    const [visa, flights, training, other, monthly, invoices, invoiceLines, invoiceRecoveries, ppe] = await Promise.all([
       db.from('employee_visa_costs').select('cost,recoverable,recoverable_amount').eq('employee_id',employeeId),
       db.from('employee_flights').select('cost,recoverable,recoverable_amount').eq('employee_id',employeeId),
       db.from('employee_training_costs').select('cost,recoverable,recoverable_amount').eq('employee_id',employeeId),
@@ -6714,6 +6995,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       db.from('employee_client_invoices').select('id,month,received_amount_aed,wps_paid_aed,satco_rate_eur_hr,brunel_rate_eur_hr').eq('employee_id',employeeId),
       db.from('employee_client_invoice_lines').select('invoice_id,hours,rate_eur_hr'),
       db.from('employee_client_recoveries').select('amount_aed').eq('employee_id',employeeId),
+      db.from('employee_ppe_issued').select('total_cost').eq('employee_id',employeeId),
     ]);
     // Uses the recoverable_amount cap when set (see recoverableCap), otherwise the full cost.
     const recoverableSum = (rows, amtKey) => (rows||[]).filter(r=>r.recoverable).reduce((s,r)=>s+recoverableCap(r,amtKey),0);
@@ -6825,6 +7107,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       training: sumAll(training.data, 'cost'),
       salary:   monthlyNetTotal,
       other:    otherActual,
+      ppe:      sumAll(ppe.data, 'total_cost'),
     });
     setRecLoading(false);
   };
@@ -6840,13 +7123,14 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
   const exportAll = async () => {
     setExporting(true);
     try {
-      const [visa, flights, training, other, monthly, timesheets] = await Promise.all([
+      const [visa, flights, training, other, monthly, timesheets, ppe] = await Promise.all([
         db.from('employee_visa_costs').select('*').eq('employee_id',employeeId).order('cost_date',{ascending:false}),
         db.from('employee_flights').select('*').eq('employee_id',employeeId).order('flight_date',{ascending:false}),
         db.from('employee_training_costs').select('*').eq('employee_id',employeeId).order('training_date',{ascending:false}),
         db.from('employee_other_costs').select('*').eq('employee_id',employeeId).order('cost_date',{ascending:false}),
         db.from('employee_monthly_costs').select('*').eq('employee_id',employeeId).order('month',{ascending:false}),
         db.from('employee_timesheets').select('*').eq('employee_id',employeeId).order('month',{ascending:false}),
+        db.from('employee_ppe_issued').select('*').eq('employee_id',employeeId).order('issue_date',{ascending:false}),
       ]);
       exportMultiSectionCSV([
         { title: `Visa Costs — ${employeeName} (${employeeId})`, rows: visa.data||[],
@@ -6861,6 +7145,8 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
           cols: [{key:'month',label:'Month'},{key:'salary_type',label:'Type'},{key:'salary',label:'Salary Paid'},{key:'computed_salary',label:'Calculated Salary'},{key:'manual_override',label:'Overridden?'},{key:'basic_salary',label:'Basic Salary'},{key:'fixed_allowance',label:'Fixed Allowance'},{key:'working_days',label:'Working Days'},{key:'month_days',label:'Days in Month'},{key:'normal_ot_hours',label:'Normal OT Hrs'},{key:'holiday_ot_hours',label:'Holiday OT Hrs'},{key:'food',label:'Food'},{key:'accommodation',label:'Accommodation'},{key:'transport',label:'Transport'},{key:'other',label:'Other'},{key:'salary_deductions',label:'Deductions'},{key:'hours_worked',label:'Hours'},{key:'hourly_rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
         { title: `Timesheets / Income — ${employeeName} (${employeeId})`, rows: timesheets.data||[],
           cols: [{key:'month',label:'Month'},{key:'client_project',label:'Client/Project'},{key:'income_type',label:'Mode'},{key:'hours',label:'Hours'},{key:'rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
+        { title: `PPE & Uniforms Issued — ${employeeName} (${employeeId})`, rows: ppe.data||[],
+          cols: [{key:'issue_date',label:'Issue Date'},{key:'coverall_size',label:'Coverall Size'},{key:'coverall_qty',label:'Coverall Qty'},{key:'shoes_size',label:'Shoes Size'},{key:'shoes_qty',label:'Shoes Qty'},{key:'goggles_qty',label:'Goggles Qty'},{key:'total_cost',label:'Cost (AED)'},{key:'notes',label:'Remarks'}] },
       ], 'employee_'+employeeId);
     } finally {
       setExporting(false);
@@ -6897,6 +7183,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
               ['Training', lifetimeTotals.training, false],
               ['Salary', lifetimeTotals.salary, false],
               ['Other (Onboarding/Misc)', lifetimeTotals.other, false],
+              ['PPE & Uniforms', lifetimeTotals.ppe, false],
             ].map(([label,val])=>(
               <tr key={label} style={{borderTop:'1px solid #f1f5f9'}}>
                 <td style={{padding:'8px 14px',fontWeight:600,color:'#334155',whiteSpace:'nowrap'}}>{label}</td>
@@ -6905,7 +7192,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
             ))}
             <tr style={{borderTop:'1px solid #f1f5f9',background:'#fef2f2'}}>
               <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Total Cost</td>
-              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,color:'#dc2626',whiteSpace:'nowrap'}}>{fmt(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)}</td>
+              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,color:'#dc2626',whiteSpace:'nowrap'}}>{fmt(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other+lifetimeTotals.ppe)}</td>
             </tr>
             <tr style={{borderTop:'1px solid #f1f5f9'}}>
               <td style={{padding:'8px 14px',fontWeight:600,color:'#334155',whiteSpace:'nowrap'}}>Income</td>
@@ -6913,7 +7200,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
             </tr>
             <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
               <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Net (Income − Costs)</td>
-              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,whiteSpace:'nowrap'}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)} /></td>
+              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,whiteSpace:'nowrap'}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other+lifetimeTotals.ppe)} /></td>
             </tr>
           </tbody>
         </table>
@@ -6932,22 +7219,23 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
 
       <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
         <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px'}}>Lifetime Totals — {employeeName}</div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'10px',fontSize:'12.5px'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(8,1fr)',gap:'10px',fontSize:'12.5px'}}>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Visa Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.visa)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Flights Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.flights)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Training Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.training)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Salary Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.salary)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Other Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.other)}</div></div>
+          <div><div style={{color:'#94a3b8',fontWeight:600}}>PPE Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.ppe)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Income Total</div><div style={{fontWeight:700,color:'#166534'}}>AED {fmt(incomeTotal)}</div></div>
           <div>
             <div style={{color:'#94a3b8',fontWeight:600}}>Net (Income − Costs)</div>
             {/* Effective net: gross costs minus amounts already recovered from salary — matches P&L Dashboard */}
             {recovery && recovery.totalRecovered>0
               ? <div style={{fontWeight:800}}>
-                  <AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)+recovery.totalRecovered} />
+                  <AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other+lifetimeTotals.ppe)+recovery.totalRecovered} />
                   <div style={{fontSize:'9.5px',color:'#94a3b8',fontWeight:600,marginTop:'2px'}}>net of AED {fmt(recovery.totalRecovered)} recovered</div>
                 </div>
-              : <div style={{fontWeight:800}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)} /></div>
+              : <div style={{fontWeight:800}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other+lifetimeTotals.ppe)} /></div>
             }
           </div>
         </div>
@@ -6995,6 +7283,8 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
         <ClientBillingTab employees={employees} initialFilter={filt} hideEmpFilter />
 
         <CampCostsTab employees={employees} empMeta={empMeta} mobDemobByEmp={mobDemobByEmp||{}} initialFilter={filt} hideEmpFilter />
+
+        <PpeIssuedTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
       </div>
     </div>
   );
@@ -8685,7 +8975,7 @@ function App() {
   const [hrSalaryRows, setHrSalaryRows] = useState([]);
   const [hrSalaryStatus, setHrSalaryStatus] = useState({ source:null, error:null });
   const [mobDemobByEmp, setMobDemobByEmp] = useState({}); // employee_id -> [{mobilization_date,demobilization_date,location,supply}] full history, oldest first
-  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v11')!=='done');
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v12')!=='done');
   const [showHrBridge, setShowHrBridge] = useState(()=>localStorage.getItem('satco_hr_bridge_camp_v1')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
@@ -8914,7 +9204,7 @@ function App() {
             </div>
           )}
 
-          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v11','done');setShowMig(false);}} />}
+          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v12','done');setShowMig(false);}} />}
           {showHrBridge&&<HrBridgeCampBanner onDismiss={()=>{localStorage.setItem('satco_hr_bridge_camp_v1','done');setShowHrBridge(false);}} />}
           {tempCandError && (
             <div className="alert-card danger">
