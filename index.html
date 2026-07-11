@@ -4216,6 +4216,15 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       addRecovered(r.employee_id, r.salary_deductions);
     });
 
+    // Synced employee_other_costs row per invoice — read here so a manual "un-recoverable"
+    // override on a WPS-overpaid row (e.g. it'll be netted against next month's WPS payment
+    // instead of a salary deduction) isn't silently overwritten by this recompute, which would
+    // otherwise re-suggest deducting it from this month's salary.
+    const invoiceSyncMapPipeline = {};
+    (other.data||[]).forEach(r=>{
+      const m = String(r.notes||'').match(/\[INV:([^\]]+)\]/);
+      if (m) invoiceSyncMapPipeline[m[1]] = r;
+    });
     (invoices.data||[]).forEach(inv => {
       const lns = linesByInvoice[inv.id] || [];
       const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
@@ -4227,7 +4236,8 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
       const satcoAed = hours * (Number(inv.satco_rate_eur_hr)||4.5) * impliedRate;
       const empShare = received - satcoAed;
       const overpaid = wps - empShare;
-      if (overpaid > 0.5) addRecoverable(inv.employee_id, Math.round(overpaid*100)/100);
+      const syncedInv = invoiceSyncMapPipeline[inv.id];
+      if (overpaid > 0.5 && (!syncedInv || syncedInv.recoverable)) addRecoverable(inv.employee_id, Math.round(overpaid*100)/100);
     });
 
     Object.keys(recoveryByInvoice).forEach(id => addRecovered(id, recoveryByInvoice[id]));
@@ -5634,6 +5644,14 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     // WPS over/underpayment per invoice, computed directly (Received → implied FX rate → SATCO share → Employee share → vs WPS paid)
     const linesByInvoice = {};
     recoverySrc.invoiceLines.forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
+    // Synced employee_other_costs row per invoice — read here so a manual "un-recoverable"
+    // override on a WPS-overpaid row (e.g. it'll be netted against next month's WPS payment
+    // instead of a salary deduction) isn't silently overwritten by this recompute.
+    const invoiceSyncMap = {};
+    recoverySrc.other.forEach(r=>{
+      const m = String(r.notes||'').match(/\[INV:([^\]]+)\]/);
+      if (m) invoiceSyncMap[m[1]] = r;
+    });
     recoverySrc.invoices.forEach(inv=>{
       const lns = linesByInvoice[inv.id]||[];
       const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
@@ -5645,7 +5663,8 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
       const empShare = received-satcoAed;
       const overpaid = wps-empShare;
-      if (overpaid > 0.5) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100;
+      const synced = invoiceSyncMap[inv.id];
+      if (overpaid > 0.5) { if (!synced || synced.recoverable) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100; }
       else if (overpaid < -0.5) ensure(inv.employee_id).payable += Math.round(Math.abs(overpaid)*100)/100;
     });
     // Logged recoveries against those invoices count as recovered.
@@ -6015,6 +6034,15 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
 
     const linesByInvoice = {};
     (invoiceLines.data||[]).forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
+    // Synced employee_other_costs row per invoice ([INV:id] tag) — read here so a manual
+    // "un-recoverable" override (e.g. it'll be netted against next month's WPS instead of a
+    // salary deduction) isn't silently overwritten by re-deriving recoverable=true from the raw
+    // invoice numbers every time this recalculates.
+    const invoiceSyncMap = {};
+    (other.data||[]).forEach(r=>{
+      const m = String(r.notes||'').match(/\[INV:([^\]]+)\]/);
+      if (m) invoiceSyncMap[m[1]] = r;
+    });
     let invoiceWpsRecoverable = 0;
     let invoiceWpsPayable = 0;
     (invoices.data||[]).forEach(inv=>{
@@ -6028,7 +6056,8 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
       const empShare = received-satcoAed;
       const overpaid = wps-empShare;
-      if (overpaid > 0.5) invoiceWpsRecoverable += Math.round(overpaid*100)/100;
+      const synced = invoiceSyncMap[inv.id];
+      if (overpaid > 0.5) { if (!synced || synced.recoverable) invoiceWpsRecoverable += Math.round(overpaid*100)/100; }
       else if (overpaid < -0.5) invoiceWpsPayable += Math.round(Math.abs(overpaid)*100)/100;
     });
     const wpsOverpaymentRecoverable = manualWpsRecoverable + invoiceWpsRecoverable;
