@@ -3115,7 +3115,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                       {g.rows.map(inv=>{
                         const lns = linesMap[inv.id]||[];
                         const split = wpsInvoiceSplit(inv, lns);
-                        const { hours, satcoAed, empShare, wps, overpaid } = split;
+                        const { hours, satcoAed, empShare, wps, overpaid, received } = split;
                         const eur = split.totalCcy;
                         // Recovery Status reads the same employee_other_costs row the P&L Dashboard uses,
                         // keyed to this specific invoice via the [INV:id] tag — this keeps both views in sync.
