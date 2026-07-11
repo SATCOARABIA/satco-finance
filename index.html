@@ -1038,13 +1038,56 @@ CREATE TABLE IF NOT EXISTS hiring_pipeline_history (
 ALTER TABLE hiring_pipeline_history ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow authenticated full access" ON hiring_pipeline_history;
 CREATE POLICY "Allow authenticated full access" ON hiring_pipeline_history FOR ALL TO authenticated USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT, UPDATE, DELETE ON hiring_pipeline_history TO authenticated;`;
+GRANT SELECT, INSERT, UPDATE, DELETE ON hiring_pipeline_history TO authenticated;
+
+-- v11: Camps master list + explicit per-employee camp stay records. Camp Costs previously used ONE
+-- flat company-wide (or per-employee) AED/day rate for food+accommodation and auto-guessed the days
+-- from HR demob/remob history, with no way to say *which* camp someone was at or bill different
+-- camps at different rates. This replaces the flat food/accommodation rate with:
+--   - camps: named camp locations, each with its own monthly food & accommodation rate. The daily
+--     rate is derived by dividing by the real number of days in whichever calendar month(s) a stay
+--     touches (same proration convention already used for monthly salary elsewhere in this app),
+--     so a stay crossing a month-end is billed fairly instead of assuming a flat 30-day month.
+--   - employee_camp_stays: explicit "employee X was at camp Y from date A to date B" records,
+--     entered directly instead of only being inferred from demob/remob gaps. Transport still uses
+--     the existing flat company/per-employee AED/day rate (camp_rate_defaults / employee_camp_rates)
+--     — only food & accommodation move to per-camp monthly rates.
+CREATE TABLE IF NOT EXISTS camps (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL UNIQUE,
+  monthly_food_rate numeric NOT NULL DEFAULT 0,
+  monthly_accommodation_rate numeric NOT NULL DEFAULT 0,
+  remarks text,
+  updated_at timestamptz DEFAULT now(),
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE camps ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON camps;
+CREATE POLICY "Allow authenticated full access" ON camps FOR ALL TO authenticated USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE, DELETE ON camps TO authenticated;
+
+CREATE TABLE IF NOT EXISTS employee_camp_stays (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id text NOT NULL,
+  full_name text,
+  camp_id uuid REFERENCES camps(id) ON DELETE SET NULL,
+  camp_name text,
+  from_date date NOT NULL,
+  to_date date,
+  remarks text,
+  updated_at timestamptz DEFAULT now(),
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE employee_camp_stays ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_camp_stays;
+CREATE POLICY "Allow authenticated full access" ON employee_camp_stays FOR ALL TO authenticated USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE, DELETE ON employee_camp_stays TO authenticated;`;
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v10 Required — adds PPE Issuance &amp; Hiring Pipeline History</div>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v11 Required — adds PPE Issuance, Hiring Pipeline History &amp; Camps (master list + per-employee camp stays)</div>
       <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
-      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v10)</button>
+      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v11)</button>
     </div>
   );
 }
@@ -3214,260 +3257,426 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
 }
 
 // ── CAMP COSTS TAB ───────────────────────────────────────────────
-// When an employee is demobilized from a client site and not yet remobilized elsewhere, SATCO
-// pays the client/camp for their food, accommodation and transport for every day they sit off-site.
-// This reconstructs those demob→remob gaps ("camp periods") from HR's mobilization/demobilization
-// history, prices them at a configurable AED/day rate (company default, or a per-employee override),
-// and syncs the resulting cost into employee_other_costs — the same shared pool the P&L Dashboard and
-// Client Billing already read from — so it shows up both as a company expense and against that
-// specific employee's cost history automatically.
+// Camp Costs — food, accommodation and transport paid to the client/camp while an employee is
+// off-site. Food & accommodation are billed at a per-CAMP monthly rate (different camps cost
+// different amounts), prorated to a daily rate using the real number of days in whichever
+// calendar month(s) a stay touches (same convention already used for monthly salary elsewhere in
+// this app) — so a stay crossing a month-end is billed fairly instead of assuming a flat 30-day
+// month. Transport keeps the existing flat company/per-employee AED/day rate. Which employee was
+// at which camp, and from when to when, is entered explicitly as a "Camp Stay" — HR's
+// demob/remob history is only used to flag who's currently off-site with nothing logged yet, as a
+// reminder, never to auto-book a cost (the old version guessed the days from demob/remob and
+// applied one flat company-wide rate, which couldn't reflect different camps costing differently).
+
+// Splits [fromDate, endDateExclusive) into per-calendar-month day counts — e.g. a stay spanning
+// Jan 20 – Feb 10 yields two segments: 11 days in January, 9 days in February.
+function campStaySegments(fromDate, endDateExclusive) {
+  const segments = [];
+  if (!fromDate || !endDateExclusive) return segments;
+  let cur = new Date(fromDate+'T00:00:00Z');
+  const end = new Date(endDateExclusive+'T00:00:00Z');
+  if (end <= cur) return segments;
+  while (cur < end) {
+    const y = cur.getUTCFullYear(), mo = cur.getUTCMonth();
+    const nextMonthStart = new Date(Date.UTC(y, mo+1, 1));
+    const segEnd = nextMonthStart < end ? nextMonthStart : end;
+    const days = Math.round((segEnd - cur)/86400000);
+    segments.push({ monthKey: `${y}-${String(mo+1).padStart(2,'0')}`, days });
+    cur = segEnd;
+  }
+  return segments;
+}
+
+// Food + accommodation cost for one camp stay: each calendar month's share of days is billed at
+// that month's own daily rate (monthly camp rate ÷ real days in that month), then summed.
+function campStayFoodAccomCost(fromDate, endDateExclusive, monthlyFood, monthlyAccom) {
+  const monthlyTotal = (Number(monthlyFood)||0) + (Number(monthlyAccom)||0);
+  if (monthlyTotal <= 0) return 0;
+  return campStaySegments(fromDate, endDateExclusive).reduce((sum, seg) => {
+    const dailyRate = monthlyTotal / daysInMonth(seg.monthKey);
+    return sum + seg.days*dailyRate;
+  }, 0);
+}
+
 function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEmpFilter }) {
-  const [defaults, setDefaults] = useState({ food_rate_per_day:0, accommodation_rate_per_day:0, transport_rate_per_day:0 });
-  const [overrides, setOverrides] = useState([]);
-  const [overrideDraft, setOverrideDraft] = useState(null);
-  const [showOverrides, setShowOverrides] = useState(!hideEmpFilter);
-  const [synced, setSynced] = useState({}); // `${employee_id}|${demob_date}` -> {id, amount, notes}
+  // Camps master list (name + monthly food/accommodation rate — different camps, different cost)
+  const [camps, setCamps] = useState([]);
+  const [campDraft, setCampDraft] = useState(null);
+  const [showCamps, setShowCamps] = useState(!hideEmpFilter);
+  const [savingCamp, setSavingCamp] = useState(false);
+
+  // Explicit "employee X was at camp Y from A to B" records — the source of truth for cost
+  const [stays, setStays] = useState([]);
+  const [stayDraft, setStayDraft] = useState(null);
+
+  // Transport keeps the old flat AED/day mechanism (company default + optional per-employee override)
+  const [transportDefault, setTransportDefault] = useState({ transport_rate_per_day:0 });
+  const [transportOverrides, setTransportOverrides] = useState([]);
+  const [transportOverrideDraft, setTransportOverrideDraft] = useState(null);
+  const [showTransportOverrides, setShowTransportOverrides] = useState(false);
+  const [savingTransport, setSavingTransport] = useState(false);
+
+  const [synced, setSynced] = useState({}); // stay.id -> {id, amount, notes} row in employee_other_costs
   const [loading, setLoading] = useState(true);
-  const [savingRates, setSavingRates] = useState(false);
   const [filters, setFilters] = useState(initialFilter||{});
   useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
 
   const load = async () => {
     setLoading(true);
-    const [def, ov, oc] = await Promise.all([
+    const [cm, st, def, ov, oc] = await Promise.all([
+      db.from('camps').select('*').order('name',{ascending:true}),
+      db.from('employee_camp_stays').select('*').order('from_date',{ascending:false}),
       db.from('camp_rate_defaults').select('*').eq('id',1).maybeSingle(),
       db.from('employee_camp_rates').select('*'),
       db.from('employee_other_costs').select('id,employee_id,amount,notes').eq('cost_type','camp_food_accommodation'),
     ]);
-    setDefaults(def.data || { food_rate_per_day:0, accommodation_rate_per_day:0, transport_rate_per_day:0 });
-    setOverrides(ov.data||[]);
+    setCamps(cm.data||[]);
+    setStays(st.data||[]);
+    setTransportDefault(def.data || { transport_rate_per_day:0 });
+    setTransportOverrides(ov.data||[]);
+    // Only rows tagged [CAMPSTAY:id] belong to the current (per-stay) system — anything else
+    // under this cost_type is a leftover from the old flat-rate/demob-remob auto-sync and gets
+    // cleaned up below once stays finish loading, the same "auto-repair" pattern Client Billing uses.
     const syncMap = {};
     (oc.data||[]).forEach(r=>{
-      const m = String(r.notes||'').match(/\[CAMP:([^\]]+)\]/);
-      if (m) syncMap[`${r.employee_id}|${m[1]}`] = { id:r.id, amount:Number(r.amount)||0, notes:r.notes };
+      const m = String(r.notes||'').match(/\[CAMPSTAY:([^\]]+)\]/);
+      if (m) syncMap[m[1]] = { id:r.id, amount:Number(r.amount)||0, notes:r.notes };
     });
     setSynced(syncMap);
     setLoading(false);
   };
   useEffect(()=>{ load(); },[]);
 
-  const overridesByEmp = useMemo(()=>{
-    const m = {};
-    overrides.forEach(o=>{ m[o.employee_id]=o; });
-    return m;
-  },[overrides]);
-
-  const rateFor = (employeeId) => {
-    const ov = overridesByEmp[employeeId];
+  const campsById = useMemo(()=>{ const m={}; camps.forEach(c=>{ m[c.id]=c; }); return m; },[camps]);
+  const transportOverrideByEmp = useMemo(()=>{ const m={}; transportOverrides.forEach(o=>{ m[o.employee_id]=o; }); return m; },[transportOverrides]);
+  const transportRateFor = (employeeId) => {
+    const ov = transportOverrideByEmp[employeeId];
     const has = (v) => v!==null && v!==undefined && v!=='';
-    return {
-      food:          ov && has(ov.food_rate_per_day)          ? Number(ov.food_rate_per_day)          : Number(defaults.food_rate_per_day)||0,
-      accommodation: ov && has(ov.accommodation_rate_per_day) ? Number(ov.accommodation_rate_per_day) : Number(defaults.accommodation_rate_per_day)||0,
-      transport:     ov && has(ov.transport_rate_per_day)     ? Number(ov.transport_rate_per_day)     : Number(defaults.transport_rate_per_day)||0,
-    };
+    return ov && has(ov.transport_rate_per_day) ? Number(ov.transport_rate_per_day) : Number(transportDefault.transport_rate_per_day)||0;
   };
 
-  // Reconstruct every demob→remob gap for one employee from their mob/demob history. With only the
-  // latest HR record available (pre-migration), this still correctly finds the current ongoing gap,
-  // if any — full historical (already-closed) periods need the HR bridge full-history migration.
-  const periodsFor = (employeeId) => {
-    const rows = (mobDemobByEmp[employeeId]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
-    const todayStr = new Date().toISOString().slice(0,10);
-    const out = [];
-    rows.forEach((row,i)=>{
-      if (!row.demobilization_date) return;
-      const next = rows[i+1];
-      const remobDate = next && next.mobilization_date ? next.mobilization_date : null;
-      const endDate = remobDate || todayStr;
-      if (endDate <= row.demobilization_date) return;
-      const demob = new Date(row.demobilization_date+'T00:00:00Z');
-      const end = new Date(endDate+'T00:00:00Z');
-      const days = Math.max(0, Math.round((end-demob)/86400000));
-      if (days<=0) return;
-      out.push({ employee_id:employeeId, demob_date:row.demobilization_date, remob_date:remobDate, ongoing:!remobDate, left_location:row.location||null, days });
+  const todayStr = new Date().toISOString().slice(0,10);
+
+  // HR's mob_demob history records a fresh mobilization_date once an employee actually remobilizes.
+  // For a stay still marked "ongoing" in Finance, the earliest HR mobilization_date after the stay's
+  // From Date means HR has since recorded them back on site — i.e. the camp stay should have closed
+  // that day. Mirrors the same bridge data already used to *open* a stay (demobilization_date), just
+  // looking at the other end of the gap.
+  const hrRemobDateAfter = (employeeId, fromDate) => {
+    const rows = mobDemobByEmp[employeeId]||[];
+    const candidates = rows.map(r=>r.mobilization_date).filter(d=>d && d>fromDate).sort();
+    return candidates[0]||null;
+  };
+
+  // Enrich each stay with computed days/cost. Blank to_date = ongoing (still in camp), costed up to
+  // today. `days` is exclusive of the end date (matches how demob→remob day counts work throughout
+  // this app) — e.g. 1 Jan → 5 Jan is 4 camp days.
+  const enrichedStays = useMemo(()=>{
+    return stays.map(s=>{
+      const end = s.to_date || todayStr;
+      const days = Math.max(0, Math.round((new Date(end+'T00:00:00Z') - new Date(s.from_date+'T00:00:00Z'))/86400000));
+      const camp = s.camp_id ? campsById[s.camp_id] : null;
+      const monthlyFood  = camp ? Number(camp.monthly_food_rate)||0 : 0;
+      const monthlyAccom = camp ? Number(camp.monthly_accommodation_rate)||0 : 0;
+      const foodAccomCost = campStayFoodAccomCost(s.from_date, end, monthlyFood, monthlyAccom);
+      const transportRate = transportRateFor(s.employee_id);
+      const transportCost = days*transportRate;
+      const cost = Math.round((foodAccomCost+transportCost)*100)/100;
+      const avgDailyRate = days>0 ? (foodAccomCost+transportCost)/days : 0;
+      const ongoing = !s.to_date;
+      const suggestedCloseDate = ongoing ? hrRemobDateAfter(s.employee_id, s.from_date) : null;
+      return {
+        ...s, camp_name: s.camp_name||(camp&&camp.name)||'(camp deleted)', days,
+        foodAccomCost, transportRate, transportCost, cost, avgDailyRate, ongoing, suggestedCloseDate,
+      };
     });
-    return out;
-  };
+  },[stays, campsById, transportOverrideByEmp, transportDefault, todayStr, mobDemobByEmp]);
 
-  // All camp periods across the whole roster (sync always covers everyone, regardless of the
-  // current filter, so switching/clearing filters never leaves stale/unsynced rows behind).
-  const rosterPeriods = useMemo(()=>{
-    const out = [];
-    employees.forEach(e=>{ periodsFor(e.employee_id).forEach(p=>out.push({...p, full_name:e.full_name})); });
-    return out;
-  },[employees, mobDemobByEmp]);
-
-  // Auto-sync computed camp costs into employee_other_costs, mirroring Client Billing's WPS
-  // auto-repair pattern: insert if missing, update if the amount/description drifted, delete if the
-  // underlying period no longer exists or the cost dropped to zero.
+  // Auto-sync computed stay costs into employee_other_costs — the same shared pool the P&L
+  // Dashboard and Client Billing read from — mirroring Client Billing's WPS auto-repair pattern:
+  // insert if missing, update if the amount/description drifted, delete if the stay (or its cost)
+  // is gone. Also retires any pre-v11 camp_food_accommodation rows left over from the old flat-rate
+  // demob/remob auto-sync, since that system no longer books costs (see synced/load() above).
   useEffect(()=>{
-    if (loading || !employees.length) return;
+    if (loading) return;
     (async () => {
       const fixes = [];
-      const seenKeys = new Set();
-      rosterPeriods.forEach(p=>{
-        const rate = rateFor(p.employee_id);
-        const dailyTotal = rate.food+rate.accommodation+rate.transport;
-        const amount = Math.round(p.days*dailyTotal*100)/100;
-        const key = `${p.employee_id}|${p.demob_date}`;
-        seenKeys.add(key);
-        const note = `Camp cost — off-site from ${p.demob_date}${p.remob_date?` to ${p.remob_date}`:' (ongoing)'}${p.left_location?`, left ${p.left_location}`:''} — ${p.days} day(s) x AED ${fmt2(dailyTotal)}/day [CAMP:${p.demob_date}]`;
-        const existing = synced[key];
-        if (amount<=0) {
+      const seenIds = new Set();
+      enrichedStays.forEach(s=>{
+        seenIds.add(s.id);
+        const note = `Camp cost — ${s.camp_name} from ${s.from_date}${s.to_date?` to ${s.to_date}`:' (ongoing)'} — ${s.days} day(s) [CAMPSTAY:${s.id}]`;
+        const existing = synced[s.id];
+        if (s.cost<=0) {
           if (existing) fixes.push(db.from('employee_other_costs').delete().eq('id',existing.id));
           return;
         }
         if (!existing) {
           fixes.push(db.from('employee_other_costs').insert({
-            employee_id:p.employee_id, full_name:p.full_name, cost_type:'camp_food_accommodation',
-            cost_date:p.remob_date||p.demob_date, amount, recoverable:false, recovered_amount:0, notes:note,
+            employee_id:s.employee_id, full_name:s.full_name, cost_type:'camp_food_accommodation',
+            cost_date:s.to_date||s.from_date, amount:s.cost, recoverable:false, recovered_amount:0, notes:note,
           }));
-        } else if (Math.abs(existing.amount-amount)>0.5 || existing.notes!==note) {
-          fixes.push(db.from('employee_other_costs').update({ amount, notes:note }).eq('id',existing.id));
+        } else if (Math.abs(existing.amount-s.cost)>0.5 || existing.notes!==note) {
+          fixes.push(db.from('employee_other_costs').update({ amount:s.cost, notes:note }).eq('id',existing.id));
         }
       });
-      Object.entries(synced).forEach(([key,row])=>{
-        if (!seenKeys.has(key)) fixes.push(db.from('employee_other_costs').delete().eq('id',row.id));
-      });
+      Object.entries(synced).forEach(([id,row])=>{ if (!seenIds.has(id)) fixes.push(db.from('employee_other_costs').delete().eq('id',row.id)); });
+      // One-time retirement of old (pre-v11) camp_food_accommodation rows that aren't [CAMPSTAY:]
+      // tagged — leftovers from the flat-rate demob/remob auto-sync this version replaces.
+      const { data: allCamp } = await db.from('employee_other_costs').select('id,notes').eq('cost_type','camp_food_accommodation');
+      (allCamp||[]).forEach(r=>{ if (!/\[CAMPSTAY:[^\]]+\]/.test(String(r.notes||''))) fixes.push(db.from('employee_other_costs').delete().eq('id',r.id)); });
       if (fixes.length) {
         await Promise.all(fixes);
         const { data: ocFresh } = await db.from('employee_other_costs').select('id,employee_id,amount,notes').eq('cost_type','camp_food_accommodation');
         const freshMap = {};
         (ocFresh||[]).forEach(r=>{
-          const m = String(r.notes||'').match(/\[CAMP:([^\]]+)\]/);
-          if (m) freshMap[`${r.employee_id}|${m[1]}`] = { id:r.id, amount:Number(r.amount)||0, notes:r.notes };
+          const m = String(r.notes||'').match(/\[CAMPSTAY:([^\]]+)\]/);
+          if (m) freshMap[m[1]] = { id:r.id, amount:Number(r.amount)||0, notes:r.notes };
         });
         setSynced(freshMap);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[rosterPeriods, defaults, overridesByEmp, loading]);
+  },[enrichedStays, loading]);
 
-  const saveDefaults = async () => {
-    setSavingRates(true);
-    const { error } = await db.from('camp_rate_defaults').upsert({
-      id:1,
-      food_rate_per_day:Number(defaults.food_rate_per_day)||0,
-      accommodation_rate_per_day:Number(defaults.accommodation_rate_per_day)||0,
-      transport_rate_per_day:Number(defaults.transport_rate_per_day)||0,
-    });
-    setSavingRates(false);
+  // ── Camps master list CRUD ──
+  const blankCamp = () => setCampDraft({ name:'', monthly_food_rate:'', monthly_accommodation_rate:'', remarks:'' });
+  const editCamp = (c) => setCampDraft({ ...c });
+  const saveCamp = async () => {
+    if (!campDraft.name || !campDraft.name.trim()) return alert('Camp name is required');
+    setSavingCamp(true);
+    const payload = {
+      name:campDraft.name.trim(),
+      monthly_food_rate: Number(campDraft.monthly_food_rate)||0,
+      monthly_accommodation_rate: Number(campDraft.monthly_accommodation_rate)||0,
+      remarks: campDraft.remarks||null,
+    };
+    const { error } = campDraft.id
+      ? await db.from('camps').update(payload).eq('id',campDraft.id)
+      : await db.from('camps').insert(payload);
+    setSavingCamp(false);
     if (error) return alert(error.message);
+    setCampDraft(null); load();
+  };
+  const removeCamp = async (id) => {
+    if (!window.confirm("Delete this camp? Stays already logged against it keep their recorded name but lose the linked rate — edit them to pick a replacement camp if it's still owed.")) return;
+    await db.from('camps').delete().eq('id',id);
     load();
   };
 
-  const blankOverride = () => setOverrideDraft({ employee_id:initialFilter&&initialFilter.employee_id||'', full_name:initialFilter&&initialFilter.full_name||'', food_rate_per_day:'', accommodation_rate_per_day:'', transport_rate_per_day:'', remarks:'' });
-  const editOverride = (o) => setOverrideDraft({ ...o });
-  const saveOverride = async () => {
-    if (!overrideDraft.employee_id) return alert('Employee is required');
+  // ── Transport default / per-employee override (unchanged mechanism — only food & accommodation moved to per-camp rates) ──
+  const saveTransportDefault = async () => {
+    setSavingTransport(true);
+    const { error } = await db.from('camp_rate_defaults').upsert({
+      id:1, food_rate_per_day:0, accommodation_rate_per_day:0, // retired — see Camps master list
+      transport_rate_per_day:Number(transportDefault.transport_rate_per_day)||0,
+    });
+    setSavingTransport(false);
+    if (error) return alert(error.message);
+    load();
+  };
+  const blankTransportOverride = () => setTransportOverrideDraft({ employee_id:initialFilter&&initialFilter.employee_id||'', full_name:initialFilter&&initialFilter.full_name||'', transport_rate_per_day:'', remarks:'' });
+  const editTransportOverride = (o) => setTransportOverrideDraft({ ...o });
+  const saveTransportOverride = async () => {
+    if (!transportOverrideDraft.employee_id) return alert('Employee is required');
     const payload = {
-      employee_id:overrideDraft.employee_id, full_name:overrideDraft.full_name||'',
-      food_rate_per_day: overrideDraft.food_rate_per_day===''||overrideDraft.food_rate_per_day==null ? null : Number(overrideDraft.food_rate_per_day),
-      accommodation_rate_per_day: overrideDraft.accommodation_rate_per_day===''||overrideDraft.accommodation_rate_per_day==null ? null : Number(overrideDraft.accommodation_rate_per_day),
-      transport_rate_per_day: overrideDraft.transport_rate_per_day===''||overrideDraft.transport_rate_per_day==null ? null : Number(overrideDraft.transport_rate_per_day),
-      remarks:overrideDraft.remarks||null,
+      employee_id:transportOverrideDraft.employee_id, full_name:transportOverrideDraft.full_name||'',
+      transport_rate_per_day: transportOverrideDraft.transport_rate_per_day===''||transportOverrideDraft.transport_rate_per_day==null ? null : Number(transportOverrideDraft.transport_rate_per_day),
+      remarks:transportOverrideDraft.remarks||null,
     };
     const { error } = await db.from('employee_camp_rates').upsert(payload, { onConflict:'employee_id' });
     if (error) return alert(error.message);
-    setOverrideDraft(null);
-    load();
+    setTransportOverrideDraft(null); load();
   };
-  const removeOverride = async (id) => {
-    if (!window.confirm('Remove this rate override? This employee will fall back to the default rate.')) return;
+  const removeTransportOverride = async (id) => {
+    if (!window.confirm('Remove this transport rate override? This employee will fall back to the default rate.')) return;
     await db.from('employee_camp_rates').delete().eq('id',id);
     load();
   };
 
-  const filterFields = hideEmpFilter ? [] : [
-    {key:'employee_id', label:'Emp ID', width:'100px'},
-    {key:'full_name',   label:'Name',   width:'150px'},
+  // ── Camp Stays CRUD ──
+  const blankStay = (prefill) => setStayDraft({
+    employee_id:(prefill&&prefill.employee_id)||(initialFilter&&initialFilter.employee_id)||'',
+    full_name:(prefill&&prefill.full_name)||(initialFilter&&initialFilter.full_name)||'',
+    camp_id:'', from_date:(prefill&&prefill.from_date)||'', to_date:'', remarks:'',
+  });
+  const editStay = (s) => setStayDraft({ ...s, from_date:s.from_date||'', to_date:s.to_date||'' });
+  const saveStay = async () => {
+    if (!stayDraft.employee_id) return alert('Employee is required');
+    if (!stayDraft.camp_id) return alert('Camp is required');
+    if (!stayDraft.from_date) return alert('From date is required');
+    if (stayDraft.to_date && stayDraft.to_date < stayDraft.from_date) return alert('To date cannot be before From date');
+    const camp = campsById[stayDraft.camp_id];
+    const payload = {
+      employee_id:stayDraft.employee_id, full_name:stayDraft.full_name||'',
+      camp_id:stayDraft.camp_id, camp_name:camp?camp.name:null,
+      from_date:stayDraft.from_date, to_date:stayDraft.to_date||null,
+      remarks:stayDraft.remarks||null,
+    };
+    const { error } = stayDraft.id
+      ? await db.from('employee_camp_stays').update(payload).eq('id',stayDraft.id)
+      : await db.from('employee_camp_stays').insert(payload);
+    if (error) return alert(error.message);
+    setStayDraft(null); load();
+  };
+  // One-click close: HR now shows a later mobilization_date for this employee (see
+  // hrRemobDateAfter above), so set that as the To Date instead of leaving the stay open-ended.
+  const closeStayWithHrDate = async (id, toDate) => {
+    await db.from('employee_camp_stays').update({ to_date:toDate }).eq('id',id);
+    load();
+  };
+  const removeStay = async (id) => {
+    if (!window.confirm('Delete this camp stay and its synced cost entry?')) return;
+    await db.from('employee_camp_stays').delete().eq('id',id);
+    load();
+  };
+
+  // Employees currently off-site per HR (demobilized, nothing remobilized since) with no *ongoing*
+  // camp stay logged — a reminder only. Unlike the old version, this never auto-books a cost: with
+  // camp-specific rates, the system can't guess which camp someone went to.
+  const ongoingStayEmpIds = useMemo(()=> new Set(enrichedStays.filter(s=>s.ongoing).map(s=>s.employee_id)), [enrichedStays]);
+  const unloggedOffSite = useMemo(()=>{
+    const out = [];
+    employees.forEach(e=>{
+      if (ongoingStayEmpIds.has(e.employee_id)) return;
+      const rows = (mobDemobByEmp[e.employee_id]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
+      const last = rows[rows.length-1];
+      if (last && last.demobilization_date) {
+        const days = Math.max(0, Math.round((new Date(todayStr+'T00:00:00Z') - new Date(last.demobilization_date+'T00:00:00Z'))/86400000));
+        if (days>0) out.push({ employee_id:e.employee_id, full_name:e.full_name, demob_date:last.demobilization_date, left_location:last.location||null, days });
+      }
+    });
+    return out;
+  },[employees, mobDemobByEmp, ongoingStayEmpIds, todayStr]);
+
+  const filterFields = [
+    ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID', width:'100px'},{key:'full_name',label:'Name',width:'150px'}]),
+    {key:'camp_name', label:'Camp', width:'150px'},
   ];
-  const scopedPeriods = useMemo(()=>{
-    const base = hideEmpFilter && filters.employee_id ? rosterPeriods.filter(p=>p.employee_id===filters.employee_id) : rosterPeriods;
-    return applyFilters(base, hideEmpFilter?{}:filters).sort((a,b)=>b.demob_date<a.demob_date?-1:1);
-  },[rosterPeriods, filters, hideEmpFilter]);
+  const scopedStays = useMemo(()=>{
+    const base = hideEmpFilter && filters.employee_id ? enrichedStays.filter(s=>s.employee_id===filters.employee_id) : enrichedStays;
+    return applyFilters(base, hideEmpFilter?{}:filters).sort((a,b)=>b.from_date<a.from_date?-1:1);
+  },[enrichedStays, filters, hideEmpFilter]);
 
   const summary = useMemo(()=>{
     let totalDays=0, totalCost=0, ongoingCount=0, ongoingCost=0;
-    scopedPeriods.forEach(p=>{
-      const rate = rateFor(p.employee_id);
-      const cost = p.days*(rate.food+rate.accommodation+rate.transport);
-      totalDays += p.days; totalCost += cost;
-      if (p.ongoing) { ongoingCount++; ongoingCost += cost; }
+    scopedStays.forEach(s=>{
+      totalDays += s.days; totalCost += s.cost;
+      if (s.ongoing) { ongoingCount++; ongoingCost += s.cost; }
     });
-    return { totalDays, totalCost, ongoingCount, ongoingCost, periodCount:scopedPeriods.length };
-  },[scopedPeriods, defaults, overridesByEmp]);
+    return { totalDays, totalCost, ongoingCount, ongoingCost, periodCount:scopedStays.length };
+  },[scopedStays]);
 
   const csvCols = [
-    {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},{key:'left_location',label:'Left Site/Location'},
-    {key:'demob_date',label:'Demob Date'},{key:'remob_date',label:'Remob Date'},{key:'days',label:'Camp Days'},
-    {key:'daily_rate',label:'Rate/day (AED)'},{key:'cost',label:'Camp Cost (AED)'},
+    {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},{key:'camp_name',label:'Camp'},
+    {key:'from_date',label:'From'},{key:'to_date',label:'To'},{key:'days',label:'Camp Days'},
+    {key:'avgDailyRate',label:'Avg Rate/day (AED)'},{key:'cost',label:'Camp Cost (AED)'},
   ];
-  const csvRows = scopedPeriods.map(p=>{
-    const rate = rateFor(p.employee_id);
-    const dailyTotal = rate.food+rate.accommodation+rate.transport;
-    return { ...p, remob_date:p.remob_date||'(ongoing)', daily_rate:fmt2(dailyTotal), cost:fmt2(p.days*dailyTotal) };
-  });
+  const csvRows = scopedStays.map(s=>({ ...s, to_date:s.to_date||'(ongoing)', avgDailyRate:fmt2(s.avgDailyRate), cost:fmt2(s.cost) }));
 
   return (
     <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
       <div style={S.card}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'8px'}}>
+          <div>
+            <div style={{fontWeight:800,fontSize:'13px'}}>Camps (master list)</div>
+            <div style={{fontSize:'11.5px',color:'#64748b',marginTop:'2px'}}>Each camp has its own monthly food &amp; accommodation rate — the system derives the daily rate from whichever calendar month(s) a stay falls in.</div>
+          </div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1',fontSize:'12px',padding:'6px 12px'}} onClick={()=>setShowCamps(v=>!v)}>{showCamps?'▲ Hide':'▼ Show'} ({camps.length})</button>
+            {!campDraft && <button style={{...S.btnPri,fontSize:'12px',padding:'6px 12px'}} onClick={blankCamp}>+ Add Camp</button>}
+          </div>
+        </div>
+        {showCamps && (
+          <div style={{padding:'14px 16px'}}>
+            {campDraft && (
+              <div style={{background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:'8px',padding:'12px',marginBottom:'10px'}}>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'8px'}}>
+                  <div><label style={S.label}>Camp Name</label><input value={campDraft.name} onChange={e=>setCampDraft(d=>({...d,name:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                  <div><label style={S.label}>Monthly Food Rate (AED)</label><input type="number" step="0.01" min="0" value={campDraft.monthly_food_rate} onChange={e=>setCampDraft(d=>({...d,monthly_food_rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                  <div><label style={S.label}>Monthly Accommodation Rate (AED)</label><input type="number" step="0.01" min="0" value={campDraft.monthly_accommodation_rate} onChange={e=>setCampDraft(d=>({...d,monthly_accommodation_rate:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                </div>
+                <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={campDraft.remarks||''} onChange={e=>setCampDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                <div style={{fontSize:'11.5px',color:'#166534',fontWeight:700,marginBottom:'8px'}}>≈ AED {fmt2(((Number(campDraft.monthly_food_rate)||0)+(Number(campDraft.monthly_accommodation_rate)||0))/daysInMonth(todayStr.slice(0,7)))}/day this month</div>
+                <div style={{display:'flex',gap:'8px'}}>
+                  <button style={{...S.btnPri,opacity:savingCamp?0.6:1}} disabled={savingCamp} onClick={saveCamp}>{savingCamp?'Saving…':'Save Camp'}</button>
+                  <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setCampDraft(null)}>Cancel</button>
+                </div>
+              </div>
+            )}
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
+              <thead><tr><th style={S.th}>Camp</th><th style={S.th}>Monthly Food</th><th style={S.th}>Monthly Accom.</th><th style={S.th}>≈ AED/day (this month)</th><th style={S.th}>Remarks</th><th style={S.th}></th></tr></thead>
+              <tbody>
+                {camps.length===0
+                  ? <tr><td colSpan={6} style={{padding:'10px',color:'#94a3b8',textAlign:'center'}}>No camps yet — click "+ Add Camp" to define one (e.g. "ADNOC Camp — Ruwais").</td></tr>
+                  : camps.map(c=>(
+                    <tr key={c.id} style={{borderTop:'1px solid #e2e8f0'}}>
+                      <td style={{...S.td,fontWeight:700}}>{c.name}</td>
+                      <td style={S.td}>{fmt2(c.monthly_food_rate)}</td>
+                      <td style={S.td}>{fmt2(c.monthly_accommodation_rate)}</td>
+                      <td style={S.td}>{fmt2(((Number(c.monthly_food_rate)||0)+(Number(c.monthly_accommodation_rate)||0))/daysInMonth(todayStr.slice(0,7)))}</td>
+                      <td style={S.tdWrap}>{c.remarks||'—'}</td>
+                      <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                        <button style={S.iconBtn} onClick={()=>editCamp(c)}>&#9998;</button>
+                        <button style={S.iconBtn} onClick={()=>removeCamp(c.id)}>&#128465;</button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div style={S.card}>
         <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
-          <div style={{fontWeight:800,fontSize:'13px'}}>Camp Cost Rates (AED/day)</div>
-          <div style={{fontSize:'11.5px',color:'#64748b',marginTop:'2px'}}>Applied to every day an employee is demobilized from site and not yet remobilized. Set a company default below, and optionally override it for specific employees.</div>
+          <div style={{fontWeight:800,fontSize:'13px'}}>Transport Rate (AED/day)</div>
+          <div style={{fontSize:'11.5px',color:'#64748b',marginTop:'2px'}}>Applied to every logged camp day, on top of the camp's food &amp; accommodation cost. Set a company default below, and optionally override it for specific employees.</div>
         </div>
         <div style={{padding:'14px 16px'}}>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr) auto',gap:'12px',alignItems:'end',marginBottom:'10px'}}>
-            <div><label style={S.label}>Food (AED/day)</label><input type="number" step="0.01" min="0" value={defaults.food_rate_per_day} onChange={e=>setDefaults(d=>({...d,food_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <div><label style={S.label}>Accommodation (AED/day)</label><input type="number" step="0.01" min="0" value={defaults.accommodation_rate_per_day} onChange={e=>setDefaults(d=>({...d,accommodation_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <div><label style={S.label}>Transport (AED/day)</label><input type="number" step="0.01" min="0" value={defaults.transport_rate_per_day} onChange={e=>setDefaults(d=>({...d,transport_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-            <button style={{...S.btnPri,opacity:savingRates?0.6:1}} disabled={savingRates} onClick={saveDefaults}>{savingRates?'Saving…':'Save Default Rates'}</button>
+          <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:'12px',alignItems:'end',marginBottom:'10px',maxWidth:'420px'}}>
+            <div><label style={S.label}>Transport (AED/day)</label><input type="number" step="0.01" min="0" value={transportDefault.transport_rate_per_day} onChange={e=>setTransportDefault(d=>({...d,transport_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            <button style={{...S.btnPri,opacity:savingTransport?0.6:1}} disabled={savingTransport} onClick={saveTransportDefault}>{savingTransport?'Saving…':'Save Default Rate'}</button>
           </div>
-          <div style={{fontSize:'12px',color:'#166534',fontWeight:700}}>Default total: AED {fmt2((Number(defaults.food_rate_per_day)||0)+(Number(defaults.accommodation_rate_per_day)||0)+(Number(defaults.transport_rate_per_day)||0))}/day</div>
 
           <div style={{marginTop:'14px',paddingTop:'12px',borderTop:'1px solid #e2e8f0'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'8px'}}>
-              <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1',fontSize:'12px',padding:'6px 12px'}} onClick={()=>setShowOverrides(v=>!v)}>{showOverrides?'▲ Hide':'▼ Show'} Per-Employee Rate Overrides ({overrides.length})</button>
-              {!overrideDraft && <button style={{...S.btnPri,fontSize:'12px',padding:'6px 12px'}} onClick={blankOverride}>+ Add Override</button>}
+              <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1',fontSize:'12px',padding:'6px 12px'}} onClick={()=>setShowTransportOverrides(v=>!v)}>{showTransportOverrides?'▲ Hide':'▼ Show'} Per-Employee Rate Overrides ({transportOverrides.length})</button>
+              {!transportOverrideDraft && <button style={{...S.btnPri,fontSize:'12px',padding:'6px 12px'}} onClick={blankTransportOverride}>+ Add Override</button>}
             </div>
-            {showOverrides && (
+            {showTransportOverrides && (
               <div style={{marginTop:'10px'}}>
-                {overrideDraft && (
+                {transportOverrideDraft && (
                   <div style={{background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:'8px',padding:'12px',marginBottom:'10px'}}>
                     {!hideEmpFilter && (
                       <div style={{marginBottom:'8px'}}>
                         <label style={S.label}>Employee</label>
-                        <EmployeePicker employees={employees} value={overrideDraft.employee_id} name={overrideDraft.full_name}
-                          onChange={(id,name)=>setOverrideDraft(d=>({...d,employee_id:id,full_name:name}))} />
+                        <EmployeePicker employees={employees} value={transportOverrideDraft.employee_id} name={transportOverrideDraft.full_name}
+                          onChange={(id,name)=>setTransportOverrideDraft(d=>({...d,employee_id:id,full_name:name}))} />
                       </div>
                     )}
-                    <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'8px'}}>
-                      <div><label style={S.label}>Food (AED/day) — blank = default</label><input type="number" step="0.01" value={overrideDraft.food_rate_per_day} onChange={e=>setOverrideDraft(d=>({...d,food_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-                      <div><label style={S.label}>Accommodation (AED/day)</label><input type="number" step="0.01" value={overrideDraft.accommodation_rate_per_day} onChange={e=>setOverrideDraft(d=>({...d,accommodation_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-                      <div><label style={S.label}>Transport (AED/day)</label><input type="number" step="0.01" value={overrideDraft.transport_rate_per_day} onChange={e=>setOverrideDraft(d=>({...d,transport_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr',gap:'10px',marginBottom:'8px',maxWidth:'260px'}}>
+                      <div><label style={S.label}>Transport (AED/day) — blank = default</label><input type="number" step="0.01" value={transportOverrideDraft.transport_rate_per_day} onChange={e=>setTransportOverrideDraft(d=>({...d,transport_rate_per_day:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
                     </div>
-                    <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={overrideDraft.remarks||''} onChange={e=>setOverrideDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                    <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={transportOverrideDraft.remarks||''} onChange={e=>setTransportOverrideDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
                     <div style={{display:'flex',gap:'8px'}}>
-                      <button style={S.btnPri} onClick={saveOverride}>Save Override</button>
-                      <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setOverrideDraft(null)}>Cancel</button>
+                      <button style={S.btnPri} onClick={saveTransportOverride}>Save Override</button>
+                      <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setTransportOverrideDraft(null)}>Cancel</button>
                     </div>
                   </div>
                 )}
                 <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
-                  <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Food</th><th style={S.th}>Accom.</th><th style={S.th}>Transport</th><th style={S.th}>Remarks</th><th style={S.th}></th></tr></thead>
+                  <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Transport</th><th style={S.th}>Remarks</th><th style={S.th}></th></tr></thead>
                   <tbody>
-                    {overrides.length===0
-                      ? <tr><td colSpan={6} style={{padding:'10px',color:'#94a3b8',textAlign:'center'}}>No overrides — every employee uses the default rate above.</td></tr>
-                      : overrides.map(o=>(
+                    {transportOverrides.length===0
+                      ? <tr><td colSpan={4} style={{padding:'10px',color:'#94a3b8',textAlign:'center'}}>No overrides — every employee uses the default rate above.</td></tr>
+                      : transportOverrides.map(o=>(
                         <tr key={o.id} style={{borderTop:'1px solid #e2e8f0'}}>
                           <td style={S.td}>{o.full_name||o.employee_id} <span style={{color:'#94a3b8',fontFamily:'ui-monospace,monospace',fontSize:'11px'}}>({o.employee_id})</span></td>
-                          <td style={S.td}>{o.food_rate_per_day!=null?fmt2(o.food_rate_per_day):'—'}</td>
-                          <td style={S.td}>{o.accommodation_rate_per_day!=null?fmt2(o.accommodation_rate_per_day):'—'}</td>
                           <td style={S.td}>{o.transport_rate_per_day!=null?fmt2(o.transport_rate_per_day):'—'}</td>
                           <td style={S.tdWrap}>{o.remarks||'—'}</td>
                           <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
-                            <button style={S.iconBtn} onClick={()=>editOverride(o)}>&#9998;</button>
-                            <button style={S.iconBtn} onClick={()=>removeOverride(o.id)}>&#128465;</button>
+                            <button style={S.iconBtn} onClick={()=>editTransportOverride(o)}>&#9998;</button>
+                            <button style={S.iconBtn} onClick={()=>removeTransportOverride(o.id)}>&#128465;</button>
                           </td>
                         </tr>
                       ))}
@@ -3479,53 +3688,117 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
         </div>
       </div>
 
+      {unloggedOffSite.length>0 && (
+        <div style={{...S.card,padding:'14px 16px',background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+          <div style={{fontWeight:800,fontSize:'12.5px',color:'#1d4ed8',marginBottom:'6px'}}>Off-Site Per HR — No Camp Stay Logged Yet ({unloggedOffSite.length})</div>
+          <div style={{fontSize:'11.5px',color:'#1e40af',marginBottom:'8px'}}>These employees show a demobilization with no later remobilization in HR, but have no ongoing Camp Stay entered below — nothing is being costed for them yet.</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+            {unloggedOffSite.map(u=>(
+              <div key={u.employee_id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:'12px',background:'#fff',borderRadius:'6px',padding:'6px 10px'}}>
+                <span><b>{u.full_name}</b> <span style={{color:'#94a3b8',fontFamily:'ui-monospace,monospace'}}>({u.employee_id})</span> — off-site since {u.demob_date}{u.left_location?` (left ${u.left_location})`:''}, {u.days} day(s)</span>
+                <button style={{...S.btnPri,fontSize:'11.5px',padding:'5px 10px'}} onClick={()=>blankStay({employee_id:u.employee_id, full_name:u.full_name, from_date:u.demob_date})}>+ Log Camp Stay</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={S.card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
           <div>
-            <div style={{fontWeight:800,fontSize:'14px'}}>Camp Costs — Food, Accommodation &amp; Transport While Off-Site</div>
-            <div style={{fontSize:'12px',color:'#64748b'}}>{summary.periodCount} period(s) · {summary.ongoingCount} currently in camp</div>
+            <div style={{fontWeight:800,fontSize:'14px'}}>Camp Stays — Food, Accommodation &amp; Transport While Off-Site</div>
+            <div style={{fontSize:'12px',color:'#64748b'}}>{summary.periodCount} stay(s) · {summary.ongoingCount} currently in camp</div>
           </div>
-          <button style={S.btnExp} onClick={()=>exportCSV(csvRows,'camp_costs',csvCols)}>Export CSV</button>
+          <div style={{display:'flex',gap:'8px'}}>
+            <button style={S.btnExp} onClick={()=>exportCSV(csvRows,'camp_stays',csvCols)}>Export CSV</button>
+            {!stayDraft && <button style={S.btnPri} onClick={()=>blankStay()}>+ Add Camp Stay</button>}
+          </div>
         </div>
         <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
+
+        {stayDraft && (
+          <div style={{margin:'14px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:'8px',padding:'12px'}}>
+            {!hideEmpFilter && (
+              <div style={{marginBottom:'8px'}}>
+                <label style={S.label}>Employee</label>
+                <EmployeePicker employees={employees} value={stayDraft.employee_id} name={stayDraft.full_name}
+                  onChange={(id,name)=>setStayDraft(d=>({...d,employee_id:id,full_name:name}))} />
+              </div>
+            )}
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'8px'}}>
+              <div>
+                <label style={S.label}>Camp</label>
+                <select value={stayDraft.camp_id} onChange={e=>setStayDraft(d=>({...d,camp_id:e.target.value}))} style={{...S.input,width:'100%'}}>
+                  <option value="">— Select camp —</option>
+                  {camps.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div><label style={S.label}>From Date</label><input type="date" value={stayDraft.from_date} onChange={e=>setStayDraft(d=>({...d,from_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>To Date — blank = still in camp</label><input type="date" value={stayDraft.to_date} onChange={e=>setStayDraft(d=>({...d,to_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            </div>
+            <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={stayDraft.remarks||''} onChange={e=>setStayDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            {stayDraft.camp_id && stayDraft.from_date && (()=>{
+              const camp = campsById[stayDraft.camp_id];
+              const end = stayDraft.to_date || todayStr;
+              const days = Math.max(0, Math.round((new Date(end+'T00:00:00Z') - new Date(stayDraft.from_date+'T00:00:00Z'))/86400000));
+              const foodAccom = camp ? campStayFoodAccomCost(stayDraft.from_date, end, camp.monthly_food_rate, camp.monthly_accommodation_rate) : 0;
+              const transport = days*transportRateFor(stayDraft.employee_id);
+              return <div style={{fontSize:'11.5px',color:'#166534',fontWeight:700,marginBottom:'8px'}}>{days} day(s) → Food+Accom AED {fmt2(foodAccom)} + Transport AED {fmt2(transport)} = AED {fmt2(foodAccom+transport)}</div>;
+            })()}
+            <div style={{display:'flex',gap:'8px'}}>
+              <button style={S.btnPri} onClick={saveStay}>Save Camp Stay</button>
+              <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setStayDraft(null)}>Cancel</button>
+            </div>
+          </div>
+        )}
 
         {summary.periodCount>0 && (
           <div style={{margin:'14px',padding:'12px 16px',borderRadius:'10px',border:'1px solid #fde68a',background:'#fffbeb'}}>
             <div style={{fontWeight:800,fontSize:'12.5px',marginBottom:'4px',color:'#92400e'}}>Camp Cost Owed to Client/Camp{!hideEmpFilter?' — All Employees':''}</div>
-            <div style={{fontSize:'12.5px',color:'#78350f',marginBottom:'6px'}}>{summary.totalDays} total camp day(s) across {summary.periodCount} period(s), of which {summary.ongoingCount} employee(s) are in camp right now.</div>
+            <div style={{fontSize:'12.5px',color:'#78350f',marginBottom:'6px'}}>{summary.totalDays} total camp day(s) across {summary.periodCount} stay(s), of which {summary.ongoingCount} employee(s) are in camp right now.</div>
             <div style={{fontSize:'15px',fontWeight:800,color:'#92400e'}}>Total: AED {fmt2(summary.totalCost)}{summary.ongoingCost>0 && <span style={{fontSize:'12px',fontWeight:700,color:'#b45309'}}> &nbsp;(AED {fmt2(summary.ongoingCost)} still accruing — ongoing)</span>}</div>
           </div>
         )}
 
         <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
-            <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Left Site/Location','Demob Date','Status','Camp Days','Rate/day','Camp Cost','Synced']:['Emp ID','Name','Left Site/Location','Demob Date','Status','Camp Days','Rate/day','Camp Cost','Synced']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+            <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Camp','From','To','Status','Camp Days','Avg Rate/day','Camp Cost','Synced','']:['Emp ID','Name','Camp','From','To','Status','Camp Days','Avg Rate/day','Camp Cost','Synced','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={hideEmpFilter?7:9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
-                : scopedPeriods.length===0
-                  ? <tr><td colSpan={hideEmpFilter?7:9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No camp periods found. This needs a demob date recorded in HR with no (or a later) remobilization date.</td></tr>
-                  : scopedPeriods.map(p=>{
-                      const rate = rateFor(p.employee_id);
-                      const dailyTotal = rate.food+rate.accommodation+rate.transport;
-                      const cost = p.days*dailyTotal;
-                      const key = `${p.employee_id}|${p.demob_date}`;
-                      const isSynced = !!synced[key];
+                ? <tr><td colSpan={hideEmpFilter?9:11} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                : scopedStays.length===0
+                  ? <tr><td colSpan={hideEmpFilter?9:11} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No camp stays logged yet — click "+ Add Camp Stay" to record one.</td></tr>
+                  : scopedStays.map(s=>{
+                      const isSynced = !!synced[s.id];
                       return (
-                        <tr key={key} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}>
-                          {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{p.employee_id}</td>}
-                          {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{p.full_name}</td>}
-                          <td style={S.td}>{p.left_location||'—'}</td>
-                          <td style={S.td}>{p.demob_date}</td>
+                        <tr key={s.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9'}}>
+                          {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{s.employee_id}</td>}
+                          {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{s.full_name}</td>}
+                          <td style={S.td}>{s.camp_name}</td>
+                          <td style={S.td}>{s.from_date}</td>
+                          <td style={S.td}>{s.to_date||'—'}</td>
                           <td style={S.td}>
-                            {p.ongoing
+                            {s.ongoing
                               ? <span style={{background:'#fef3c7',color:'#92400e',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>Still in camp</span>
-                              : <span style={{color:'#166534',fontWeight:700,fontSize:'11px'}}>Remobilized {p.remob_date}</span>}
+                              : <span style={{color:'#166534',fontWeight:700,fontSize:'11px'}}>Closed</span>}
+                            {s.ongoing && s.suggestedCloseDate && (
+                              <div style={{marginTop:'4px'}}>
+                                <button
+                                  title="HR's mobilization history shows this employee back on site since this date"
+                                  style={{background:'#dbeafe',color:'#1d4ed8',border:'1px solid #93c5fd',fontSize:'10px',fontWeight:700,padding:'2px 6px',borderRadius:'8px',cursor:'pointer',whiteSpace:'nowrap'}}
+                                  onClick={()=>{ if (window.confirm(`HR shows ${s.full_name} remobilized on ${s.suggestedCloseDate}. Close this camp stay with that date?`)) closeStayWithHrDate(s.id, s.suggestedCloseDate); }}
+                                >HR: remobilized {s.suggestedCloseDate} — Close?</button>
+                              </div>
+                            )}
                           </td>
-                          <td style={{...S.td,fontWeight:700}}>{p.days}</td>
-                          <td style={S.td} title={`Food ${fmt2(rate.food)} + Accommodation ${fmt2(rate.accommodation)} + Transport ${fmt2(rate.transport)}`}>{fmt2(dailyTotal)}</td>
-                          <td style={{...S.td,fontWeight:700,color:'#92400e'}}>{fmt2(cost)}</td>
+                          <td style={{...S.td,fontWeight:700}}>{s.days}</td>
+                          <td style={S.td} title={`Food+Accom AED ${fmt2(s.foodAccomCost)} + Transport AED ${fmt2(s.transportCost)}`}>{fmt2(s.avgDailyRate)}</td>
+                          <td style={{...S.td,fontWeight:700,color:'#92400e'}}>{fmt2(s.cost)}</td>
                           <td style={S.td}>{isSynced ? <span style={{color:'#166534',fontWeight:700,fontSize:'11px'}}>✓ Synced</span> : <span style={{color:'#94a3b8',fontSize:'11px'}}>—</span>}</td>
+                          <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                            <button style={S.iconBtn} onClick={()=>editStay(s)}>&#9998;</button>
+                            <button style={S.iconBtn} onClick={()=>removeStay(s.id)}>&#128465;</button>
+                          </td>
                         </tr>
                       );
                     })}
@@ -6018,7 +6291,12 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       const type = String(r.cost_type||'');
       // Security deposits are recoveries/cash received, not operating cost. WPS overpayment recovery
       // is also not an extra cost because the WPS paid amount is already inside Monthly Costs salary.
-      if (type==='security_deposit' || type==='wps_overpayment_recovery') return;
+      // WPS underpayment payable is the mirror image (company owes employee extra) — per the Client
+      // Billing tab's own documentation it is carried as a payable and must NOT be deducted from
+      // expense, so it's excluded here too. (Previously only the first two were excluded, which made
+      // this dashboard's Total Expense / Net P/L disagree with the Employee Detail page by exactly
+      // the WPS-underpaid amount for any employee with one of these rows.)
+      if (type==='security_deposit' || type==='wps_overpayment_recovery' || type==='wps_underpayment_payable') return;
       const t=ensure(r.employee_id); if(t){ const v=n(r.amount); t.other+=v; t.expense+=v; }
     });
     Object.values(m).forEach(t=>{
@@ -6310,7 +6588,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
   const [exporting, setExporting] = useState(false);
   const [recovery, setRecovery] = useState(null);
   const [recLoading, setRecLoading] = useState(true);
-  const [lifetimeTotals, setLifetimeTotals] = useState({visa:0,flights:0,training:0,salary:0});
+  const [lifetimeTotals, setLifetimeTotals] = useState({visa:0,flights:0,training:0,salary:0,other:0});
   const [incomeTotal, setIncomeTotal] = useState(0);
 
   const loadRecovery = async () => {
@@ -6420,11 +6698,21 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
     const monthlyNetTotal = (monthly.data||[]).reduce((s,r)=>
       s + (Number(r.salary)||0)+(Number(r.food)||0)+(Number(r.accommodation)||0)+(Number(r.transport)||0)+(Number(r.other)||0)-(Number(r.salary_deductions)||0)
     ,0);
+    // Onboarding/Misc actual costs (agent commission, salary advance, camp costs, etc.) — excludes
+    // security_deposit (income, not a cost) and wps_overpayment_recovery/wps_underpayment_payable
+    // (WPS timing differences, not extra operating cost — see P&L Dashboard's rawPnlMap for the
+    // matching exclusion). Previously this whole table was left out of Lifetime Totals entirely,
+    // which understated Costs / overstated Net here vs the P&L Dashboard for any employee with a
+    // genuine Onboarding & Misc cost on file.
+    const otherActual = (other.data||[]).filter(r=>
+      r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery' && r.cost_type!=='wps_underpayment_payable'
+    ).reduce((s,r)=>s+(Number(r.amount)||0),0);
     setLifetimeTotals({
       visa:     sumAll(visa.data, 'cost'),
       flights:  sumAll(flights.data, 'cost'),
       training: sumAll(training.data, 'cost'),
       salary:   monthlyNetTotal,
+      other:    otherActual,
     });
     setRecLoading(false);
   };
@@ -6496,6 +6784,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
               ['Flight', lifetimeTotals.flights, false],
               ['Training', lifetimeTotals.training, false],
               ['Salary', lifetimeTotals.salary, false],
+              ['Other (Onboarding/Misc)', lifetimeTotals.other, false],
             ].map(([label,val])=>(
               <tr key={label} style={{borderTop:'1px solid #f1f5f9'}}>
                 <td style={{padding:'8px 14px',fontWeight:600,color:'#334155',whiteSpace:'nowrap'}}>{label}</td>
@@ -6504,7 +6793,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
             ))}
             <tr style={{borderTop:'1px solid #f1f5f9',background:'#fef2f2'}}>
               <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Total Cost</td>
-              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,color:'#dc2626',whiteSpace:'nowrap'}}>{fmt(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)}</td>
+              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,color:'#dc2626',whiteSpace:'nowrap'}}>{fmt(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)}</td>
             </tr>
             <tr style={{borderTop:'1px solid #f1f5f9'}}>
               <td style={{padding:'8px 14px',fontWeight:600,color:'#334155',whiteSpace:'nowrap'}}>Income</td>
@@ -6512,7 +6801,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
             </tr>
             <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
               <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Net (Income − Costs)</td>
-              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,whiteSpace:'nowrap'}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)} /></td>
+              <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,whiteSpace:'nowrap'}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)} /></td>
             </tr>
           </tbody>
         </table>
@@ -6531,21 +6820,22 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
 
       <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
         <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px'}}>Lifetime Totals — {employeeName}</div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'10px',fontSize:'12.5px'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'10px',fontSize:'12.5px'}}>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Visa Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.visa)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Flights Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.flights)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Training Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.training)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Salary Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.salary)}</div></div>
+          <div><div style={{color:'#94a3b8',fontWeight:600}}>Other Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.other)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Income Total</div><div style={{fontWeight:700,color:'#166534'}}>AED {fmt(incomeTotal)}</div></div>
           <div>
             <div style={{color:'#94a3b8',fontWeight:600}}>Net (Income − Costs)</div>
             {/* Effective net: gross costs minus amounts already recovered from salary — matches P&L Dashboard */}
             {recovery && recovery.totalRecovered>0
               ? <div style={{fontWeight:800}}>
-                  <AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)+recovery.totalRecovered} />
+                  <AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)+recovery.totalRecovered} />
                   <div style={{fontSize:'9.5px',color:'#94a3b8',fontWeight:600,marginTop:'2px'}}>net of AED {fmt(recovery.totalRecovered)} recovered</div>
                 </div>
-              : <div style={{fontWeight:800}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary)} /></div>
+              : <div style={{fontWeight:800}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other)} /></div>
             }
           </div>
         </div>
@@ -8283,7 +8573,7 @@ function App() {
   const [hrSalaryRows, setHrSalaryRows] = useState([]);
   const [hrSalaryStatus, setHrSalaryStatus] = useState({ source:null, error:null });
   const [mobDemobByEmp, setMobDemobByEmp] = useState({}); // employee_id -> [{mobilization_date,demobilization_date,location,supply}] full history, oldest first
-  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v10')!=='done');
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v11')!=='done');
   const [showHrBridge, setShowHrBridge] = useState(()=>localStorage.getItem('satco_hr_bridge_camp_v1')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
@@ -8512,7 +8802,7 @@ function App() {
             </div>
           )}
 
-          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v10','done');setShowMig(false);}} />}
+          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v11','done');setShowMig(false);}} />}
           {showHrBridge&&<HrBridgeCampBanner onDismiss={()=>{localStorage.setItem('satco_hr_bridge_camp_v1','done');setShowHrBridge(false);}} />}
           {tempCandError && (
             <div className="alert-card danger">
@@ -8530,6 +8820,7 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
 </script>
 </body>
 </html>
