@@ -613,6 +613,25 @@ const fmt      = (n) => (Number(n)||0).toLocaleString(undefined,{minimumFraction
 // AED 7,014.72 but only AED 6,000 was agreed to be recovered, with the remaining AED 1,014.72 a
 // straight company write-off. Blank/null recoverable_amount just falls back to the full cost.
 const recoverableCap = (row, amountKey) => (row && row.recoverable_amount!==null && row.recoverable_amount!==undefined && row.recoverable_amount!=='') ? Number(row.recoverable_amount)||0 : Number(row&&row[amountKey])||0;
+// Single source of truth for the "WPS paid vs employee's actual Client Billing share" split on
+// an invoice. Every tab that touches this number (Client Billing sync/summary/rows, Salary
+// Pipeline, P&L Dashboard, Employee Detail) calls this — nobody re-derives the formula locally
+// anymore — so a future formula change or bugfix happens in exactly one place instead of six.
+// Returns null if the invoice doesn't have enough data (received/hours/wps) to compute.
+const wpsInvoiceSplit = (inv, lines) => {
+  const lns = lines || [];
+  const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
+  const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
+  const received = Number(inv.received_amount_aed)||0;
+  const wps = Number(inv.wps_paid_aed)||0;
+  const impliedRate = received && totalCcy ? received/totalCcy : null;
+  const satcoAed = impliedRate!==null ? hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate : null;
+  const empShare = satcoAed!==null ? received-satcoAed : null;
+  // overpaid needs both empShare and an actual WPS payment entered; null means "not enough data yet"
+  // (distinct from 0, which means "exactly matched"). positive = employee owes company, negative = company owes employee.
+  const overpaid = (empShare!==null && wps) ? wps-empShare : null;
+  return { hours, totalCcy, received, wps, impliedRate, satcoAed, empShare, overpaid };
+};
 const monthStr = (d) => d ? d.slice(0,7) : '';
 const firstOfMonth = (m) => m ? m + '-01' : null;
 
@@ -958,13 +977,74 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON employee_camp_rates TO authenticated;
 -- changes for existing recoverable rows until someone deliberately sets a lower cap.
 ALTER TABLE employee_visa_costs ADD COLUMN IF NOT EXISTS recoverable_amount numeric;
 ALTER TABLE employee_flights ADD COLUMN IF NOT EXISTS recoverable_amount numeric;
-ALTER TABLE employee_training_costs ADD COLUMN IF NOT EXISTS recoverable_amount numeric;`;
+ALTER TABLE employee_training_costs ADD COLUMN IF NOT EXISTS recoverable_amount numeric;
+
+-- v10: PPE & Uniforms issuance tracking, and Hiring Pipeline History (imported from the master
+-- data spreadsheet — coveralls/shoes/goggles issued per employee, and historical recruitment
+-- pipeline records). Hiring Pipeline History has no employee_id foreign key: it's a standalone
+-- historical reference table (many rows predate the current employee_id scheme), searchable by
+-- name/trade, not tied into any P&L or recovery calculation.
+CREATE TABLE IF NOT EXISTS employee_ppe_issued (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id text NOT NULL,
+  full_name text,
+  issue_date date,
+  coverall_size text,
+  coverall_qty numeric DEFAULT 0,
+  shoes_size text,
+  shoes_qty numeric DEFAULT 0,
+  goggles_qty numeric DEFAULT 0,
+  notes text,
+  updated_at timestamptz DEFAULT now(),
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE employee_ppe_issued ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON employee_ppe_issued;
+CREATE POLICY "Allow authenticated full access" ON employee_ppe_issued FOR ALL TO authenticated USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE, DELETE ON employee_ppe_issued TO authenticated;
+
+CREATE TABLE IF NOT EXISTS hiring_pipeline_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_sheet text,
+  sr_no numeric,
+  emp_no text,
+  candidate_name text,
+  passport_no text,
+  trade text,
+  salary_aed numeric,
+  service_provided text,
+  document_received_date text,
+  visit_visa_apply_date text,
+  passport_status text,
+  visa_type text,
+  visit_visa_status text,
+  visit_visa_received_date text,
+  visit_visa_send_date text,
+  ticket_arrival_date text,
+  return_ticket text,
+  employment_visa_apply_date text,
+  employment_visa_received_date text,
+  date_of_joining text,
+  visa_medical_date text,
+  emirates_id_date text,
+  cicpa_apply_date text,
+  adnoc_medical_date text,
+  daman_insurance_apply_date text,
+  visa_stamping_date text,
+  bank_account_open_date text,
+  ticket_invoice_ref text,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE hiring_pipeline_history ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow authenticated full access" ON hiring_pipeline_history;
+CREATE POLICY "Allow authenticated full access" ON hiring_pipeline_history FOR ALL TO authenticated USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE, DELETE ON hiring_pipeline_history TO authenticated;`;
   return (
     <div style={{background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v9 Required — adds Recoverable Amount capping</div>
+      <div style={{fontWeight:800,fontSize:'13px',color:'#92400e',marginBottom:'6px'}}>Database Migration v10 Required — adds PPE Issuance &amp; Hiring Pipeline History</div>
       <div style={{fontSize:'12px',color:'#78350f',marginBottom:'10px'}}>Open your <strong>Supabase Finance project → SQL Editor</strong> and run the SQL below (once only — safe to re-run):</div>
       <pre style={{background:'#1e293b',color:'#f8fafc',padding:'12px 14px',borderRadius:'8px',fontSize:'11.5px',overflowX:'auto',margin:'0 0 10px',whiteSpace:'pre'}}>{sql}</pre>
-      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v9)</button>
+      <button onClick={onDismiss} style={{...S.btnPri,background:'#92400e',fontSize:'12px',padding:'7px 14px'}}>I've run the migration — dismiss (v10)</button>
     </div>
   );
 }
@@ -2583,15 +2663,9 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
     const fixes = [];
     for (const inv of invList) {
       const lns = linesByInvoice[inv.id]||[];
-      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
-      const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
-      const received = Number(inv.received_amount_aed)||0;
-      const wps = Number(inv.wps_paid_aed)||0;
-      if (!received || !totalCcy || !wps) continue;
-      const impliedRate = received/totalCcy;
-      const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
-      const empShare = received-satcoAed;
-      const overpaid = wps-empShare; // positive = employee owes company, negative = company owes employee
+      const split = wpsInvoiceSplit(inv, lns);
+      if (split.overpaid === null) continue;
+      const { overpaid } = split;
       const synced = syncMap[inv.id];
       const wantType = overpaid > 0.5 ? 'over' : overpaid < -0.5 ? 'under' : null;
       if (wantType) {
@@ -2711,24 +2785,18 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
   const totalEurDraft   = draftLines.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||Number(draft&&draft.brunel_rate_eur_hr)||0),0);
   const invoiceAedDraft = totalEurDraft*(Number(draft&&draft.invoice_exchange_rate)||0);
 
-  // Split calc: SATCO share = hours * satco_rate_eur_hr * (AED received / EUR invoiced)
+  // Split calc: SATCO share = hours * satco_rate_eur_hr * (AED received / EUR invoiced).
+  // Uses the same shared wpsInvoiceSplit() helper as every other WPS-vs-billing computation in
+  // the app, applied to the in-progress draft/draftLines instead of a saved invoice row.
   const splitCalc = useMemo(()=>{
     if (!draft) return null;
-    const received = Number(draft.received_amount_aed)||0;
-    if (!received || !totalEurDraft) return null;
-    const impliedRate = received/totalEurDraft;
-    const satcoEur = totalHoursDraft*(Number(draft.satco_rate_eur_hr)||4.5);
-    const satcoAed = satcoEur*impliedRate;
-    const paavanAed = received-satcoAed;
-    return { impliedRate, satcoAed, paavanAed };
-  },[draft, totalHoursDraft, totalEurDraft]);
+    return wpsInvoiceSplit(draft, draftLines);
+  },[draft, draftLines]);
 
   const wpsDeltaDraft = useMemo(()=>{
-    if (!draft || !splitCalc) return null;
-    const wps = Number(draft.wps_paid_aed)||0;
-    if (!wps) return null;
-    return wps - splitCalc.paavanAed; // positive = overpaid, needs recovery
-  },[draft, splitCalc]);
+    if (!splitCalc) return null;
+    return splitCalc.overpaid; // positive = overpaid, needs recovery; null = WPS amount not entered yet
+  },[splitCalc]);
 
   const save = async () => {
     if (!draft.employee_id||!draft.month) return alert('Employee ID and month are required');
@@ -2779,9 +2847,8 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
     // this invoice is preserved — recreating the row used to silently reset progress to zero.
     // Positive overpaid = employee owes company (wps_overpayment_recovery, recoverable from salary).
     // Negative overpaid = company owes employee (wps_underpayment_payable, a payable, not a deduction).
-    if (splitCalc) {
-      const wps = Number(draft.wps_paid_aed)||0;
-      const overpaid = wps - splitCalc.paavanAed;
+    if (splitCalc && splitCalc.overpaid !== null) {
+      const overpaid = splitCalc.overpaid;
       const { data: existing } = await db.from('employee_other_costs').select('id,cost_type,recovered_amount').eq('employee_id',draft.employee_id).ilike('notes', `%[INV:${invoiceId}]%`);
       const existingRow = existing && existing[0];
       const wantType = overpaid > 0.5 ? 'over' : overpaid < -0.5 ? 'under' : null;
@@ -2881,16 +2948,9 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
   const netSummary = useMemo(()=>{
     let empShareTotal=0, wpsTotal=0, invoiceCount=0;
     filtered.forEach(inv=>{
-      const lns = linesMap[inv.id]||[];
-      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
-      const eur = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
-      const received = Number(inv.received_amount_aed)||0;
-      const impliedRate = received && eur ? received/eur : null;
-      const satcoAed = impliedRate ? hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate : null;
-      const empShare = satcoAed!==null ? received-satcoAed : null;
-      const wps = Number(inv.wps_paid_aed)||0;
-      if (empShare===null || !wps) return;
-      empShareTotal += empShare; wpsTotal += wps; invoiceCount++;
+      const split = wpsInvoiceSplit(inv, linesMap[inv.id]);
+      if (split.empShare===null || !split.wps) return;
+      empShareTotal += split.empShare; wpsTotal += split.wps; invoiceCount++;
     });
     return { empShareTotal, wpsTotal, net: empShareTotal-wpsTotal, invoiceCount };
   },[filtered, linesMap]);
@@ -2989,11 +3049,11 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                 <div><label style={S.label}>Amount Received (AED)</label><input type="number" step="0.01" value={draft.received_amount_aed||''} onChange={e=>setDraft(d=>({...d,received_amount_aed:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
                 <div><label style={S.label}>Date Received</label><input type="date" value={draft.received_date||''} onChange={e=>setDraft(d=>({...d,received_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               </div>
-              {splitCalc && (
+              {splitCalc && splitCalc.satcoAed!==null && (
                 <div style={{background:'#fff',border:'1px solid #bbf7d0',borderRadius:'8px',padding:'10px 14px',fontSize:'12.5px'}}>
                   <div>Implied exchange rate on day of transmission: <strong>{fmt4(splitCalc.impliedRate)}</strong></div>
                   <div style={{marginTop:'4px'}}>SATCO share ({fmt2(totalHoursDraft)}h × {currencySymbol(draft.currency)}{draft.satco_rate_eur_hr||4.5} × rate): <strong style={{color:'#166534'}}>AED {fmt2(splitCalc.satcoAed)}</strong></div>
-                  <div>Employee ({draft.full_name||'employee'}) share: <strong style={{color:'#1d4ed8'}}>AED {fmt2(splitCalc.paavanAed)}</strong></div>
+                  <div>Employee ({draft.full_name||'employee'}) share: <strong style={{color:'#1d4ed8'}}>AED {fmt2(splitCalc.empShare)}</strong></div>
                 </div>
               )}
             </div>
@@ -3054,14 +3114,9 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
                       {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={12} />}
                       {g.rows.map(inv=>{
                         const lns = linesMap[inv.id]||[];
-                        const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
-                        const eur = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
-                        const received = Number(inv.received_amount_aed)||0;
-                        const impliedRate = received && eur ? received/eur : null;
-                        const satcoAed = impliedRate ? hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate : null;
-                        const empShare = satcoAed!==null ? received-satcoAed : null;
-                        const wps = Number(inv.wps_paid_aed)||0;
-                        const overpaid = (empShare!==null && wps) ? wps-empShare : null;
+                        const split = wpsInvoiceSplit(inv, lns);
+                        const { hours, satcoAed, empShare, wps, overpaid } = split;
+                        const eur = split.totalCcy;
                         // Recovery Status reads the same employee_other_costs row the P&L Dashboard uses,
                         // keyed to this specific invoice via the [INV:id] tag — this keeps both views in sync.
                         const synced = syncedRecovery[inv.id];
@@ -3477,6 +3532,277 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── PPE & UNIFORMS ISSUED ──────────────────────────────────────────
+function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportButton }) {
+  const [rows, setRows]     = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft]   = useState(null);
+  const [filters, setFilters] = useState(initialFilter||{});
+  useEffect(()=>{ if (initialFilter) setFilters(initialFilter); },[initialFilter&&initialFilter.employee_id]);
+
+  const load = async () => {
+    setLoading(true);
+    const {data,error} = await db.from('employee_ppe_issued').select('*').order('issue_date',{ascending:false});
+    if (!error) setRows(data||[]);
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[]);
+
+  const filterFields = [
+    ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID', width:'100px'},{key:'full_name',label:'Name',width:'150px'}]),
+    {key:'notes', label:'Remarks', width:'150px'},
+  ];
+  const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
+  const grouped  = useMemo(()=>groupByMonth(filtered,'issue_date'),[filtered]);
+  const COLS = hideEmpFilter?6:8;
+
+  const csvCols = [
+    {key:'employee_id',label:'Emp ID'},{key:'full_name',label:'Name'},
+    {key:'issue_date',label:'Issue Date'},{key:'coverall_size',label:'Coverall Size'},
+    {key:'coverall_qty',label:'Coverall Qty'},{key:'shoes_size',label:'Shoes Size'},
+    {key:'shoes_qty',label:'Shoes Qty'},{key:'goggles_qty',label:'Goggles Qty'},{key:'notes',label:'Remarks'},
+  ];
+
+  const blank = ()=>setDraft({employee_id:initialFilter&&initialFilter.employee_id||'',full_name:initialFilter&&initialFilter.full_name||'',issue_date:new Date().toISOString().slice(0,10),coverall_size:'',coverall_qty:'',shoes_size:'',shoes_qty:'',goggles_qty:'',notes:''});
+
+  const save = async () => {
+    if (!draft.employee_id) return alert('Employee is required');
+    const clean = {
+      employee_id:draft.employee_id, full_name:draft.full_name||null,
+      issue_date:draft.issue_date||new Date().toISOString().slice(0,10),
+      coverall_size:draft.coverall_size||null, coverall_qty:Number(draft.coverall_qty)||0,
+      shoes_size:draft.shoes_size||null, shoes_qty:Number(draft.shoes_qty)||0,
+      goggles_qty:Number(draft.goggles_qty)||0, notes:draft.notes||null,
+    };
+    const {error} = draft.id
+      ? await db.from('employee_ppe_issued').update(clean).eq('id',draft.id)
+      : await db.from('employee_ppe_issued').insert(clean);
+    if (error) return alert(error.message);
+    setDraft(null); load();
+  };
+  const remove = async (id)=>{ if(!window.confirm('Delete?'))return; await db.from('employee_ppe_issued').delete().eq('id',id); load(); };
+
+  return (
+    <div style={S.card}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',position:'sticky',top:'var(--stk-1)',zIndex:'15',flexWrap:'wrap',gap:'10px'}} className="tbl-sticky-toolbar" ref={measureToStk2}>
+        <div>
+          <div style={{fontWeight:800,fontSize:'14px'}}>PPE &amp; Uniforms Issued</div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>{filtered.length} issuance record(s) — coveralls, safety shoes, goggles</div>
+        </div>
+        <div style={{display:'flex',gap:'8px'}}>
+          {!hideExportButton && <button style={S.btnExp} onClick={()=>exportCSV(filtered,'ppe_issued',csvCols)}>Export CSV</button>}
+          <button style={S.btnPri} onClick={blank}>+ Add</button>
+        </div>
+      </div>
+
+      <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
+
+      {draft && (
+        <div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1.8fr 1fr',gap:'10px',marginBottom:'8px',alignItems:'end'}}>
+            <div>
+              <label style={S.label}>Employee</label>
+              <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
+                onChange={(id,name)=>setDraft(d=>({...d,employee_id:id,full_name:name}))} />
+            </div>
+            <div><label style={S.label}>Issue Date</label><input type="date" value={draft.issue_date} onChange={e=>setDraft(d=>({...d,issue_date:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr',gap:'10px',marginBottom:'8px',alignItems:'end'}}>
+            <div><label style={S.label}>Coverall Size</label><input value={draft.coverall_size||''} onChange={e=>setDraft(d=>({...d,coverall_size:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="e.g. L, XL" /></div>
+            <div><label style={S.label}>Coverall Qty</label><input type="number" value={draft.coverall_qty||''} onChange={e=>setDraft(d=>({...d,coverall_qty:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Shoes Size</label><input value={draft.shoes_size||''} onChange={e=>setDraft(d=>({...d,shoes_size:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Shoes Qty</label><input type="number" value={draft.shoes_qty||''} onChange={e=>setDraft(d=>({...d,shoes_qty:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Goggles Qty</label><input type="number" value={draft.goggles_qty||''} onChange={e=>setDraft(d=>({...d,goggles_qty:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+          </div>
+          <div style={{marginBottom:'8px'}}><label style={S.label}>Remarks</label><input value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <button style={S.btnPri} onClick={save}>Save</button>
+            <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+          <thead className="tbl-sticky-th"><tr>{(hideEmpFilter?['Date','Coverall','Shoes','Goggles','Remarks','']:['Emp ID','Name','Date','Coverall','Shoes','Goggles','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {loading
+              ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+              : grouped.length===0
+                ? <tr><td colSpan={COLS} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No PPE records yet':'No records match filters'}</td></tr>
+                : grouped.map(g=>(
+                    <React.Fragment key={g.month}>
+                      {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />}
+                      {g.rows.map(r=>(
+                        <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setDraft({...r,issue_date:r.issue_date||''})}>
+                          {!hideEmpFilter && <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>}
+                          {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
+                          <td style={S.td}>{r.issue_date||'—'}</td>
+                          <td style={S.td}>{r.coverall_size?`${r.coverall_size} × ${r.coverall_qty||0}`:'—'}</td>
+                          <td style={S.td}>{r.shoes_size?`${r.shoes_size} × ${r.shoes_qty||0}`:'—'}</td>
+                          <td style={S.td}>{r.goggles_qty||'—'}</td>
+                          <td style={S.tdWrap}>{r.notes||'—'}</td>
+                          <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                            <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r,issue_date:r.issue_date||''});}}>&#9998;</button>
+                            <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── HIRING PIPELINE HISTORY ────────────────────────────────────────
+// Read-mostly historical reference table imported from the recruitment master sheets
+// (Tracking List, Mission Visa RG, Mission Visa AURA). Not tied to any employee_id/P&L —
+// many rows predate the current employee_id scheme and use their own old EMP No numbering.
+const HIRING_DATE_FIELDS = [
+  ['document_received_date','Doc Received'],['visit_visa_apply_date','Visit Visa Apply'],
+  ['visit_visa_received_date','Visit Visa Received'],['visit_visa_send_date','Visit Visa Sent'],
+  ['ticket_arrival_date','Ticket & Arrival'],['employment_visa_apply_date','Employment Visa Apply'],
+  ['employment_visa_received_date','Employment Visa Received'],['date_of_joining','Date of Joining'],
+  ['visa_medical_date','Visa Medical'],['emirates_id_date','Emirates ID'],['cicpa_apply_date','CICPA Apply'],
+  ['adnoc_medical_date','ADNOC Medical'],['daman_insurance_apply_date','Daman Insurance'],
+  ['visa_stamping_date','Visa Stamping'],['bank_account_open_date','Bank Account Open'],
+];
+function HiringPipelineTab() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [draft, setDraft] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    const {data,error} = await db.from('hiring_pipeline_history').select('*').order('candidate_name',{ascending:true});
+    if (!error) setRows(data||[]);
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[]);
+
+  const sources = useMemo(()=>[...new Set(rows.map(r=>r.source_sheet).filter(Boolean))],[rows]);
+  const filtered = useMemo(()=>{
+    const q = search.trim().toLowerCase();
+    return rows.filter(r=>{
+      if (sourceFilter && r.source_sheet!==sourceFilter) return false;
+      if (!q) return true;
+      return (r.candidate_name||'').toLowerCase().includes(q) || (r.trade||'').toLowerCase().includes(q) || (r.emp_no||'').toLowerCase().includes(q) || (r.passport_no||'').toLowerCase().includes(q);
+    });
+  },[rows, search, sourceFilter]);
+
+  const csvCols = [
+    {key:'source_sheet',label:'Source'},{key:'sr_no',label:'Sr No'},{key:'emp_no',label:'Emp No'},
+    {key:'candidate_name',label:'Name'},{key:'passport_no',label:'Passport No'},{key:'trade',label:'Trade'},
+    {key:'salary_aed',label:'Salary AED'},{key:'service_provided',label:'Service Provided'},
+    ...HIRING_DATE_FIELDS.map(([k,l])=>({key:k,label:l})),
+    {key:'return_ticket',label:'Return Ticket'},{key:'passport_status',label:'Passport Status'},
+    {key:'visa_type',label:'Visa Type'},{key:'visit_visa_status',label:'Visit Visa Status'},
+    {key:'ticket_invoice_ref',label:'Ticket Invoice Ref'},
+  ];
+
+  const blank = () => setDraft({source_sheet:'Tracking List',candidate_name:'',trade:'',salary_aed:''});
+  const save = async () => {
+    if (!draft.candidate_name) return alert('Candidate name is required');
+    const clean = {...draft};
+    delete clean.id;
+    if (clean.salary_aed==='') clean.salary_aed = null; else clean.salary_aed = Number(clean.salary_aed)||null;
+    if (clean.sr_no==='') clean.sr_no = null; else clean.sr_no = Number(clean.sr_no)||null;
+    const {error} = draft.id
+      ? await db.from('hiring_pipeline_history').update(clean).eq('id',draft.id)
+      : await db.from('hiring_pipeline_history').insert(clean);
+    if (error) return alert(error.message);
+    setDraft(null); load();
+  };
+  const remove = async (id)=>{ if(!window.confirm('Delete this record?'))return; await db.from('hiring_pipeline_history').delete().eq('id',id); load(); };
+
+  return (
+    <div style={S.card}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',position:'sticky',top:'var(--stk-1)',zIndex:'15',flexWrap:'wrap',gap:'10px'}} className="tbl-sticky-toolbar" ref={measureToStk2}>
+        <div>
+          <div style={{fontWeight:800,fontSize:'14px'}}>Hiring Pipeline History</div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>{filtered.length} of {rows.length} historical recruitment record(s) — reference only, not linked to P&amp;L</div>
+        </div>
+        <div style={{display:'flex',gap:'8px'}}>
+          <button style={S.btnExp} onClick={()=>exportCSV(filtered,'hiring_pipeline_history',csvCols)}>Export CSV</button>
+          <button style={S.btnPri} onClick={blank}>+ Add</button>
+        </div>
+      </div>
+
+      <div style={{display:'flex',gap:'10px',padding:'10px 14px',borderBottom:'1px solid #e2e8f0',flexWrap:'wrap'}}>
+        <input placeholder="Search name, trade, emp no, passport no…" value={search} onChange={e=>setSearch(e.target.value)} style={{...S.input,width:'280px'}} />
+        <select value={sourceFilter} onChange={e=>setSourceFilter(e.target.value)} style={{...S.input,width:'200px'}}>
+          <option value="">All sources</option>
+          {sources.map(s=><option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+
+      {draft && (
+        <div style={{padding:'12px 14px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'8px'}}>
+            <div><label style={S.label}>Source Sheet</label>
+              <select value={draft.source_sheet||''} onChange={e=>setDraft(d=>({...d,source_sheet:e.target.value}))} style={{...S.input,width:'100%'}}>
+                <option value="Tracking List">Tracking List</option>
+                <option value="Mission Visa RG">Mission Visa RG</option>
+                <option value="Mission Visa AURA">Mission Visa AURA</option>
+              </select>
+            </div>
+            <div><label style={S.label}>Candidate Name</label><input value={draft.candidate_name||''} onChange={e=>setDraft(d=>({...d,candidate_name:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Emp No</label><input value={draft.emp_no||''} onChange={e=>setDraft(d=>({...d,emp_no:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Passport No</label><input value={draft.passport_no||''} onChange={e=>setDraft(d=>({...d,passport_no:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Trade</label><input value={draft.trade||''} onChange={e=>setDraft(d=>({...d,trade:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Salary AED</label><input type="number" value={draft.salary_aed||''} onChange={e=>setDraft(d=>({...d,salary_aed:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Service Provided</label><input value={draft.service_provided||''} onChange={e=>setDraft(d=>({...d,service_provided:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            <div><label style={S.label}>Visa Type</label><input value={draft.visa_type||''} onChange={e=>setDraft(d=>({...d,visa_type:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+          </div>
+          <div style={{fontSize:'11px',fontWeight:700,color:'#92400e',textTransform:'uppercase',margin:'10px 0 6px'}}>Milestone Dates (free text — source data has mixed formats)</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'8px',marginBottom:'8px'}}>
+            {HIRING_DATE_FIELDS.map(([k,l])=>(
+              <div key={k}><label style={S.label}>{l}</label><input value={draft[k]||''} onChange={e=>setDraft(d=>({...d,[k]:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
+            ))}
+          </div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <button style={S.btnPri} onClick={save}>Save</button>
+            <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>setDraft(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+          <thead className="tbl-sticky-th"><tr>{['Source','Emp No','Name','Trade','Salary AED','Date of Joining','Visa Type','Ticket & Arrival',''].map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {loading
+              ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+              : filtered.length===0
+                ? <tr><td colSpan={9} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{rows.length===0?'No records yet':'No records match your search'}</td></tr>
+                : filtered.map(r=>(
+                    <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setDraft({...r})}>
+                      <td style={{...S.td,fontSize:'11px',color:'#64748b'}}>{r.source_sheet||'—'}</td>
+                      <td style={{...S.td,fontFamily:'ui-monospace,monospace'}}>{r.emp_no||'—'}</td>
+                      <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.candidate_name}</td>
+                      <td style={S.td}>{r.trade||'—'}</td>
+                      <td style={S.td}>{r.salary_aed!=null?fmt(r.salary_aed):'—'}</td>
+                      <td style={S.td}>{r.date_of_joining||'—'}</td>
+                      <td style={S.td}>{r.visa_type||'—'}</td>
+                      <td style={S.td}>{r.ticket_arrival_date||'—'}</td>
+                      <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
+                        <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setDraft({...r});}}>&#9998;</button>
+                        <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
+                      </td>
+                    </tr>
+                  ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -4227,17 +4553,10 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     });
     (invoices.data||[]).forEach(inv => {
       const lns = linesByInvoice[inv.id] || [];
-      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
-      const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
-      const received = Number(inv.received_amount_aed)||0;
-      const wps = Number(inv.wps_paid_aed)||0;
-      if (!received || !totalCcy || !wps) return;
-      const impliedRate = received / totalCcy;
-      const satcoAed = hours * (Number(inv.satco_rate_eur_hr)||4.5) * impliedRate;
-      const empShare = received - satcoAed;
-      const overpaid = wps - empShare;
+      const split = wpsInvoiceSplit(inv, lns);
+      if (split.overpaid === null) return;
       const syncedInv = invoiceSyncMapPipeline[inv.id];
-      if (overpaid > 0.5 && (!syncedInv || syncedInv.recoverable)) addRecoverable(inv.employee_id, Math.round(overpaid*100)/100);
+      if (split.overpaid > 0.5 && (!syncedInv || syncedInv.recoverable)) addRecoverable(inv.employee_id, Math.round(split.overpaid*100)/100);
     });
 
     Object.keys(recoveryByInvoice).forEach(id => addRecovered(id, recoveryByInvoice[id]));
@@ -5654,15 +5973,9 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     });
     recoverySrc.invoices.forEach(inv=>{
       const lns = linesByInvoice[inv.id]||[];
-      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
-      const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
-      const received = Number(inv.received_amount_aed)||0;
-      const wps = Number(inv.wps_paid_aed)||0;
-      if (!received || !totalCcy || !wps) return;
-      const impliedRate = received/totalCcy;
-      const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
-      const empShare = received-satcoAed;
-      const overpaid = wps-empShare;
+      const split = wpsInvoiceSplit(inv, lns);
+      if (split.overpaid === null) return;
+      const { overpaid } = split;
       const synced = invoiceSyncMap[inv.id];
       if (overpaid > 0.5) { if (!synced || synced.recoverable) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100; }
       else if (overpaid < -0.5) ensure(inv.employee_id).payable += Math.round(Math.abs(overpaid)*100)/100;
@@ -6031,6 +6344,10 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
     const manualWpsRows = (other.data||[]).filter(r=>r.cost_type==='wps_overpayment_recovery' && r.recoverable && !/\[INV:[^\]]+\]/.test(String(r.notes||'')));
     const manualWpsRecoverable = manualWpsRows.reduce((s,r)=>s+(Number(r.amount)||0),0);
     const manualWpsRecovered   = manualWpsRows.reduce((s,r)=>s+(Number(r.recovered_amount)||0),0);
+    // Raw (un-gated) manual overpayment total — includes rows where "Recoverable" has been
+    // manually unchecked (e.g. to be netted against next month's WPS instead of a salary
+    // deduction). Used only for the factual Net WPS Position below, never for the recoverable pool.
+    const manualWpsOverpaidRaw = (other.data||[]).filter(r=>r.cost_type==='wps_overpayment_recovery' && !/\[INV:[^\]]+\]/.test(String(r.notes||''))).reduce((s,r)=>s+(Number(r.amount)||0),0);
 
     const linesByInvoice = {};
     (invoiceLines.data||[]).forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
@@ -6044,23 +6361,30 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       if (m) invoiceSyncMap[m[1]] = r;
     });
     let invoiceWpsRecoverable = 0;
+    let invoiceWpsOverpaidRaw = 0;
     let invoiceWpsPayable = 0;
     (invoices.data||[]).forEach(inv=>{
       const lns = linesByInvoice[inv.id]||[];
-      const hours = lns.reduce((s,l)=>s+(Number(l.hours)||0),0);
-      const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
-      const received = Number(inv.received_amount_aed)||0;
-      const wps = Number(inv.wps_paid_aed)||0;
-      if (!received || !totalCcy || !wps) return;
-      const impliedRate = received/totalCcy;
-      const satcoAed = hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate;
-      const empShare = received-satcoAed;
-      const overpaid = wps-empShare;
+      const split = wpsInvoiceSplit(inv, lns);
+      if (split.overpaid === null) return;
+      const { overpaid } = split;
       const synced = invoiceSyncMap[inv.id];
-      if (overpaid > 0.5) { if (!synced || synced.recoverable) invoiceWpsRecoverable += Math.round(overpaid*100)/100; }
+      if (overpaid > 0.5) {
+        // Raw fact (feeds Net WPS Position) — counts regardless of the manual "Recoverable" override.
+        invoiceWpsOverpaidRaw += Math.round(overpaid*100)/100;
+        // Recoverable pool (feeds Total Recoverable / salary-deduction suggestions) — respects the override.
+        if (!synced || synced.recoverable) invoiceWpsRecoverable += Math.round(overpaid*100)/100;
+      }
       else if (overpaid < -0.5) invoiceWpsPayable += Math.round(Math.abs(overpaid)*100)/100;
     });
     const wpsOverpaymentRecoverable = manualWpsRecoverable + invoiceWpsRecoverable;
+    // Raw overpaid total — independent of the "Recoverable" checkbox. A row being marked
+    // not-recoverable-via-salary doesn't erase the underlying fact that WPS paid more than the
+    // employee's actual Client Billing share that month; it just means it'll be settled a
+    // different way (netted against next month's WPS). Net WPS Position must use this, not the
+    // gated pool, otherwise unchecking a row makes it vanish from the net instead of just moving
+    // out of the salary-recovery bucket. Matches Client Billing tab's own Net WPS Position box.
+    const wpsOverpaymentRaw = manualWpsOverpaidRaw + invoiceWpsOverpaidRaw;
 
     // WPS underpayment — the mirror image: months where WPS paid was less than the employee's
     // actual Client Billing share, so the company owes the employee, not the other way round.
@@ -6082,7 +6406,10 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       wpsUnderpaymentPayable,
       // Net WPS position across this employee's whole history: positive = company still owes the
       // employee net of what's been recovered the other way; negative = employee still owes company.
-      netWpsPosition: wpsUnderpaymentPayable - Math.max(0, wpsOverpaymentRecoverable - (recoveredFromInvoices)),
+      // Uses the raw (un-gated) overpaid total — this is a factual balance, not a to-do list — so
+      // unchecking "Recoverable" on one invoice (because it'll be netted against next month's WPS
+      // instead of a salary deduction) still nets correctly against other months' underpayments.
+      netWpsPosition: wpsUnderpaymentPayable - Math.max(0, wpsOverpaymentRaw - recoveredFromInvoices),
     });
 
     // Lifetime totals (all entries, not just recoverable ones) for the Totals summary card.
@@ -7919,15 +8246,18 @@ const PORTAL_TABS = [
   { key:'training', icon:'🎓', label:'Trainings', short:'Courses', desc:'Training names, dates, costs, and recovery status.' },
   { key:'other', icon:'🧰', label:'Onboarding & Misc', short:'Other spend', desc:'Deposits, advances, medicals, PPE, and miscellaneous employee costs.' },
   { key:'camp', icon:'🏕️', label:'Camp Costs', short:'Off-site days', desc:'Food, accommodation and transport paid to the client/camp for days an employee is demobilized and not yet remobilized.' },
+  { key:'ppe', icon:'🥽', label:'PPE & Uniforms', short:'Coveralls, shoes', desc:'Coveralls, safety shoes, and goggles issued per employee.' },
   { key:'timesheets', icon:'⏱️', label:'Timesheets / Income', short:'Revenue input', desc:'Enter employee time and income for monthly P&L.' },
   { key:'billing', icon:'🧾', label:'Client Billing', short:'Invoices', desc:'Create client invoices, track rates, recovery, and billing status.' },
+  { key:'hiring_history', icon:'📜', label:'Hiring Pipeline History', short:'Recruitment archive', desc:'Historical recruitment/visa-pipeline records imported from the master data sheet — reference only, not linked to P&L.' },
 ];
 const PORTAL_TAB_MAP = Object.fromEntries(PORTAL_TABS.map(t=>[t.key,t]));
 const PORTAL_NAV_GROUPS = [
   { title:'Start here', items:['dashboard','salary_pipeline'] },
   { title:'Payroll', items:['salary_profiles','deductions','wps'] },
-  { title:'Employee Costs', items:['monthly','visa','flights','training','other','camp'] },
+  { title:'Employee Costs', items:['monthly','visa','flights','training','other','camp','ppe'] },
   { title:'Revenue', items:['timesheets','billing'] },
+  { title:'Archive', items:['hiring_history'] },
 ];
 
 function PortalGuide({ active }) {
@@ -7953,7 +8283,7 @@ function App() {
   const [hrSalaryRows, setHrSalaryRows] = useState([]);
   const [hrSalaryStatus, setHrSalaryStatus] = useState({ source:null, error:null });
   const [mobDemobByEmp, setMobDemobByEmp] = useState({}); // employee_id -> [{mobilization_date,demobilization_date,location,supply}] full history, oldest first
-  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v9')!=='done');
+  const [showMig,   setShowMig]   = useState(()=>localStorage.getItem('satco_migration_v10')!=='done');
   const [showHrBridge, setShowHrBridge] = useState(()=>localStorage.getItem('satco_hr_bridge_camp_v1')!=='done');
   const [detailEmp, setDetailEmp] = useState(null); // {id, name} or null
 
@@ -8100,9 +8430,11 @@ function App() {
           fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />}
         {tab==='other'     && <OtherCostsTable employees={employees} />}
         {tab==='camp'      && <CampCostsTab employees={employees} empMeta={empMeta} mobDemobByEmp={mobDemobByEmp} />}
+        {tab==='ppe'       && <PpeIssuedTable employees={employees} />}
         {tab==='monthly'   && <MonthlyCostsTable employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
         {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
         {tab==='billing'    && <ClientBillingTab employees={employees} />}
+        {tab==='hiring_history' && <HiringPipelineTab />}
         {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
       </>
     );
@@ -8180,7 +8512,7 @@ function App() {
             </div>
           )}
 
-          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v9','done');setShowMig(false);}} />}
+          {showMig&&<MigrationBanner onDismiss={()=>{localStorage.setItem('satco_migration_v10','done');setShowMig(false);}} />}
           {showHrBridge&&<HrBridgeCampBanner onDismiss={()=>{localStorage.setItem('satco_hr_bridge_camp_v1','done');setShowHrBridge(false);}} />}
           {tempCandError && (
             <div className="alert-card danger">
