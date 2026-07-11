@@ -3530,7 +3530,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
   const blankStay = (prefill) => setStayDraft({
     employee_id:(prefill&&prefill.employee_id)||(initialFilter&&initialFilter.employee_id)||'',
     full_name:(prefill&&prefill.full_name)||(initialFilter&&initialFilter.full_name)||'',
-    camp_id:'', from_date:(prefill&&prefill.from_date)||'', to_date:'', remarks:'',
+    camp_id:'', from_date:(prefill&&prefill.from_date)||'', to_date:(prefill&&prefill.to_date)||'', remarks:(prefill&&prefill.remarks)||'',
   });
   const editStay = (s) => setStayDraft({ ...s, from_date:s.from_date||'', to_date:s.to_date||'' });
   const saveStay = async () => {
@@ -3581,15 +3581,32 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
     return out;
   },[employees, effectiveMobDemobByEmp, ongoingStayEmpIds, todayStr]);
 
-  // Reconstruct EVERY demob→remob gap (closed periods as well as the current ongoing one, if any)
-  // from HR's full mobilization/demobilization history for one employee — same logic the old
-  // flat-rate version used, just repurposed here to find what's missing rather than to auto-book a
-  // cost. Needs the HR bridge's full-history view (v_finance_employee_mob_demob v2); on the older
+  // Some HR "assignments" aren't actually deployment to a client site — they're HR's way of
+  // recording that the employee is sitting at camp/head office awaiting deployment (e.g.
+  // "SATCO OFFICE"). Per the finance team: these should always be treated as camp time in their
+  // own right, using that assignment's own mobilization→demobilization dates, not just the gap
+  // that follows it. Add more names here if HR uses other internal/non-client holding locations.
+  const CAMP_LOCATION_NAMES = ['SATCO OFFICE'];
+  const isCampLocation = (loc) => !!loc && CAMP_LOCATION_NAMES.some(n => String(loc).trim().toUpperCase() === n.toUpperCase());
+
+  // Reconstruct EVERY off-site/camp period from HR's full mobilization/demobilization history for
+  // one employee — two kinds of period, both surfaced the same way:
+  //  1) The assignment itself is at a camp/holding location (e.g. "SATCO OFFICE") — the employee
+  //     was in camp for that row's own mobilization→demobilization span.
+  //  2) A demob→remob gap between two real assignments — off-site with no assignment record at all.
+  // Needs the HR bridge's full-history view (v_finance_employee_mob_demob v2); on the older
   // "latest record only" bridge this will only ever find the current gap, same as unloggedOffSite.
   const hrGapsFor = (employeeId) => {
     const rows = (effectiveMobDemobByEmp[employeeId]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
     const out = [];
     rows.forEach((row,i)=>{
+      if (isCampLocation(row.location) && row.mobilization_date) {
+        const endDate = row.demobilization_date || todayStr;
+        if (endDate > row.mobilization_date) {
+          const days = Math.max(0, Math.round((new Date(endDate+'T00:00:00Z') - new Date(row.mobilization_date+'T00:00:00Z'))/86400000));
+          if (days>0) out.push({ employee_id:employeeId, from_date:row.mobilization_date, to_date:row.demobilization_date||null, left_location:row.location||null, days });
+        }
+      }
       if (!row.demobilization_date) return;
       const next = rows[i+1];
       const remobDate = next && next.mobilization_date ? next.mobilization_date : null;
@@ -3617,6 +3634,34 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
     return out;
   },[employees, effectiveMobDemobByEmp, existingStayKeys, todayStr]);
 
+  // Real client-site deployments (location NOT a recognized camp/holding location like "SATCO
+  // OFFICE") are NOT auto-assumed to carry a camp cost — whether SATCO pays for food/accommodation
+  // while an employee is deployed at a client site depends entirely on that client's contract.
+  // So these are only ever surfaced as an opt-in list (never bulk-imported): Finance picks exactly
+  // which site deployments actually had SATCO covering camp, one at a time.
+  const hrSiteAssignmentsFor = (employeeId) => {
+    const rows = (effectiveMobDemobByEmp[employeeId]||[]).slice().sort((a,b)=>String(a.mobilization_date||'').localeCompare(String(b.mobilization_date||'')));
+    const out = [];
+    rows.forEach(row=>{
+      if (!row.mobilization_date || isCampLocation(row.location)) return;
+      const endDate = row.demobilization_date || todayStr;
+      if (endDate <= row.mobilization_date) return;
+      const days = Math.max(0, Math.round((new Date(endDate+'T00:00:00Z') - new Date(row.mobilization_date+'T00:00:00Z'))/86400000));
+      if (days<=0) return;
+      out.push({ employee_id:employeeId, from_date:row.mobilization_date, to_date:row.demobilization_date||null, location:row.location||null, days });
+    });
+    return out;
+  };
+  const missingSiteAssignments = useMemo(()=>{
+    const out = [];
+    employees.forEach(e=>{
+      hrSiteAssignmentsFor(e.employee_id).forEach(g=>{
+        if (!existingStayKeys.has(`${g.employee_id}|${g.from_date}`)) out.push({...g, full_name:e.full_name});
+      });
+    });
+    return out.sort((a,b)=>String(b.from_date||'').localeCompare(String(a.from_date||'')));
+  },[employees, effectiveMobDemobByEmp, existingStayKeys, todayStr]);
+
   const [importingHistory, setImportingHistory] = useState(false);
   // Bulk-creates a Camp Stay stub (dates only, no camp assigned yet) for every HR gap not already
   // logged — so past off-site periods only need a camp picked per row, never full re-entry of dates.
@@ -3628,7 +3673,7 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
       employee_id:g.employee_id, full_name:g.full_name,
       camp_id:null, camp_name:null,
       from_date:g.from_date, to_date:g.to_date,
-      remarks:`Imported from HR mobilization history${g.left_location?` — left ${g.left_location}`:''} — assign a camp to complete costing.`,
+      remarks:`Imported from HR mobilization history${g.left_location?` — ${g.left_location}`:''} — assign a camp to complete costing.`,
     }));
     const { error } = await db.from('employee_camp_stays').insert(rows);
     setImportingHistory(false);
@@ -3996,6 +4041,23 @@ function CampCostsTab({ employees, empMeta, mobDemobByEmp, initialFilter, hideEm
         </div>
       )}
 
+      {missingSiteAssignments.length>0 && (
+        <div style={{...S.card,padding:'14px 16px',background:'#fdf4ff',border:'1px solid #e9d5ff'}}>
+          <div style={{fontWeight:800,fontSize:'12.5px',color:'#7e22ce',marginBottom:'4px'}}>Client Site Assignments — Log Only If SATCO Pays Camp Cost There ({missingSiteAssignments.length})</div>
+          <div style={{fontSize:'11.5px',color:'#6b21a8',marginBottom:'8px'}}>These are real deployments to a client site per HR (not head office/camp). Whether SATCO covers food &amp; accommodation while deployed depends on that client's contract — nothing is added automatically. Use "+ Log Camp Stay" only for the ones your contract says SATCO pays for.</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'6px',maxHeight:'220px',overflowY:'auto'}}>
+            {missingSiteAssignments.map((g,i)=>(
+              <div key={g.employee_id+'|'+g.from_date+'|'+i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:'12px',background:'#fff',borderRadius:'6px',padding:'6px 10px',gap:'10px'}}>
+                <span><b>{g.full_name}</b> <span style={{color:'#94a3b8',fontFamily:'ui-monospace,monospace'}}>({g.employee_id})</span> — {g.location||'site'}, {g.from_date} → {g.to_date||'ongoing'} ({g.days} day{g.days===1?'':'s'})</span>
+                <button style={{...S.btnPri,background:'#7e22ce',fontSize:'11.5px',padding:'5px 10px',whiteSpace:'nowrap'}}
+                  onClick={()=>blankStay({employee_id:g.employee_id, full_name:g.full_name, from_date:g.from_date, to_date:g.to_date||'', remarks:`Client site assignment — ${g.location||'site'} — SATCO pays camp cost per contract.`})}
+                >+ Log Camp Stay</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={S.card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
           <div>
@@ -4203,7 +4265,167 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
   };
   const remove = async (id)=>{ if(!window.confirm('Delete?'))return; await db.from('employee_ppe_issued').delete().eq('id',id); load(); };
 
+  // ── Monthly PPE Cost Report — same idea as the Camp Cost monthly report: split every issuance
+  // by calendar month (of issue_date) per employee, so the client or accounts team can see exactly
+  // what PPE cost was incurred in a given month rather than only a lifetime running total.
+  const monthLabelFor = (monthKey) => {
+    if (!monthKey) return '';
+    const [y,m] = monthKey.split('-').map(Number);
+    return new Date(y, m-1, 1).toLocaleString('en-GB',{month:'long',year:'numeric'});
+  };
+  const monthlyPpeBreakdown = useMemo(()=>
+    filtered
+      .filter(r=>r.issue_date)
+      .map(r=>({
+        employee_id:r.employee_id, full_name:r.full_name, month:String(r.issue_date).slice(0,7),
+        coverall_qty:Number(r.coverall_qty)||0, shoes_qty:Number(r.shoes_qty)||0, goggles_qty:Number(r.goggles_qty)||0,
+        total_cost:Number(r.total_cost)||0,
+      }))
+      .sort((a,b)=> a.month!==b.month ? (a.month<b.month?-1:1) : (a.employee_id<b.employee_id?-1:a.employee_id>b.employee_id?1:0)),
+  [filtered]);
+  const ppeReportMonths = useMemo(()=>{
+    const set = new Set(monthlyPpeBreakdown.map(r=>r.month));
+    return [...set].sort().reverse();
+  },[monthlyPpeBreakdown]);
+  const [ppeReportMonthFilter, setPpeReportMonthFilter] = useState('');
+  const scopedPpeMonthlyRows = useMemo(()=>
+    ppeReportMonthFilter ? monthlyPpeBreakdown.filter(r=>r.month===ppeReportMonthFilter) : monthlyPpeBreakdown
+  ,[monthlyPpeBreakdown, ppeReportMonthFilter]);
+  const ppeMonthlyReportTotals = useMemo(()=> scopedPpeMonthlyRows.reduce((a,r)=>({
+    coverall:a.coverall+r.coverall_qty, shoes:a.shoes+r.shoes_qty, goggles:a.goggles+r.goggles_qty, total:a.total+r.total_cost,
+  }),{coverall:0,shoes:0,goggles:0,total:0}),[scopedPpeMonthlyRows]);
+  const ppeMonthlyRowsForExport = () => scopedPpeMonthlyRows.map(r=>({...r, month_label:monthLabelFor(r.month)}));
+
+  const exportPpeMonthlyExcel = () => {
+    const rows = ppeMonthlyRowsForExport();
+    const sheetData = rows.map(r=>({
+      'Emp ID':r.employee_id, 'Name':r.full_name, 'Month':r.month_label,
+      'Coverall Qty':r.coverall_qty, 'Shoes Qty':r.shoes_qty, 'Goggles Qty':r.goggles_qty, 'Total (AED)':r.total_cost,
+    }));
+    sheetData.push({});
+    sheetData.push({ 'Name':'TOTAL', 'Coverall Qty':ppeMonthlyReportTotals.coverall, 'Shoes Qty':ppeMonthlyReportTotals.shoes, 'Goggles Qty':ppeMonthlyReportTotals.goggles, 'Total (AED)':Math.round(ppeMonthlyReportTotals.total*100)/100 });
+    const ws = XLSX.utils.json_to_sheet(sheetData);
+    ws['!cols'] = [{wch:10},{wch:22},{wch:18},{wch:12},{wch:10},{wch:12},{wch:12}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'PPE Cost Report');
+    XLSX.writeFile(wb, `ppe_cost_report_${ppeReportMonthFilter||'all_months'}.xlsx`);
+  };
+
+  const exportPpeMonthlyPDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation:'landscape', unit:'pt', format:'a4' });
+    doc.setFontSize(14); doc.setFont(undefined,'bold');
+    doc.text('SATCO Arabia — PPE Cost Report', 40, 40);
+    doc.setFontSize(10); doc.setFont(undefined,'normal');
+    doc.text(`Period: ${ppeReportMonthFilter?monthLabelFor(ppeReportMonthFilter):'All months'}   ·   Generated: ${new Date().toLocaleDateString('en-GB')}`, 40, 58);
+    const bodyRows = ppeMonthlyRowsForExport().map(r=>[r.employee_id, r.full_name, r.month_label, r.coverall_qty, r.shoes_qty, r.goggles_qty, fmt2(r.total_cost)]);
+    bodyRows.push(['','','TOTAL', ppeMonthlyReportTotals.coverall, ppeMonthlyReportTotals.shoes, ppeMonthlyReportTotals.goggles, fmt2(ppeMonthlyReportTotals.total)]);
+    doc.autoTable({
+      startY: 72,
+      head: [['Emp ID','Name','Month','Coverall Qty','Shoes Qty','Goggles Qty','Total (AED)']],
+      body: bodyRows,
+      styles: { fontSize:8.5 },
+      headStyles: { fillColor:[15,23,42] },
+      didParseCell: (data)=>{ if (data.section==='body' && data.row.index===bodyRows.length-1) { data.cell.styles.fontStyle='bold'; data.cell.styles.fillColor=[254,243,199]; } },
+    });
+    doc.save(`ppe_cost_report_${ppeReportMonthFilter||'all_months'}.pdf`);
+  };
+
+  // Word (.docx) on SATCO letterhead — same pattern as the Camp Cost Report, ready to forward.
+  const [exportingPpeDocx, setExportingPpeDocx] = useState(false);
+  const exportPpeMonthlyDocx = async () => {
+    setExportingPpeDocx(true);
+    try {
+      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, AlignmentType,
+              BorderStyle, WidthType, ShadingType, VerticalAlign, ImageRun, Header, Footer } = window.docx;
+
+      const border = { style: BorderStyle.SINGLE, size: 1, color: "999999" };
+      const borders = { top: border, bottom: border, left: border, right: border };
+      const cellMargins = { top: 60, bottom: 60, left: 100, right: 100 };
+      const colWidths = [1300, 2800, 1800, 1500, 1400, 1500, 1500];
+      const tableWidth = colWidths.reduce((a,b)=>a+b,0);
+
+      function headerCell(text, width) {
+        return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, shading:{fill:'E8E8E8',type:ShadingType.CLEAR}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
+          children:[new Paragraph({alignment:AlignmentType.CENTER, children:[new TextRun({text, bold:true, size:16})]})] });
+      }
+      function cell(text, width, opts) {
+        opts = opts||{};
+        return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER, shading: opts.shade?{fill:opts.shade,type:ShadingType.CLEAR}:undefined,
+          children:[new Paragraph({alignment:opts.align||AlignmentType.LEFT, children:[new TextRun({text:String(text), bold:!!opts.bold, size:16})]})] });
+      }
+
+      const rows = ppeMonthlyRowsForExport();
+      const bodyRows = rows.map(r=>new TableRow({ children:[
+        cell(r.employee_id, colWidths[0]),
+        cell(r.full_name||'', colWidths[1]),
+        cell(r.month_label, colWidths[2], {align:AlignmentType.CENTER}),
+        cell(String(r.coverall_qty), colWidths[3], {align:AlignmentType.CENTER}),
+        cell(String(r.shoes_qty), colWidths[4], {align:AlignmentType.CENTER}),
+        cell(String(r.goggles_qty), colWidths[5], {align:AlignmentType.CENTER}),
+        cell(fmt2(r.total_cost), colWidths[6], {align:AlignmentType.RIGHT, bold:true}),
+      ]}));
+      const totalsRow = new TableRow({ children:[
+        cell('', colWidths[0], {shade:'FEF3C7'}), cell('TOTAL', colWidths[1], {bold:true, shade:'FEF3C7'}), cell('', colWidths[2], {shade:'FEF3C7'}),
+        cell(String(ppeMonthlyReportTotals.coverall), colWidths[3], {align:AlignmentType.CENTER, bold:true, shade:'FEF3C7'}),
+        cell(String(ppeMonthlyReportTotals.shoes), colWidths[4], {align:AlignmentType.CENTER, bold:true, shade:'FEF3C7'}),
+        cell(String(ppeMonthlyReportTotals.goggles), colWidths[5], {align:AlignmentType.CENTER, bold:true, shade:'FEF3C7'}),
+        cell(fmt2(ppeMonthlyReportTotals.total), colWidths[6], {align:AlignmentType.RIGHT, bold:true, shade:'FEF3C7'}),
+      ]});
+
+      const headerImage = new ImageRun({
+        type: 'png', data: base64ToUint8Array(LETTERHEAD_HEADER_B64),
+        transformation: { width: 540, height: 59 },
+        altText: { title: 'SATCO Letterhead', description: 'SATCO Arabia General Contracting letterhead', name: 'Letterhead Header' },
+      });
+      const footerImage = new ImageRun({
+        type: 'png', data: base64ToUint8Array(LETTERHEAD_FOOTER_B64),
+        transformation: { width: 540, height: 37 },
+        altText: { title: 'SATCO Footer', description: 'SATCO Arabia General Contracting contact footer', name: 'Letterhead Footer' },
+      });
+
+      const periodLabel = ppeReportMonthFilter ? monthLabelFor(ppeReportMonthFilter) : 'All months';
+      const doc = new Document({
+        styles: { default: { document: { run: { font:'Arial', size:20 } } } },
+        sections: [{
+          properties: { page: { size:{width:16838,height:11906}, orientation:'landscape', margin:{top:1500,right:900,bottom:1200,left:900,header:500,footer:400} } },
+          headers: { default: new Header({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[headerImage] }) ] }) },
+          footers: { default: new Footer({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[footerImage] }) ] }) },
+          children: [
+            new Paragraph({ alignment:AlignmentType.CENTER, spacing:{before:120,after:60},
+              children:[ new TextRun({ text:'PPE & UNIFORMS COST REPORT', bold:true, size:26 }) ] }),
+            new Paragraph({ alignment:AlignmentType.CENTER, spacing:{after:240},
+              children:[ new TextRun({ text:`Period: ${periodLabel}   ·   Generated: ${new Date().toLocaleDateString('en-GB')}`, size:18 }) ] }),
+            new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:colWidths, rows:[
+              new TableRow({ children:[
+                headerCell('Emp ID', colWidths[0]), headerCell('Name', colWidths[1]), headerCell('Month', colWidths[2]),
+                headerCell('Coverall Qty', colWidths[3]), headerCell('Shoes Qty', colWidths[4]), headerCell('Goggles Qty', colWidths[5]), headerCell('Total (AED)', colWidths[6]),
+              ]}),
+              ...bodyRows,
+              totalsRow,
+            ]}),
+            new Paragraph({ spacing:{before:240,after:60}, children:[new TextRun({text:'For submission to the client — please cross-check against PPE issuance records for the same period.', italics:true, size:16})] }),
+            new Paragraph({ spacing:{before:200}, children:[new TextRun({text:'Best regards,', size:18})] }),
+            new Paragraph({ spacing:{after:60}, children:[new TextRun({text:'SATCO Arabia General Contracting — Finance Department', bold:true, size:18})] }),
+            new Paragraph({ children:[new TextRun({text:'Computer generated report — no original signature or stamp required.', italics:true, size:16})] }),
+          ],
+        }],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `PPE_Cost_Report_${ppeReportMonthFilter||'all_months'}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExportingPpeDocx(false);
+    }
+  };
+
   return (
+    <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
     <div style={S.card}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',position:'sticky',top:'var(--stk-1)',zIndex:'15',flexWrap:'wrap',gap:'10px'}} className="tbl-sticky-toolbar" ref={measureToStk2}>
         <div>
@@ -4276,6 +4498,53 @@ function PpeIssuedTable({ employees, initialFilter, hideEmpFilter, hideExportBut
           </tbody>
         </table>
       </div>
+    </div>
+
+    <div style={S.card}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap',gap:'10px'}}>
+        <div>
+          <div style={{fontWeight:800,fontSize:'14px'}}>Monthly PPE Cost Report</div>
+          <div style={{fontSize:'12px',color:'#64748b'}}>PPE issuance and cost per employee, split by calendar month — forward to the client for cross-check or keep for audit.</div>
+        </div>
+        <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+          <select value={ppeReportMonthFilter} onChange={e=>setPpeReportMonthFilter(e.target.value)} style={{...S.input,minWidth:'170px'}}>
+            <option value="">All months</option>
+            {ppeReportMonths.map(m=><option key={m} value={m}>{monthLabelFor(m)}</option>)}
+          </select>
+          <button style={S.btnExp} disabled={!scopedPpeMonthlyRows.length} onClick={exportPpeMonthlyExcel}>Export Excel</button>
+          <button style={{...S.btnExp,background:'#7c2d12'}} disabled={!scopedPpeMonthlyRows.length} onClick={exportPpeMonthlyPDF}>Export PDF</button>
+          <button style={{...S.btnExp,background:'#1d4ed8'}} disabled={!scopedPpeMonthlyRows.length||exportingPpeDocx} onClick={exportPpeMonthlyDocx}>{exportingPpeDocx?'Preparing…':'Export Word (Letterhead)'}</button>
+        </div>
+      </div>
+
+      {scopedPpeMonthlyRows.length>0 && (
+        <div style={{margin:'14px',padding:'12px 16px',borderRadius:'10px',border:'1px solid #fde68a',background:'#fffbeb'}}>
+          <div style={{fontSize:'12.5px',color:'#78350f',marginBottom:'6px'}}>{scopedPpeMonthlyRows.length} row(s){ppeReportMonthFilter?` in ${monthLabelFor(ppeReportMonthFilter)}`:' across all months'}</div>
+          <div style={{fontSize:'15px',fontWeight:800,color:'#92400e'}}>Total: AED {fmt2(ppeMonthlyReportTotals.total)} <span style={{fontSize:'12px',fontWeight:600,color:'#78350f'}}>(Coverall {ppeMonthlyReportTotals.coverall} · Shoes {ppeMonthlyReportTotals.shoes} · Goggles {ppeMonthlyReportTotals.goggles})</span></div>
+        </div>
+      )}
+
+      <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'480px'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+          <thead className="tbl-sticky-th"><tr>{['Emp ID','Name','Month','Coverall Qty','Shoes Qty','Goggles Qty','Total (AED)'].map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {scopedPpeMonthlyRows.length===0
+              ? <tr><td colSpan={7} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No PPE issuance data for this selection.</td></tr>
+              : scopedPpeMonthlyRows.map((r,i)=>(
+                <tr key={i} style={{borderTop:'1px solid #f1f5f9'}}>
+                  <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{r.employee_id}</td>
+                  <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>
+                  <td style={S.td}>{monthLabelFor(r.month)}</td>
+                  <td style={S.td}>{r.coverall_qty||'—'}</td>
+                  <td style={S.td}>{r.shoes_qty||'—'}</td>
+                  <td style={S.td}>{r.goggles_qty||'—'}</td>
+                  <td style={{...S.td,fontWeight:700,color:'#92400e'}}>{fmt2(r.total_cost)}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
     </div>
   );
 }
