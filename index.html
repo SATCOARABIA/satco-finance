@@ -6210,17 +6210,26 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   //    like every other recoverable cost type.
   const recoveryMap = useMemo(()=>{
     const m = {};
-    const ensure = (id) => { id=canonEmpId(id); if (!id) return { recoverable:0, recovered:0, payable:0 }; if (!m[id]) m[id] = { recoverable:0, recovered:0, payable:0 }; return m[id]; };
+    const blank = () => ({ recoverable:0, recovered:0, payable:0, overpaidRaw:0, recoveredForNet:0 });
+    const ensure = (id) => { id=canonEmpId(id); if (!id) return blank(); if (!m[id]) m[id] = blank(); return m[id]; };
     recoverySrc.visa.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
     recoverySrc.flights.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
     recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
     recoverySrc.other.forEach(r=>{ if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') ensure(r.employee_id).recoverable += Number(r.amount)||0; });
     recoverySrc.other.forEach(r=>{ if (r.cost_type==='security_deposit') ensure(r.employee_id).recovered += Number(r.amount)||0; });
     // Manual WPS-overpayment rows (no [INV:id] tag) — use the stored amount/recovered_amount directly.
+    // overpaidRaw counts every such row regardless of the "Recoverable" checkbox (a row being marked
+    // not-recoverable-via-salary doesn't erase the underlying fact that WPS overpaid that month —
+    // it just means it'll be settled a different way) — this feeds Net WPS Position below, mirroring
+    // the Employee Detail page's identical wpsOverpaymentRaw logic so the two can never disagree.
     recoverySrc.other.forEach(r=>{
-      if (r.cost_type==='wps_overpayment_recovery' && r.recoverable && !/\[INV:[^\]]+\]/.test(String(r.notes||''))) {
-        ensure(r.employee_id).recoverable += Number(r.amount)||0;
-        ensure(r.employee_id).recovered  += Number(r.recovered_amount)||0;
+      if (r.cost_type==='wps_overpayment_recovery' && !/\[INV:[^\]]+\]/.test(String(r.notes||''))) {
+        ensure(r.employee_id).overpaidRaw += Number(r.amount)||0;
+        if (r.recoverable) {
+          ensure(r.employee_id).recoverable += Number(r.amount)||0;
+          ensure(r.employee_id).recovered  += Number(r.recovered_amount)||0;
+          ensure(r.employee_id).recoveredForNet += Number(r.recovered_amount)||0;
+        }
       }
     });
     // Manual WPS-underpayment rows (no [INV:id] tag) — the mirror image: a payable to the employee,
@@ -6250,11 +6259,29 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       if (split.overpaid === null) return;
       const { overpaid } = split;
       const synced = invoiceSyncMap[inv.id];
-      if (overpaid > 0.5) { if (!synced || synced.recoverable) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100; }
+      if (overpaid > 0.5) {
+        // Raw fact (feeds Net WPS Position) — counts regardless of the manual "Recoverable" override.
+        ensure(inv.employee_id).overpaidRaw += Math.round(overpaid*100)/100;
+        if (!synced || synced.recoverable) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100;
+      }
       else if (overpaid < -0.5) ensure(inv.employee_id).payable += Math.round(Math.abs(overpaid)*100)/100;
     });
-    // Logged recoveries against those invoices count as recovered.
-    recoverySrc.invoiceRecoveries.forEach(r=>{ ensure(r.employee_id).recovered += Number(r.amount_aed)||0; });
+    // Logged recoveries against those invoices count as recovered — both toward the general
+    // "recovered" total and specifically toward netting down WPS overpayment for Net WPS Position.
+    recoverySrc.invoiceRecoveries.forEach(r=>{
+      ensure(r.employee_id).recovered += Number(r.amount_aed)||0;
+      ensure(r.employee_id).recoveredForNet += Number(r.amount_aed)||0;
+    });
+
+    // Net WPS Position: positive = company still owes the employee (net of any offsetting
+    // overpayment that hasn't been recovered another way); negative = employee still owes company.
+    // Mirrors the Employee Detail page's Net WPS Position formula exactly — this used to be a raw,
+    // un-netted "payable" figure here, which could show e.g. AED 7,790.08 owed to an employee while
+    // the Employee Detail page correctly showed AED 821.77 net (after an offsetting unrecovered
+    // overpayment elsewhere), a mismatch with no way to reconcile from this table alone.
+    Object.values(m).forEach(t=>{
+      t.netWpsPosition = Math.round((t.payable - Math.max(0, t.overpaidRaw - t.recoveredForNet))*100)/100;
+    });
 
     return m;
   },[recoverySrc]);
@@ -6336,12 +6363,12 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   const G = summary.reduce((a,r)=>{
     const id = canonEmpId(r.employee_id);
     const raw = rawPnlMap[id];
-    const rec = recoveryMap[id]||{recoverable:0,recovered:0,payable:0};
+    const rec = recoveryMap[id]||{recoverable:0,recovered:0,payable:0,overpaidRaw:0,recoveredForNet:0,netWpsPosition:0};
     const income = raw ? Number(raw.income)||0 : Number(r.lifetime_income)||0;
     const grossExpense = raw ? Number(raw.expense)||0 : Number(r.lifetime_expense)||0;
     const netExpense = Math.max(0, grossExpense - (Number(rec.recovered)||0));
-    return {income:a.income+income, expense:a.expense+netExpense, net:a.net+(income-netExpense), payable:a.payable+(Number(rec.payable)||0)};
-  },{income:0,expense:0,net:0,payable:0});
+    return {income:a.income+income, expense:a.expense+netExpense, net:a.net+(income-netExpense), netWpsPosition:a.netWpsPosition+(Number(rec.netWpsPosition)||0)};
+  },{income:0,expense:0,net:0,netWpsPosition:0});
   const totalDeposits=Object.values(depositMap).reduce((s,v)=>s+v,0);
 
   // Export P&L summary
@@ -6352,12 +6379,14 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     {key:'lifetime_net',label:'Net P/L (AED)'},{key:'lifetime_onboarding_cost',label:'Onboarding Cost'},
     {key:'advance_outstanding',label:'Advance Outstanding'},{key:'deposits_received',label:'Deposits Received (info only — already included in Recovered)'},
     {key:'recoverable_total',label:'Recoverable'},{key:'recovered_plus_deposits',label:'Recovered / Deposits Received'},{key:'balance_to_recover',label:'Balance to Recover'},
-    {key:'wps_payable',label:'WPS Payable to Employee (Underpayment)'},
+    {key:'wps_overpaid_raw',label:'WPS Overpaid vs Billing (gross, employee owes company)'},
+    {key:'wps_underpaid_raw',label:'WPS Underpaid vs Billing (gross, payable to employee)'},
+    {key:'wps_net_position',label:'WPS Net Position (+ = owe employee, - = employee owes company)'},
     {key:'idle_months',label:'Idle Months'},
   ];
   const pnlExportRows = useMemo(()=>filteredSummary.map(r=>{
     const id=canonEmpId(r.employee_id);
-    const rec=recoveryMap[id]||{recoverable:0,recovered:0,payable:0};
+    const rec=recoveryMap[id]||{recoverable:0,recovered:0,payable:0,overpaidRaw:0,recoveredForNet:0,netWpsPosition:0};
     const dep=depositMap[id]||0;
     const raw=rawPnlMap[id];
     const cat=categoryTotals[id]||{visa:0,salary:0,income:0,expense:0};
@@ -6368,7 +6397,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     // rec.recovered already includes deposits received (folded in once when recoveryMap is built) — do not add dep again.
     return {...r, lifetime_income:income, lifetime_expense:netExpense, lifetime_net:net,
       deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered, balance_to_recover:rec.recoverable-rec.recovered,
-      wps_payable:rec.payable,
+      wps_overpaid_raw:rec.overpaidRaw, wps_underpaid_raw:rec.payable, wps_net_position:rec.netWpsPosition,
       visa_total:cat.visa, salary_total:cat.salary, income_total:cat.income};
   }),[filteredSummary,recoveryMap,depositMap,categoryTotals,rawPnlMap]);
 
@@ -6396,7 +6425,15 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Income (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#166534',marginTop:'6px'}}>AED {fmt(G.income)}</div>{totalDeposits>0&&<div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>AED {fmt(totalDeposits)} deposits shown under recovered, not income</div>}</div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Total Expense (all employees)</div><div style={{fontSize:'22px',fontWeight:800,color:'#dc2626',marginTop:'6px'}}>AED {fmt(G.expense)}</div></div>
         <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>Net Profit / Loss</div><div style={{fontSize:'22px',marginTop:'6px'}}><AmountTag value={G.net} /></div></div>
-        <div style={{...S.card,padding:'16px'}}><div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>WPS Payable to Employees</div><div style={{fontSize:'22px',fontWeight:800,color:G.payable>0?'#1d4ed8':'#94a3b8',marginTop:'6px'}}>AED {fmt(G.payable)}</div><div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>Company owes staff — WPS paid less than their Client Billing share</div></div>
+        <div style={{...S.card,padding:'16px'}}>
+          <div style={{fontSize:'12px',color:'#64748b',fontWeight:600}}>WPS Net Position (all employees)</div>
+          <div style={{fontSize:'22px',fontWeight:800,color:Math.abs(G.netWpsPosition)<=0.5?'#94a3b8':G.netWpsPosition>0?'#1d4ed8':'#92400e',marginTop:'6px'}}>
+            {Math.abs(G.netWpsPosition)<=0.5 ? 'AED 0.00' : `AED ${fmt(Math.abs(G.netWpsPosition))}`}
+          </div>
+          <div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>
+            {Math.abs(G.netWpsPosition)<=0.5 ? 'Settled — WPS paid matches Client Billing share overall' : G.netWpsPosition>0 ? 'Net: company owes staff (underpaid vs Client Billing, net of any offsetting overpayment)' : 'Net: staff owe company (overpaid vs Client Billing, net of any offsetting underpayment)'}
+          </div>
+        </div>
       </div>
 
       <div style={{...S.card,marginBottom:'16px'}}>
@@ -6413,7 +6450,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                 ['Income Total','80px'],
                 ['Total Income','82px'],['Total Expense','82px'],['Net P/L','82px'],
                 ['Recoverable','74px'],['Recovered / Deposits Received','84px'],
-                ['Balance to Recover','80px'],['WPS Payable to Employee','80px'],['Idle Months','64px'],['',36],
+                ['Balance to Recover','80px'],['WPS Net Position','80px'],['Idle Months','64px'],['',36],
               ].map(([h,w])=>(
                 <th key={h} style={{...S.th,whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere',lineHeight:'1.3',width:w,verticalAlign:'bottom',position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>
               ))}
@@ -6426,7 +6463,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                   : visiblePnlSummary.map(r=>{
                       const id=canonEmpId(r.employee_id);
                       const dep=depositMap[id]||0;
-                      const rec=recoveryMap[id]||{recoverable:0,recovered:0,payable:0};
+                      const rec=recoveryMap[id]||{recoverable:0,recovered:0,payable:0,overpaidRaw:0,recoveredForNet:0,netWpsPosition:0};
                       const balance=rec.recoverable-rec.recovered;
                       const raw=rawPnlMap[id];
                       const adjIncome=raw ? (Number(raw.income)||0) : (Number(r.lifetime_income)||0);
@@ -6454,7 +6491,13 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                           <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||rec.recovered>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}{dep>0&&<div style={{fontSize:'10px',color:'#94a3b8',fontWeight:600}}>incl. {fmt(dep)} deposit</div>}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{rec.payable>0?<span title="WPS paid was less than this employee's Client Billing share — company owes this to the employee" style={{background:'#dbeafe',color:'#1d4ed8',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(rec.payable)}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}} title={`WPS Overpaid vs Billing (gross): AED ${fmt(rec.overpaidRaw)} · WPS Underpaid vs Billing (gross): AED ${fmt(rec.payable)}`}>
+                            {Math.abs(rec.netWpsPosition)<=0.5
+                              ? <span style={{color:'#cbd5e1'}}>—</span>
+                              : rec.netWpsPosition>0
+                                ? <span style={{background:'#dbeafe',color:'#1d4ed8',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Owe {fmt(rec.netWpsPosition)}</span>
+                                : <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Owes co. {fmt(Math.abs(rec.netWpsPosition))}</span>}
+                          </td>
                           <td style={{...S.td,padding:'7px 6px'}}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
                           <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer',padding:'7px 6px'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
                         </tr>
