@@ -8641,6 +8641,7 @@ function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
   const [bulkSaving, setBulkSaving] = React.useState(false);
   const [savedCount, setSavedCount] = React.useState(0);
   const [errorMsg, setErrorMsg] = React.useState('');
+  const [detectedPeriod, setDetectedPeriod] = React.useState(null);
 
   const hrSalaryByEmp = React.useMemo(()=>salaryMapFromRows(hrSalaryRows||[]), [hrSalaryRows]);
 
@@ -8701,7 +8702,7 @@ function SalaryPipelineTab({ employees, empMeta, hrSalaryRows }) {
 
   const readBulkTimesheet = async () => {
     if (!pdfFile) return;
-    setStep('reading'); setErrorMsg('');
+    setStep('reading'); setErrorMsg(''); setDetectedPeriod(null);
     setOcrProgress('Sending timesheet to AI… (30–90 seconds for large files)');
     const [y, m] = selectedMonth.split('-');
     const monthName = new Date(Number(y),Number(m)-1,1).toLocaleString('default',{month:'long'});
@@ -8722,6 +8723,8 @@ ${holidays ? `- Public holidays this month: ${holidays} — any hours on these d
 - Normal OT: hours beyond 8h/day on regular working days (×1.25 rate)
 - Idle days: if a cell is marked "idle", "standby", "waiting" or similar — count as 8h for salary purposes
 
+Also read the actual month and year printed on the timesheet itself (from its title, header or date column) — the document may cover a different period than the ${monthName} ${y} assumed above. Report exactly what is printed on the document, not what I told you.
+
 Extract ALL employees. For each output:
 - name: exact name as shown
 - normal_days: count of regular working days (not weekend/holiday, hours > 0)
@@ -8730,8 +8733,8 @@ Extract ALL employees. For each output:
 - idle_days: count of days marked idle/standby
 - total_days_present: all days with any hours (including idle)
 
-Respond ONLY with a valid JSON array, no explanation, no markdown fences:
-[{"name":"...","normal_days":N,"normal_ot_hours":N,"holiday_ot_hours":N,"idle_days":N,"total_days_present":N},...]`;
+Respond ONLY with valid JSON, no explanation, no markdown fences, in this exact shape:
+{"document_month":"<month name printed on the timesheet>","document_year":<year printed on the timesheet>,"employees":[{"name":"...","normal_days":N,"normal_ot_hours":N,"holiday_ot_hours":N,"idle_days":N,"total_days_present":N},...]}`;
 
       const res = await fetch(CLAUDE_PROXY, {
         method:'POST', headers:{'Content-Type':'application/json'},
@@ -8748,10 +8751,14 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
       const data = await res.json();
       const text = (data.content||[]).map(c=>c.text||'').join('');
       setOcrProgress('Parsing results…');
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      const jsonMatch = text.match(/\{[\s\S]*\}/) || text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) throw new Error('AI did not return valid JSON. Got: ' + text.slice(0,300));
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsedRaw = JSON.parse(jsonMatch[0]);
+      const parsed = Array.isArray(parsedRaw) ? parsedRaw : (parsedRaw.employees || []);
       if (!Array.isArray(parsed)||parsed.length===0) throw new Error('No employees found in timesheet');
+      if (!Array.isArray(parsedRaw) && parsedRaw.document_month) {
+        setDetectedPeriod({month:String(parsedRaw.document_month), year:parsedRaw.document_year?String(parsedRaw.document_year):''});
+      }
       setExtractedRows(parsed);
       const matched = parsed.map(row=>{
         const {emp,score} = bestMatch(row.name, employees.filter(e=>!e.is_temp));
@@ -9072,6 +9079,18 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
               </div>
             </div>
           </div>
+          {detectedPeriod && detectedPeriod.month && (() => {
+            const [selY, selM] = selectedMonth.split('-');
+            const selMonthName = new Date(Number(selY),Number(selM)-1,1).toLocaleString('default',{month:'long'});
+            const mismatch = detectedPeriod.month.toLowerCase().slice(0,3) !== selMonthName.toLowerCase().slice(0,3)
+              || (detectedPeriod.year && String(detectedPeriod.year) !== selY);
+            if (!mismatch) return null;
+            return (
+              <div style={{background:'#fef2f2',border:'2px solid #dc2626',borderRadius:'10px',padding:'14px 16px',marginBottom:'14px',fontSize:'12.5px',color:'#991b1b'}}>
+                ⚠️ <strong>Month mismatch:</strong> This timesheet looks like it's for <strong>{detectedPeriod.month} {detectedPeriod.year||''}</strong>, but your Salary Month is set to <strong>{selMonthName} {selY}</strong>. Weekend/holiday OT above was calculated using {selMonthName} {selY}'s calendar, which may be wrong. Set Salary Month to match the timesheet and re-upload, or correct the Normal Days / OT hours / Idle Days fields below by hand — they're all editable.
+              </div>
+            );
+          })()}
           <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'12px',overflow:'hidden'}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
               <thead>
@@ -9090,11 +9109,31 @@ Respond ONLY with a valid JSON array, no explanation, no markdown fences:
                   return (
                     <tr key={i} style={{borderBottom:'1px solid #f1f5f9',opacity:row.skip?0.35:1,background:row.skip?'#f8fafc':'#fff'}}>
                       <td style={{...S.td,color:'#94a3b8',width:'28px',fontWeight:600}}>{i+1}</td>
-                      <td style={{...S.td,fontWeight:700}}>{row.name}</td>
-                      <td style={{...S.td,textAlign:'center'}}>{row.normal_days}</td>
-                      <td style={{...S.td,textAlign:'center',color:row.normal_ot_hours>0?'#d97706':'#94a3b8'}}>{row.normal_ot_hours||0}</td>
-                      <td style={{...S.td,textAlign:'center',color:row.holiday_ot_hours>0?'#dc2626':'#94a3b8'}}>{row.holiday_ot_hours||0}</td>
-                      <td style={{...S.td,textAlign:'center',color:row.idle_days>0?'#0369a1':'#94a3b8'}}>{row.idle_days||0}</td>
+                      <td style={{...S.td,fontWeight:700}}>
+                        <input type="text" value={row.name||''}
+                          onChange={e=>{const v=e.target.value; setMatchedRows(rows=>rows.map((r,j)=>j===i?{...r,name:v}:r));}}
+                          style={{...S.input,width:'130px',padding:'4px 6px',fontSize:'12.5px',fontWeight:700}}/>
+                      </td>
+                      <td style={{...S.td,textAlign:'center'}}>
+                        <input type="number" min="0" step="0.5" value={row.normal_days===''?'':(row.normal_days??0)}
+                          onChange={e=>{const v=e.target.value; setMatchedRows(rows=>rows.map((r,j)=>j===i?{...r,normal_days:v===''?'':Number(v)}:r));}}
+                          style={{...S.input,width:'58px',textAlign:'center',padding:'4px 4px',fontSize:'12.5px'}}/>
+                      </td>
+                      <td style={{...S.td,textAlign:'center'}}>
+                        <input type="number" min="0" step="0.5" value={row.normal_ot_hours===''?'':(row.normal_ot_hours??0)}
+                          onChange={e=>{const v=e.target.value; setMatchedRows(rows=>rows.map((r,j)=>j===i?{...r,normal_ot_hours:v===''?'':Number(v)}:r));}}
+                          style={{...S.input,width:'58px',textAlign:'center',padding:'4px 4px',fontSize:'12.5px',color:(Number(row.normal_ot_hours)>0?'#d97706':'#0f172a')}}/>
+                      </td>
+                      <td style={{...S.td,textAlign:'center'}}>
+                        <input type="number" min="0" step="0.5" value={row.holiday_ot_hours===''?'':(row.holiday_ot_hours??0)}
+                          onChange={e=>{const v=e.target.value; setMatchedRows(rows=>rows.map((r,j)=>j===i?{...r,holiday_ot_hours:v===''?'':Number(v)}:r));}}
+                          style={{...S.input,width:'58px',textAlign:'center',padding:'4px 4px',fontSize:'12.5px',color:(Number(row.holiday_ot_hours)>0?'#dc2626':'#0f172a')}}/>
+                      </td>
+                      <td style={{...S.td,textAlign:'center'}}>
+                        <input type="number" min="0" step="0.5" value={row.idle_days===''?'':(row.idle_days??0)}
+                          onChange={e=>{const v=e.target.value; setMatchedRows(rows=>rows.map((r,j)=>j===i?{...r,idle_days:v===''?'':Number(v)}:r));}}
+                          style={{...S.input,width:'58px',textAlign:'center',padding:'4px 4px',fontSize:'12.5px',color:(Number(row.idle_days)>0?'#0369a1':'#0f172a')}}/>
+                      </td>
                       <td style={{...S.td,minWidth:'220px'}}>
                         {row.skip ? <span style={{color:'#94a3b8',fontSize:'11px'}}>Skipped</span> : (
                           <select value={row.override||resolvedEmp?.employee_id||'__none__'}
