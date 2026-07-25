@@ -582,12 +582,14 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
   const [filters, setFilters]       = useState({});
   const [draft, setDraft]           = useState(null); // invoice header being edited
   const [draftLines, setDraftLines] = useState([]);
+  const [clientProfiles, setClientProfiles] = useState([]); // saved per-client billing details, remembered across invoices
 
   const load = async () => {
     setLoading(true);
-    const [inv, lns] = await Promise.all([
+    const [inv, lns, cp] = await Promise.all([
       db.from('client_invoices').select('*').order('month',{ascending:false}),
       db.from('client_invoice_lines').select('*').order('sort_order',{ascending:true}),
+      db.from('client_profiles').select('*').order('updated_at',{ascending:false}),
     ]);
     if (!inv.error) setInvoices(inv.data||[]);
     if (!lns.error) {
@@ -595,6 +597,7 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
       (lns.data||[]).forEach(l=>{ if(!map[l.invoice_id]) map[l.invoice_id]=[]; map[l.invoice_id].push(l); });
       setLinesMap(map);
     }
+    if (!cp.error) setClientProfiles(cp.data||[]);
     setLoading(false);
   };
   useEffect(()=>{load();},[]);
@@ -606,14 +609,34 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
   const filtered = useMemo(()=>applyFilters(invoices,filters),[invoices,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
 
+  // Most-recently-used client, if any — new invoices default to it so re-entering the same
+  // client's details every month isn't necessary; the "Load saved client" picker below can
+  // still switch to a different (or brand new) client on the same screen.
+  const mostRecentProfile = clientProfiles[0] || null;
+
+  const applyClientProfile = (profile) => {
+    if (!profile) {
+      setDraft(d=>({...d, client_name:'', client_address_line1:'', client_address_line2:'', client_address_line3:'',
+        client_trn:'', project_location:'', po_reference:'', payment_terms:'30 Days from Invoice Submission date'}));
+      return;
+    }
+    setDraft(d=>({...d,
+      client_name:profile.client_name||'', client_address_line1:profile.client_address_line1||'',
+      client_address_line2:profile.client_address_line2||'', client_address_line3:profile.client_address_line3||'',
+      client_trn:profile.client_trn||'', project_location:profile.project_location||'',
+      po_reference:profile.po_reference||'', payment_terms:profile.payment_terms||'30 Days from Invoice Submission date',
+    }));
+  };
+
   const blank = () => {
+    const p = mostRecentProfile;
     setDraft({
-      client_name:'M/S Reliance Gulf General Contractor LLC',
-      client_address_line1:'C-245/M2 Near The Model School, Shabiya 12',
-      client_address_line2:'PO Box 92249', client_address_line3:'Abu Dhabi , UAE',
-      client_trn:'100047926900003', project_location:'Abu Dhabi', po_reference:'',
+      client_name:p&&p.client_name||'', client_address_line1:p&&p.client_address_line1||'',
+      client_address_line2:p&&p.client_address_line2||'', client_address_line3:p&&p.client_address_line3||'',
+      client_trn:p&&p.client_trn||'', project_location:p&&p.project_location||'', po_reference:p&&p.po_reference||'',
       invoice_number:genInvoiceNumber(), invoice_date:new Date().toISOString().slice(0,10),
       month:'', subject_line:'Invoice for Mechanical Support Work',
+      payment_terms:p&&p.payment_terms||'30 Days from Invoice Submission date',
       received_amount_aed:'', received_date:'', remarks:'',
     });
     setDraftLines([{employee_id:'',full_name:'',craft:'',hours:'',unit_rate:'',discount:'',vat_pct:5}]);
@@ -657,7 +680,7 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
       client_trn:draft.client_trn||null, project_location:draft.project_location||null,
       po_reference:draft.po_reference||null, invoice_number:draft.invoice_number||null,
       invoice_date:draft.invoice_date||null, month:firstOfMonth(draft.month),
-      subject_line:draft.subject_line||null,
+      subject_line:draft.subject_line||null, payment_terms:draft.payment_terms||null,
       received_amount_aed:draft.received_amount_aed!==''&&draft.received_amount_aed!=null?Number(draft.received_amount_aed):null,
       received_date:draft.received_date||null, remarks:draft.remarks||null, updated_at:new Date().toISOString(),
     };
@@ -681,6 +704,16 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
       const {error:lerr} = await db.from('client_invoice_lines').insert(linesToInsert);
       if (lerr) return alert('Saved invoice but line items failed: '+lerr.message);
     }
+
+    // Remember this client's details (address, TRN, location, PO ref, payment terms) so the next
+    // invoice — for this client or picked again later — starts pre-filled instead of retyped.
+    await db.from('client_profiles').upsert({
+      client_name:draft.client_name, client_address_line1:draft.client_address_line1||null,
+      client_address_line2:draft.client_address_line2||null, client_address_line3:draft.client_address_line3||null,
+      client_trn:draft.client_trn||null, project_location:draft.project_location||null,
+      po_reference:draft.po_reference||null, payment_terms:draft.payment_terms||null,
+      updated_at:new Date().toISOString(),
+    }, {onConflict:'client_name'});
 
     setDraft(null); setDraftLines([]); load();
   };
@@ -723,6 +756,22 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
               <div><label style={S.label}>PO Reference</label><input value={draft.po_reference||''} onChange={e=>setDraft(d=>({...d,po_reference:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>
 
+            {clientProfiles.length>0 && (
+              <div style={{marginBottom:'10px'}}>
+                <label style={S.label}>Load Saved Client (details below auto-fill)</label>
+                <select value="" onChange={e=>{
+                    const val = e.target.value;
+                    if (val==='__new__') return applyClientProfile(null);
+                    const p = clientProfiles.find(cp=>cp.client_name===val);
+                    if (p) applyClientProfile(p);
+                  }} style={{...S.input,width:'100%'}}>
+                  <option value="">— Choose a saved client, or keep typing below —</option>
+                  {clientProfiles.map(p=><option key={p.client_name} value={p.client_name}>{p.client_name}</option>)}
+                  <option value="__new__">+ New Client (clear fields)</option>
+                </select>
+              </div>
+            )}
+
             <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
               <div><label style={S.label}>Client Name</label><input value={draft.client_name||''} onChange={e=>setDraft(d=>({...d,client_name:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Client TRN</label><input value={draft.client_trn||''} onChange={e=>setDraft(d=>({...d,client_trn:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
@@ -733,9 +782,15 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
               <div><label style={S.label}>Client Address Line 2</label><input value={draft.client_address_line2||''} onChange={e=>setDraft(d=>({...d,client_address_line2:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Client Address Line 3</label><input value={draft.client_address_line3||''} onChange={e=>setDraft(d=>({...d,client_address_line3:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>
-            <div style={{marginBottom:'14px'}}>
-              <label style={S.label}>Subject Line</label>
-              <input value={draft.subject_line||''} onChange={e=>setDraft(d=>({...d,subject_line:e.target.value}))} style={{...S.input,width:'100%'}}/>
+            <div style={{display:'grid',gridTemplateColumns:'2fr 1fr',gap:'10px',marginBottom:'14px'}}>
+              <div>
+                <label style={S.label}>Subject Line</label>
+                <input value={draft.subject_line||''} onChange={e=>setDraft(d=>({...d,subject_line:e.target.value}))} style={{...S.input,width:'100%'}}/>
+              </div>
+              <div>
+                <label style={S.label}>Payment Terms</label>
+                <input value={draft.payment_terms||''} onChange={e=>setDraft(d=>({...d,payment_terms:e.target.value}))} placeholder="e.g. 30 Days from Invoice Submission date" style={{...S.input,width:'100%'}}/>
+              </div>
             </div>
 
             <div style={{background:'#fff',border:'1px solid #cbd5e1',borderRadius:'8px',padding:'12px 14px',marginBottom:'12px'}}>

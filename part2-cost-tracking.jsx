@@ -1457,7 +1457,7 @@ async function generateClientInvoiceDocx(inv, lines) {
         ]}),
 
         new Paragraph({ spacing:{before:200,after:60}, children:[new TextRun({text:'Amount in words (AED): '+numberToWordsAED(totals.incl), bold:true, size:18})] }),
-        new Paragraph({ spacing:{after:200}, children:[new TextRun({text:'Payment Mode: 7 Days from Invoice Submission date', size:18})] }),
+        new Paragraph({ spacing:{after:200}, children:[new TextRun({text:'Payment Mode: '+(inv.payment_terms||'7 Days from Invoice Submission date'), size:18})] }),
 
         new Paragraph({ spacing:{before:200,after:60}, children:[new TextRun({text:'OUR BANK DETAILS:', bold:true, size:18})] }),
         new Paragraph({ children:[new TextRun({text:'ACCOUNT TITLE: SATCO ARABIA GENERAL CONTRACTING -L.L.C-S.P.C', size:18})] }),
