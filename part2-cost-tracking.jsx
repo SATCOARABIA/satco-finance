@@ -205,7 +205,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
 
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
-  const COLS = hideEmpFilter?11:13;
+  const COLS = hideEmpFilter?12:14;
 
   const csvCols = [
     {key:'employee_id', label:'Emp ID'}, {key:'full_name', label:'Name'},
@@ -217,7 +217,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
     {key:'normal_ot_hours', label:'Normal OT Hrs'}, {key:'holiday_ot_hours', label:'Holiday OT Hrs'},
     {key:'hours_per_day', label:'Hours/Day'},
     {key:'food', label:'Food'}, {key:'accommodation', label:'Accommodation'}, {key:'transport', label:'Transport'},
-    {key:'other', label:'Other'}, {key:'salary_deductions', label:'Deductions'},
+    {key:'other', label:'Other'}, {key:'salary_deductions', label:'Deductions'}, {key:'salary_deduction_date', label:'Deduction Date'},
     {key:'recurring_allowance_total', label:'Recurring Allowance'},
     {key:'hours_worked', label:'Hours Worked'}, {key:'hourly_rate', label:'Hourly Rate'},
     {key:'remarks', label:'Remarks'},
@@ -226,7 +226,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
   const blank = ()=>setDraft({
     employee_id:initialFilter&&initialFilter.employee_id||'', full_name:initialFilter&&initialFilter.full_name||'',
     month:'', salary_type:'prorated',
-    salary:'', food:'', accommodation:'', transport:'', other:'', remarks:'', salary_deductions:'',
+    salary:'', food:'', accommodation:'', transport:'', other:'', remarks:'', salary_deductions:'', salary_deduction_date:'',
     hours_worked:'', hourly_rate:'',
     basic_salary:'', fixed_allowance:'', hours_per_day:8, working_days:'', normal_ot_hours:'', holiday_ot_hours:'',
     manual_override:false,
@@ -279,6 +279,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
       food:Number(draft.food)||0, accommodation:Number(draft.accommodation)||0,
       transport:Number(draft.transport)||0, other:Number(draft.other)||0, remarks:combinedRemarks,
       salary_deductions:Number(draft.salary_deductions)||0,
+      salary_deduction_date: (Number(draft.salary_deductions)||0) > 0 ? (draft.salary_deduction_date||null) : null,
       hours_worked:Number(draft.hours_worked)||0, hourly_rate:Number(draft.hourly_rate)||0,
       basic_salary:      isProrated ? (Number(draft.basic_salary)||0) : null,
       fixed_allowance:   isProrated ? (Number(draft.fixed_allowance)||0) : 0,
@@ -442,10 +443,11 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
 
           {isH && (
             <>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
                 <div><label style={S.label}>Hours Worked</label><input type="number" value={draft.hours_worked||''} onChange={e=>setDraft(d=>({...d,hours_worked:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="208"/></div>
                 <div><label style={S.label}>Hourly Rate (AED/hr)</label><input type="number" step="0.01" value={draft.hourly_rate||''} onChange={e=>setDraft(d=>({...d,hourly_rate:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
                 <div><label style={S.label}>Salary Deductions (AED)</label><input type="number" value={draft.salary_deductions||''} onChange={e=>setDraft(d=>({...d,salary_deductions:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                <div><label style={S.label}>Deduction Date</label><input type="date" value={draft.salary_deduction_date||''} onChange={e=>setDraft(d=>({...d,salary_deduction_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               </div>
               {(draft.hours_worked&&draft.hourly_rate)&&(
                 <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
@@ -456,9 +458,10 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
           )}
 
           {isFlat && (
-            <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:'10px',marginBottom:'10px'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
               <div><label style={S.label}>Basic Salary</label><input type="number" value={draft.salary||''} onChange={e=>setDraft(d=>({...d,salary:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Salary Deductions (AED)</label><input type="number" value={draft.salary_deductions||''} onChange={e=>setDraft(d=>({...d,salary_deductions:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Deduction Date</label><input type="date" value={draft.salary_deduction_date||''} onChange={e=>setDraft(d=>({...d,salary_deduction_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>
           )}
 
@@ -563,7 +566,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
       <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
           <thead className="tbl-sticky-th"><tr>
-            {(hideEmpFilter?['Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']:['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}
+            {(hideEmpFilter?['Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Deducted On','Net Total','Remarks','']:['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Deducted On','Net Total','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}
           </tr></thead>
           <tbody>
             {loading
@@ -609,6 +612,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
                             <td style={S.td}>{fmt(r.transport)}</td>
                             <td style={S.td}>{fmt(r.other)}</td>
                             <td style={{...S.td,color:'#dc2626'}}>{ded>0?'-'+fmt(ded):'—'}</td>
+                            <td style={S.td}>{ded>0?(r.salary_deduction_date||'—'):'—'}</td>
                             <td style={{...S.td,fontWeight:700}}>{fmt(tot)}</td>
                             <td style={S.tdWrap}>{r.remarks||'—'}</td>
                             <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
@@ -630,6 +634,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
                           <td style={{...S.td,fontWeight:800}}>{fmt(mTrans)}</td>
                           <td style={{...S.td,fontWeight:800}}>{fmt(mOther)}</td>
                           <td style={{...S.td,fontWeight:800,color:'#dc2626'}}>{mDed>0?'-'+fmt(mDed):'—'}</td>
+                          <td style={S.td}></td>
                           <td style={{...S.td,fontWeight:800}}>{fmt(mNet)}</td>
                           <td style={S.td}></td>
                           <td style={S.td}></td>
