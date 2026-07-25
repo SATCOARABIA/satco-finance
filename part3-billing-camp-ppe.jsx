@@ -569,6 +569,275 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
   );
 }
 
+// ── CLIENT INVOICES (MULTI-EMPLOYEE) ───────────────────────────────
+// One invoice per client/month covering a whole crew (e.g. Reliance Gulf) — each employee is
+// their own invoice line (craft, hours, rate, discount, VAT), unlike ClientBillingTab above
+// (Brunel-style) which is one invoice per employee per month. No WPS-recovery split here — this
+// is invoice generation only; per-employee WPS reconciliation still lives in Timesheets/Salary
+// Pipeline as usual.
+function ClientMultiInvoiceTab({ employees, empMeta }) {
+  const [invoices, setInvoices]     = useState([]);
+  const [linesMap, setLinesMap]     = useState({});   // invoice_id -> [lines]
+  const [loading, setLoading]       = useState(true);
+  const [filters, setFilters]       = useState({});
+  const [draft, setDraft]           = useState(null); // invoice header being edited
+  const [draftLines, setDraftLines] = useState([]);
+
+  const load = async () => {
+    setLoading(true);
+    const [inv, lns] = await Promise.all([
+      db.from('client_invoices').select('*').order('month',{ascending:false}),
+      db.from('client_invoice_lines').select('*').order('sort_order',{ascending:true}),
+    ]);
+    if (!inv.error) setInvoices(inv.data||[]);
+    if (!lns.error) {
+      const map = {};
+      (lns.data||[]).forEach(l=>{ if(!map[l.invoice_id]) map[l.invoice_id]=[]; map[l.invoice_id].push(l); });
+      setLinesMap(map);
+    }
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[]);
+
+  const filterFields = [
+    {key:'client_name', label:'Client', width:'220px'},
+    {key:'invoice_number', label:'Invoice #', width:'140px'},
+  ];
+  const filtered = useMemo(()=>applyFilters(invoices,filters),[invoices,filters]);
+  const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
+
+  const blank = () => {
+    setDraft({
+      client_name:'M/S Reliance Gulf General Contractor LLC',
+      client_address_line1:'C-245/M2 Near The Model School, Shabiya 12',
+      client_address_line2:'PO Box 92249', client_address_line3:'Abu Dhabi , UAE',
+      client_trn:'100047926900003', project_location:'Abu Dhabi', po_reference:'',
+      invoice_number:genInvoiceNumber(), invoice_date:new Date().toISOString().slice(0,10),
+      month:'', subject_line:'Invoice for Mechanical Support Work',
+      received_amount_aed:'', received_date:'', remarks:'',
+    });
+    setDraftLines([{employee_id:'',full_name:'',craft:'',hours:'',unit_rate:'',discount:'',vat_pct:5}]);
+  };
+
+  const openEdit = (inv) => {
+    setDraft({...inv, month:monthStr(inv.month)});
+    const lns = linesMap[inv.id]||[];
+    setDraftLines(lns.length? lns.map(l=>({...l})) : [{employee_id:'',full_name:'',craft:'',hours:'',unit_rate:'',discount:'',vat_pct:5}]);
+  };
+
+  const addLine = ()=>setDraftLines(d=>[...d,{employee_id:'',full_name:'',craft:'',hours:'',unit_rate:'',discount:'',vat_pct:5}]);
+  const removeLine = (i)=>setDraftLines(d=>d.filter((_,idx)=>idx!==i));
+  const updateLine = (i,key,val)=>setDraftLines(d=>d.map((l,idx)=>idx===i?{...l,[key]:val}:l));
+  const pickLineEmployee = (i, id, name) => setDraftLines(d=>d.map((l,idx)=>{
+    if (idx!==i) return l;
+    const meta = empMeta && empMeta[id];
+    const craft = l.craft || (meta && (meta.position||meta.trade)) || '';
+    return { ...l, employee_id:id, full_name:name, craft };
+  }));
+
+  const lineCalc = (l) => {
+    const hours = Number(l.hours)||0, rate = Number(l.unit_rate)||0, discount = Number(l.discount)||0;
+    const vatPct = l.vat_pct===''||l.vat_pct==null ? 5 : Number(l.vat_pct);
+    const gross = hours*rate, taxable = gross-discount, vatAmt = taxable*vatPct/100;
+    return { hours, rate, discount, vatPct, gross, taxable, vatAmt, incl: taxable+vatAmt };
+  };
+  const draftTotals = useMemo(()=>draftLines.reduce((s,l)=>{
+    const c = lineCalc(l);
+    s.hours+=c.hours; s.taxable+=c.taxable; s.discount+=c.discount; s.vatAmt+=c.vatAmt; s.incl+=c.incl;
+    return s;
+  },{hours:0,taxable:0,discount:0,vatAmt:0,incl:0}),[draftLines]);
+
+  const save = async () => {
+    if (!draft.client_name||!draft.month) return alert('Client name and month are required');
+    if (draftLines.every(l=>!l.craft && !l.full_name && !l.hours)) return alert('Add at least one employee line');
+
+    const clean = {
+      client_name:draft.client_name, client_address_line1:draft.client_address_line1||null,
+      client_address_line2:draft.client_address_line2||null, client_address_line3:draft.client_address_line3||null,
+      client_trn:draft.client_trn||null, project_location:draft.project_location||null,
+      po_reference:draft.po_reference||null, invoice_number:draft.invoice_number||null,
+      invoice_date:draft.invoice_date||null, month:firstOfMonth(draft.month),
+      subject_line:draft.subject_line||null,
+      received_amount_aed:draft.received_amount_aed!==''&&draft.received_amount_aed!=null?Number(draft.received_amount_aed):null,
+      received_date:draft.received_date||null, remarks:draft.remarks||null, updated_at:new Date().toISOString(),
+    };
+
+    let invoiceId = draft.id, error;
+    if (draft.id) {
+      ({error} = await db.from('client_invoices').update(clean).eq('id',draft.id));
+    } else {
+      const res = await db.from('client_invoices').insert(clean).select('id').single();
+      error = res.error; invoiceId = res.data && res.data.id;
+    }
+    if (error) return alert(error.message);
+
+    await db.from('client_invoice_lines').delete().eq('invoice_id',invoiceId);
+    const linesToInsert = draftLines.filter(l=>l.craft||l.full_name||l.hours).map((l,i)=>({
+      invoice_id:invoiceId, employee_id:l.employee_id||null, full_name:l.full_name||null,
+      craft:l.craft||'', hours:Number(l.hours)||0, unit_rate:Number(l.unit_rate)||0,
+      discount:Number(l.discount)||0, vat_pct: l.vat_pct===''||l.vat_pct==null?5:Number(l.vat_pct), sort_order:i,
+    }));
+    if (linesToInsert.length) {
+      const {error:lerr} = await db.from('client_invoice_lines').insert(linesToInsert);
+      if (lerr) return alert('Saved invoice but line items failed: '+lerr.message);
+    }
+
+    setDraft(null); setDraftLines([]); load();
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Delete this invoice and its line items?')) return;
+    await db.from('client_invoice_lines').delete().eq('invoice_id',id);
+    await db.from('client_invoices').delete().eq('id',id);
+    load();
+  };
+
+  const downloadDocx = async (inv) => {
+    const lns = linesMap[inv.id]||[];
+    if (!lns.length) return alert('No line items saved for this invoice yet.');
+    await generateClientInvoiceDocx(inv, lns);
+  };
+
+  const totalReceived = filtered.reduce((s,r)=>s+(Number(r.received_amount_aed)||0),0);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
+      <div style={S.card}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',position:'sticky',top:'var(--stk-1)',zIndex:'15',flexWrap:'wrap',gap:'10px'}}>
+          <div>
+            <div style={{fontWeight:800,fontSize:'14px'}}>Client Invoices (Multi-Employee) — e.g. Reliance Gulf</div>
+            <div style={{fontSize:'12px',color:'#64748b'}}>{filtered.length} invoice(s) · Received AED {fmt2(totalReceived)}</div>
+          </div>
+          <button style={S.btnPri} onClick={blank}>+ New Invoice / Month</button>
+        </div>
+        <FilterBar fields={filterFields} values={filters} onChange={setFilters} onClear={()=>setFilters({})} />
+
+        {draft && (
+          <div style={{padding:'16px 18px',borderBottom:'1px solid #e2e8f0',background:'#fffbeb'}}>
+            <div style={{fontWeight:800,fontSize:'13px',marginBottom:'10px',color:'#92400e'}}>{draft.id?'Edit':'New'} Invoice</div>
+
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
+              <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Invoice Number</label><input value={draft.invoice_number||''} onChange={e=>setDraft(d=>({...d,invoice_number:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Invoice Date</label><input type="date" value={draft.invoice_date||''} onChange={e=>setDraft(d=>({...d,invoice_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>PO Reference</label><input value={draft.po_reference||''} onChange={e=>setDraft(d=>({...d,po_reference:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+              <div><label style={S.label}>Client Name</label><input value={draft.client_name||''} onChange={e=>setDraft(d=>({...d,client_name:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Client TRN</label><input value={draft.client_trn||''} onChange={e=>setDraft(d=>({...d,client_trn:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Project Location</label><input value={draft.project_location||''} onChange={e=>setDraft(d=>({...d,project_location:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
+              <div><label style={S.label}>Client Address Line 1</label><input value={draft.client_address_line1||''} onChange={e=>setDraft(d=>({...d,client_address_line1:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Client Address Line 2</label><input value={draft.client_address_line2||''} onChange={e=>setDraft(d=>({...d,client_address_line2:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Client Address Line 3</label><input value={draft.client_address_line3||''} onChange={e=>setDraft(d=>({...d,client_address_line3:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+            </div>
+            <div style={{marginBottom:'14px'}}>
+              <label style={S.label}>Subject Line</label>
+              <input value={draft.subject_line||''} onChange={e=>setDraft(d=>({...d,subject_line:e.target.value}))} style={{...S.input,width:'100%'}}/>
+            </div>
+
+            <div style={{background:'#fff',border:'1px solid #cbd5e1',borderRadius:'8px',padding:'12px 14px',marginBottom:'12px'}}>
+              <div style={{fontWeight:700,fontSize:'12.5px',marginBottom:'8px',color:'#0f172a'}}>Employees This Month (one line per employee)</div>
+              <div className="drag-scroll" style={{overflowX:'auto'}}>
+              <div style={{minWidth:'820px'}}>
+              <div style={{display:'grid',gridTemplateColumns:'220px 1.6fr 80px 100px 90px 70px 110px 28px',gap:'8px',marginBottom:'4px',padding:'0 2px'}}>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>Employee</div>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>Craft / Description</div>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>Hours</div>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>Rate (AED)</div>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>Discount</div>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>VAT %</div>
+                <div style={{fontSize:'10px',fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>Amount</div>
+                <div></div>
+              </div>
+              {draftLines.map((l,i)=>{ const c = lineCalc(l); return (
+                <div key={i} style={{display:'grid',gridTemplateColumns:'220px 1.6fr 80px 100px 90px 70px 110px 28px',gap:'8px',marginBottom:'6px',alignItems:'center'}}>
+                  <EmployeePicker employees={employees} value={l.employee_id} name={l.full_name} onChange={(id,name)=>pickLineEmployee(i,id,name)} />
+                  <input placeholder="e.g. Project Manager" value={l.craft||''} onChange={e=>updateLine(i,'craft',e.target.value)} style={{...S.input,width:'100%'}}/>
+                  <input type="number" placeholder="Hours" value={l.hours||''} onChange={e=>updateLine(i,'hours',e.target.value)} style={{...S.input,width:'100%'}}/>
+                  <input type="number" step="0.01" placeholder="Rate" value={l.unit_rate||''} onChange={e=>updateLine(i,'unit_rate',e.target.value)} style={{...S.input,width:'100%'}}/>
+                  <input type="number" step="0.01" placeholder="0" value={l.discount||''} onChange={e=>updateLine(i,'discount',e.target.value)} style={{...S.input,width:'100%'}}/>
+                  <input type="number" step="0.1" placeholder="5" value={l.vat_pct===undefined||l.vat_pct===null?'':l.vat_pct} onChange={e=>updateLine(i,'vat_pct',e.target.value)} style={{...S.input,width:'100%'}}/>
+                  <div style={{fontSize:'12px',fontWeight:700,color:'#166534',whiteSpace:'nowrap'}}>AED {fmt2(c.incl)}</div>
+                  <button onClick={()=>removeLine(i)} style={S.iconBtn}>&#128465;</button>
+                </div>
+              );})}
+              </div>
+              </div>
+              <button onClick={addLine} style={{...S.btnPri,background:'#fff',color:'#0f172a',border:'1px solid #cbd5e1',fontSize:'12px',padding:'6px 12px',marginTop:'4px'}}>+ Add Employee Line</button>
+              <div style={{marginTop:'10px',paddingTop:'10px',borderTop:'1px solid #e2e8f0',fontSize:'13px'}}>
+                Total Hours: <strong>{fmt2(draftTotals.hours)}</strong> &nbsp;·&nbsp; Taxable: <strong>AED {fmt2(draftTotals.taxable)}</strong>
+                &nbsp;·&nbsp; VAT: <strong>AED {fmt2(draftTotals.vatAmt)}</strong>
+                &nbsp;·&nbsp; Total Incl. VAT: <strong style={{color:'#166534'}}>AED {fmt2(draftTotals.incl)}</strong>
+              </div>
+            </div>
+
+            <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'12px 14px',marginBottom:'12px'}}>
+              <div style={{fontWeight:700,fontSize:'12.5px',marginBottom:'8px',color:'#166534'}}>Once Payment is Received from Client (optional tracking)</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+                <div><label style={S.label}>Amount Received (AED)</label><input type="number" step="0.01" value={draft.received_amount_aed||''} onChange={e=>setDraft(d=>({...d,received_amount_aed:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+                <div><label style={S.label}>Date Received</label><input type="date" value={draft.received_date||''} onChange={e=>setDraft(d=>({...d,received_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              </div>
+            </div>
+
+            <div style={{marginBottom:'12px'}}>
+              <label style={S.label}>Remarks</label>
+              <input value={draft.remarks||''} onChange={e=>setDraft(d=>({...d,remarks:e.target.value}))} style={{...S.input,width:'100%'}}/>
+            </div>
+
+            <div style={{display:'flex',gap:'8px'}}>
+              <button style={S.btnPri} onClick={save}>Save Invoice</button>
+              <button style={{...S.btnPri,background:'#fff',color:'#475569',border:'1px solid #cbd5e1'}} onClick={()=>{setDraft(null);setDraftLines([]);}}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
+            <thead className="tbl-sticky-th"><tr>{['Month','Invoice #','Client','Employees','Hours','Invoice Total (Incl. VAT)','Received AED',''].map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}</tr></thead>
+            <tbody>
+              {loading
+                ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                : grouped.length===0
+                  ? <tr><td colSpan={8} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>No invoices yet — click "+ New Invoice / Month" to start.</td></tr>
+                  : grouped.map(g=>(
+                    <React.Fragment key={g.month}>
+                      <MonthGroup month={g.month} count={g.rows.length} colSpan={8} />
+                      {g.rows.map(inv=>{
+                        const lns = linesMap[inv.id]||[];
+                        const t = lns.reduce((s,l)=>{ const c=lineCalc(l); s.hours+=c.hours; s.incl+=c.incl; return s; },{hours:0,incl:0});
+                        return (
+                          <tr key={inv.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                            <td style={S.td}>{monthStr(inv.month)}</td>
+                            <td style={S.td}>{inv.invoice_number||'—'}</td>
+                            <td style={S.td}>{inv.client_name}</td>
+                            <td style={S.td}>{lns.length}</td>
+                            <td style={S.td}>{fmt2(t.hours)}</td>
+                            <td style={{...S.td,fontWeight:700}}>AED {fmt2(t.incl)}</td>
+                            <td style={S.td}>{inv.received_amount_aed?('AED '+fmt2(inv.received_amount_aed)):'—'}</td>
+                            <td style={S.td}>
+                              <div style={{display:'flex',gap:'6px'}}>
+                                <button onClick={()=>openEdit(inv)} style={S.iconBtn}>&#9998;</button>
+                                <button onClick={()=>downloadDocx(inv)} style={S.iconBtn}>&#128190;</button>
+                                <button onClick={()=>remove(inv.id)} style={S.iconBtn}>&#128465;</button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── CAMP COSTS TAB ───────────────────────────────────────────────
 // Camp Costs — food, accommodation and transport paid to the client/camp while an employee is
 // off-site. Food & accommodation are billed at a per-CAMP monthly rate (different camps cost

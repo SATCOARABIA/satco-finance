@@ -1290,3 +1290,188 @@ function currencySymbol(code) {
   return map[code] || (code ? code+' ' : '');
 }
 
+
+
+// ── CLIENT MULTI-EMPLOYEE INVOICE (e.g. Reliance Gulf) ─────────────
+// One invoice per client/month covering many employees/crafts in a single document —
+// unlike generateBrunelInvoiceDocx() which is one invoice per employee. Adds a Discount
+// column (per line, AED amount) and real VAT math; no EUR/exchange-rate handling since
+// this format is always domestic UAE AED billing.
+
+async function generateClientInvoiceDocx(inv, lines) {
+  const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, AlignmentType,
+          BorderStyle, WidthType, ShadingType, VerticalAlign, ImageRun, Header, Footer } = window.docx;
+
+  const border = { style: BorderStyle.SINGLE, size: 1, color: "999999" };
+  const borders = { top: border, bottom: border, left: border, right: border };
+  const cellMargins = { top: 60, bottom: 60, left: 100, right: 100 };
+
+  // 9 columns (adds Discount vs. the Brunel template's 8), still summing to the same
+  // 10106 DXA printable content width used across every generated invoice in this app.
+  const colWidths = [450, 2600, 750, 1000, 1200, 700, 550, 1000, 1856];
+  const tableWidth = colWidths.reduce((a,b)=>a+b,0);
+
+  function headerCell(text, width) {
+    return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, shading:{fill:'E8E8E8',type:ShadingType.CLEAR}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
+      children:[new Paragraph({alignment:AlignmentType.CENTER, children:[new TextRun({text, bold:true, size:18})]})] });
+  }
+  function cell(text, width, opts) {
+    opts = opts||{};
+    return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
+      children:[new Paragraph({alignment:opts.align||AlignmentType.LEFT, children:[new TextRun({text:String(text), bold:!!opts.bold, size:18})]})] });
+  }
+
+  const lineCalc = (l) => {
+    const hours = Number(l.hours)||0;
+    const rate = Number(l.unit_rate)||0;
+    const discount = Number(l.discount)||0;
+    const vatPct = l.vat_pct===''||l.vat_pct==null ? 5 : Number(l.vat_pct);
+    const gross = hours*rate;
+    const taxable = gross - discount;
+    const vatAmt = taxable*vatPct/100;
+    const incl = taxable+vatAmt;
+    return { hours, rate, discount, vatPct, gross, taxable, vatAmt, incl };
+  };
+
+  const totals = lines.reduce((s,l)=>{
+    const c = lineCalc(l);
+    s.hours += c.hours; s.gross += c.gross; s.discount += c.discount; s.taxable += c.taxable; s.vatAmt += c.vatAmt; s.incl += c.incl;
+    return s;
+  }, { hours:0, gross:0, discount:0, taxable:0, vatAmt:0, incl:0 });
+
+  const lineRows = lines.map((l,i)=>{
+    const c = lineCalc(l);
+    return new TableRow({ children:[
+      cell(String(i+1), colWidths[0], {align:AlignmentType.CENTER}),
+      cell(l.craft||l.full_name||'', colWidths[1]),
+      cell(fmt2(c.hours), colWidths[2], {align:AlignmentType.CENTER}),
+      cell(fmt2(c.rate), colWidths[3], {align:AlignmentType.CENTER}),
+      cell(fmt2(c.taxable), colWidths[4], {align:AlignmentType.RIGHT}),
+      cell(fmt2(c.discount), colWidths[5], {align:AlignmentType.RIGHT}),
+      cell(fmt2(c.vatPct)+'%', colWidths[6], {align:AlignmentType.CENTER}),
+      cell(fmt2(c.vatAmt), colWidths[7], {align:AlignmentType.RIGHT}),
+      cell(fmt2(c.incl), colWidths[8], {align:AlignmentType.RIGHT}),
+    ]});
+  });
+
+  const totalsRow = new TableRow({ children:[
+    cell('', colWidths[0]),
+    cell('TOTAL', colWidths[1], {bold:true}),
+    cell(fmt2(totals.hours), colWidths[2], {align:AlignmentType.CENTER,bold:true}),
+    cell('', colWidths[3]),
+    cell(fmt2(totals.taxable), colWidths[4], {align:AlignmentType.RIGHT,bold:true}),
+    cell(fmt2(totals.discount), colWidths[5], {align:AlignmentType.RIGHT,bold:true}),
+    cell('', colWidths[6]),
+    cell(fmt2(totals.vatAmt), colWidths[7], {align:AlignmentType.RIGHT,bold:true}),
+    cell(fmt2(totals.incl), colWidths[8], {align:AlignmentType.RIGHT,bold:true}),
+  ]});
+
+  function infoRow(label, value, opts) {
+    opts=opts||{};
+    return new TableRow({ children:[
+      new TableCell({ borders, width:{size:colWidths.slice(0,8).reduce((a,b)=>a+b,0),type:WidthType.DXA}, margins:cellMargins, columnSpan:8,
+        children:[new Paragraph({alignment:AlignmentType.RIGHT, children:[new TextRun({text:label, bold:true, size:18})]})] }),
+      new TableCell({ borders, width:{size:colWidths[8],type:WidthType.DXA}, margins:cellMargins,
+        children:[new Paragraph({alignment:AlignmentType.RIGHT, children:[new TextRun({text:value, bold:!!opts.bold, size:18})]})] }),
+    ]});
+  }
+
+  function rowLine(label, value) {
+    return new Paragraph({ children:[ new TextRun({text:label+': ', bold:true, size:18}), new TextRun({text:String(value), size:18}) ] });
+  }
+
+  const { header: _lhHeader, footer: _lhFooter } = await loadLetterheadAssets();
+  const headerImage = new ImageRun({
+    type: 'png',
+    data: _lhHeader,
+    transformation: { width: 540, height: 59 },
+    altText: { title: 'SATCO Letterhead', description: 'SATCO Arabia General Contracting letterhead', name: 'Letterhead Header' },
+  });
+  const footerImage = new ImageRun({
+    type: 'png',
+    data: _lhFooter,
+    transformation: { width: 540, height: 37 },
+    altText: { title: 'SATCO Footer', description: 'SATCO Arabia General Contracting contact footer', name: 'Letterhead Footer' },
+  });
+
+  const subject = inv.subject_line || 'Invoice for Mechanical Support Work';
+
+  const doc = new Document({
+    styles: { default: { document: { run: { font:'Arial', size:20 } } } },
+    sections: [{
+      properties: { page: { size:{width:11906,height:16838}, margin:{top:1500,right:900,bottom:1200,left:900,header:500,footer:400} } },
+      headers: { default: new Header({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[headerImage] }) ] }) },
+      footers: { default: new Footer({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[footerImage] }) ] }) },
+      children: [
+        new Paragraph({ alignment:AlignmentType.CENTER, spacing:{before:120,after:300},
+          children:[ new TextRun({ text:'TAX INVOICE', bold:true, size:26 }) ] }),
+
+        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:[5200, 5460], rows:[
+          new TableRow({ children:[
+            new TableCell({ borders, width:{size:5200,type:WidthType.DXA}, margins:cellMargins,
+              children:[
+                new Paragraph({children:[new TextRun({text:'Project Location: '+(inv.project_location||''), size:18})]}),
+                new Paragraph({children:[new TextRun({text:'', size:8})]}),
+                new Paragraph({children:[new TextRun({text:'Customer:', bold:true, size:18})]}),
+                new Paragraph({children:[new TextRun({text:inv.client_name||'', bold:true, size:18})]}),
+                new Paragraph({children:[new TextRun({text:inv.client_address_line1||'', size:18})]}),
+                new Paragraph({children:[new TextRun({text:inv.client_address_line2||'', size:18})]}),
+                new Paragraph({children:[new TextRun({text:inv.client_address_line3||'', size:18})]}),
+                new Paragraph({children:[new TextRun({text:inv.client_trn?('TRN:- '+inv.client_trn):'', bold:true, size:18})]}),
+              ] }),
+            new TableCell({ borders, width:{size:5460,type:WidthType.DXA}, margins:cellMargins,
+              children:[
+                rowLine('Invoice #', inv.invoice_number||''),
+                rowLine('Invoice Date', inv.invoice_date||''),
+                rowLine('Invoice period', monthStr(inv.month)),
+                rowLine('PO Reference', inv.po_reference||''),
+              ] }),
+          ]}),
+        ]}),
+
+        new Paragraph({ spacing:{before:240,after:60}, children:[new TextRun({text:'Subject: '+subject, bold:true, size:20})] }),
+        new Paragraph({ spacing:{after:200}, children:[new TextRun({text:`Please find the below description of work done at your Site for the Month of ${monthStr(inv.month)}`, size:18})] }),
+
+        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:colWidths, rows:[
+          new TableRow({ children:[
+            headerCell('Sl.No.', colWidths[0]), headerCell('Description', colWidths[1]), headerCell('QTY(HRS)', colWidths[2]),
+            headerCell('Unit Rate (Excl.Tax) (AED)', colWidths[3]), headerCell('Taxable Amount (AED)', colWidths[4]),
+            headerCell('Discount', colWidths[5]), headerCell('VAT %', colWidths[6]), headerCell('VAT Amount (AED)', colWidths[7]),
+            headerCell('Amount Incl.VAT (AED)', colWidths[8]),
+          ]}),
+          ...lineRows,
+          totalsRow,
+        ]}),
+
+        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:[colWidths.slice(0,8).reduce((a,b)=>a+b,0), colWidths[8]], rows:[
+          infoRow('Gross Taxable Amount (AED)', fmt2(totals.gross)),
+          infoRow('Discount (AED)', totals.discount>0?fmt2(totals.discount):'-'),
+          infoRow('Total Taxable Amount after Discount (AED)', fmt2(totals.taxable), {bold:true}),
+          infoRow('VAT Amount (AED)', fmt2(totals.vatAmt)),
+          infoRow('Total Amount Incl. VAT (AED)', fmt2(totals.incl), {bold:true}),
+        ]}),
+
+        new Paragraph({ spacing:{before:200,after:60}, children:[new TextRun({text:'Amount in words (AED): '+numberToWordsAED(totals.incl), bold:true, size:18})] }),
+        new Paragraph({ spacing:{after:200}, children:[new TextRun({text:'Payment Mode: 7 Days from Invoice Submission date', size:18})] }),
+
+        new Paragraph({ spacing:{before:200,after:60}, children:[new TextRun({text:'OUR BANK DETAILS:', bold:true, size:18})] }),
+        new Paragraph({ children:[new TextRun({text:'ACCOUNT TITLE: SATCO ARABIA GENERAL CONTRACTING -L.L.C-S.P.C', size:18})] }),
+        new Paragraph({ children:[new TextRun({text:'ACCOUNT NUMBER: 90020200014786   IBAN NO: AE170110090020200014786', size:18})] }),
+        new Paragraph({ children:[new TextRun({text:'BANK NAME: BANK OF BARODA', size:18})] }),
+        new Paragraph({ spacing:{after:300}, children:[new TextRun({text:'TRN: 105042029600003', size:18})] }),
+
+        new Paragraph({ spacing:{before:300}, children:[new TextRun({text:'Best regards,', size:18})] }),
+        new Paragraph({ spacing:{after:60}, children:[new TextRun({text:'General Manager', bold:true, size:18})] }),
+        new Paragraph({ children:[new TextRun({text:'Computer generated invoice — no original signature or stamp required.', italics:true, size:16})] }),
+      ],
+    }],
+  });
+
+  const blob = await Packer.toBlob(doc);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Invoice_${(inv.invoice_number||'draft').replace(/\//g,'-')}_${(inv.client_name||'client').replace(/[^a-zA-Z0-9]+/g,'-')}_${monthStr(inv.month)}.docx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
