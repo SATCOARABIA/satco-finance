@@ -1198,7 +1198,7 @@ async function generateBrunelInvoiceDocx(inv, lines) {
   const signatureImage = new ImageRun({
     type: 'png',
     data: _sig,
-    transformation: { width: 75, height: 55 },
+    transformation: { width: 40, height: 76 },
     altText: { title: 'Authorized Signature', description: 'Finance Manager signature', name: 'Signature' },
   });
   const stampImage = new ImageRun({
@@ -1417,7 +1417,7 @@ async function generateClientInvoiceDocx(inv, lines) {
   const signatureImage = new ImageRun({
     type: 'png',
     data: _sig,
-    transformation: { width: 75, height: 55 },
+    transformation: { width: 40, height: 76 },
     altText: { title: 'Authorized Signature', description: 'Finance Manager signature', name: 'Signature' },
   });
   const stampImage = new ImageRun({
