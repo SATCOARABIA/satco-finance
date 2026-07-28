@@ -1194,6 +1194,22 @@ async function generateBrunelInvoiceDocx(inv, lines) {
     altText: { title: 'SATCO Footer', description: 'SATCO Arabia General Contracting contact footer', name: 'Letterhead Footer' },
   });
 
+  const { signature: _sig, stamp: _stamp } = await loadSignatureAssets();
+  const signatureImage = new ImageRun({
+    type: 'png',
+    data: _sig,
+    transformation: { width: 130, height: 96 },
+    altText: { title: 'Authorized Signature', description: 'Finance Manager signature', name: 'Signature' },
+  });
+  const stampImage = new ImageRun({
+    type: 'png',
+    data: _stamp,
+    transformation: { width: 100, height: 96 },
+    altText: { title: 'Company Stamp', description: 'SATCO Arabia company stamp', name: 'Stamp' },
+  });
+  const noBorder = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
+  const noBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
+
   const doc = new Document({
     styles: { default: { document: { run: { font:'Arial', size:20 } } } },
     sections: [{
@@ -1269,8 +1285,20 @@ async function generateBrunelInvoiceDocx(inv, lines) {
         new Paragraph({ spacing:{after:300}, children:[new TextRun({text:'TRN: 105042029600003', size:18})] }),
 
         new Paragraph({ spacing:{before:300}, children:[new TextRun({text:'Best regards,', size:18})] }),
-        new Paragraph({ spacing:{after:60}, children:[new TextRun({text:'General Manager', bold:true, size:18})] }),
-        new Paragraph({ children:[new TextRun({text:'Computer generated invoice — no original signature or stamp required.', italics:true, size:16})] }),
+        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:[tableWidth-2600, 2600], borders:{
+            top:noBorder, bottom:noBorder, left:noBorder, right:noBorder,
+            insideHorizontal:noBorder, insideVertical:noBorder,
+          }, rows:[
+          new TableRow({ children:[
+            new TableCell({ borders:noBorders, width:{size:tableWidth-2600,type:WidthType.DXA}, margins:cellMargins,
+              children:[
+                new Paragraph({ spacing:{after:20}, children:[signatureImage] }),
+                new Paragraph({ children:[new TextRun({text:'Finance Manager', bold:true, size:18})] }),
+              ] }),
+            new TableCell({ borders:noBorders, width:{size:2600,type:WidthType.DXA}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
+              children:[ new Paragraph({ children:[stampImage] }) ] }),
+          ]}),
+        ]}),
       ],
     }],
   });
@@ -1399,6 +1427,22 @@ async function generateClientInvoiceDocx(inv, lines) {
     altText: { title: 'SATCO Footer', description: 'SATCO Arabia General Contracting contact footer', name: 'Letterhead Footer' },
   });
 
+  const { signature: _sig, stamp: _stamp } = await loadSignatureAssets();
+  const signatureImage = new ImageRun({
+    type: 'png',
+    data: _sig,
+    transformation: { width: 130, height: 96 },
+    altText: { title: 'Authorized Signature', description: 'Finance Manager signature', name: 'Signature' },
+  });
+  const stampImage = new ImageRun({
+    type: 'png',
+    data: _stamp,
+    transformation: { width: 100, height: 96 },
+    altText: { title: 'Company Stamp', description: 'SATCO Arabia company stamp', name: 'Stamp' },
+  });
+  const noBorder = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
+  const noBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
+
   const subject = inv.subject_line || 'Invoice for Mechanical Support Work';
 
   const doc = new Document({
@@ -1466,8 +1510,20 @@ async function generateClientInvoiceDocx(inv, lines) {
         new Paragraph({ spacing:{after:300}, children:[new TextRun({text:'TRN: 105042029600003', size:18})] }),
 
         new Paragraph({ spacing:{before:300}, children:[new TextRun({text:'Best regards,', size:18})] }),
-        new Paragraph({ spacing:{after:60}, children:[new TextRun({text:'General Manager', bold:true, size:18})] }),
-        new Paragraph({ children:[new TextRun({text:'Computer generated invoice — no original signature or stamp required.', italics:true, size:16})] }),
+        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:[tableWidth-2600, 2600], borders:{
+            top:noBorder, bottom:noBorder, left:noBorder, right:noBorder,
+            insideHorizontal:noBorder, insideVertical:noBorder,
+          }, rows:[
+          new TableRow({ children:[
+            new TableCell({ borders:noBorders, width:{size:tableWidth-2600,type:WidthType.DXA}, margins:cellMargins,
+              children:[
+                new Paragraph({ spacing:{after:20}, children:[signatureImage] }),
+                new Paragraph({ children:[new TextRun({text:'Finance Manager', bold:true, size:18})] }),
+              ] }),
+            new TableCell({ borders:noBorders, width:{size:2600,type:WidthType.DXA}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
+              children:[ new Paragraph({ children:[stampImage] }) ] }),
+          ]}),
+        ]}),
       ],
     }],
   });

@@ -287,6 +287,21 @@ function loadLetterheadAssets() {
   return _letterheadAssetsPromise;
 }
 
+// ── SATCO SIGNATURE & STAMP (base64 PNG, embedded on invoice sign-off block) ──
+// Finance Manager's signature and the company stamp live as real .png files
+// (./satco-signature.png, ./satco-stamp.png) with transparent backgrounds —
+// fetched once and cached as Uint8Array for the docx ImageRun calls below.
+let _signatureAssetsPromise = null;
+function loadSignatureAssets() {
+  if (!_signatureAssetsPromise) {
+    _signatureAssetsPromise = Promise.all([
+      fetch('./satco-signature.png').then(r=>r.arrayBuffer()).then(b=>new Uint8Array(b)),
+      fetch('./satco-stamp.png').then(r=>r.arrayBuffer()).then(b=>new Uint8Array(b)),
+    ]).then(([signature, stamp]) => ({ signature, stamp }));
+  }
+  return _signatureAssetsPromise;
+}
+
 
 // ── STYLES ───────────────────────────────────────────────────────
 const S = {
