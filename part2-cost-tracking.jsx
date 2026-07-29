@@ -849,6 +849,7 @@ const OTHER_COST_TYPES = [
   {value:'wps_overpayment_recovery',   label:'⏱️ WPS Overpaid vs Client Billing (auto, from Client Billing tab)'},
   {value:'wps_underpayment_payable',   label:'⏱️ WPS Underpaid vs Client Billing — payable to employee (auto, from Client Billing tab)'},
   {value:'camp_food_accommodation',    label:'🏕️ Camp Food/Accommodation/Transport — off-site days (auto, from Camp Costs tab)'},
+  {value:'petty_cash_ops',             label:'💵 Petty Cash Expense (auto, from Ops Portal)'},
   {value:'other',                      label:'Other'},
 ];
 const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o.label]));
@@ -870,6 +871,68 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
     setLoading(false);
   };
   useEffect(()=>{load();},[]);
+
+  // Auto-sync from the Ops Portal's Petty Cash book — same shared Supabase project, "ops" schema.
+  // Any petty cash payment tagged with an Employee ID over there should show up here as an
+  // Onboarding & Misc cost, carrying whether it's recoverable from the employee. Mirrors the
+  // Camp Costs auto-repair pattern above: insert if missing, update if drifted, delete if the
+  // ops-side entry (or its employee_id) is gone. Tag lives in notes as [PETTYCASH:<id>], same
+  // trick as [CAMPSTAY:id] / [INV:id] elsewhere in this file. Only runs on the main Onboarding &
+  // Misc tab (not the per-employee drill-down, which renders this same table with hideEmpFilter).
+  useEffect(()=>{
+    if (loading || hideEmpFilter) return;
+    let cancelled = false;
+    (async () => {
+      const { data: opsRows, error: opsErr } = await db.schema('ops').from('petty_cash')
+        .select('id,entry_date,employee_id,purpose,category,supplier,amount,recoverable,entry_type,deleted_at')
+        .eq('entry_type','payment')
+        .not('employee_id','is',null);
+      if (opsErr || cancelled) return; // ops schema unreachable (RLS/offline) — skip silently, try again next load
+
+      const live = (opsRows||[]).filter(r => !r.deleted_at && String(r.employee_id||'').trim());
+      const nameByEmp = {};
+      (employees||[]).forEach(e => { if (e && e.employee_id) nameByEmp[canonEmpId(e.employee_id)] = e.full_name; });
+
+      const synced = {};
+      rows.forEach(r => {
+        if (r.cost_type !== 'petty_cash_ops') return;
+        const m = String(r.notes||'').match(/\[PETTYCASH:([^\]]+)\]/);
+        if (m) synced[m[1]] = r;
+      });
+
+      const fixes = [];
+      const seen = new Set();
+      live.forEach(p => {
+        seen.add(p.id);
+        const empId = canonEmpId(p.employee_id);
+        const fullName = nameByEmp[empId] || empId;
+        const amount = Number(p.amount)||0;
+        const recoverable = !!p.recoverable;
+        const note = `Petty cash — ${p.purpose}${p.category?` (${p.category})`:''}${p.supplier?` — ${p.supplier}`:''} [PETTYCASH:${p.id}]`;
+        const existing = synced[p.id];
+        if (!existing) {
+          fixes.push(db.from('employee_other_costs').insert({
+            employee_id: empId, full_name: fullName, cost_type: 'petty_cash_ops',
+            cost_date: p.entry_date, amount, recoverable, recovered_amount: 0, notes: note,
+          }));
+        } else if (
+          existing.employee_id !== empId || existing.cost_date !== p.entry_date ||
+          Math.abs((Number(existing.amount)||0) - amount) > 0.005 ||
+          !!existing.recoverable !== recoverable || existing.notes !== note
+        ) {
+          fixes.push(db.from('employee_other_costs').update({
+            employee_id: empId, full_name: existing.full_name || fullName, cost_date: p.entry_date,
+            amount, recoverable, notes: note,
+          }).eq('id', existing.id));
+        }
+      });
+      Object.entries(synced).forEach(([pid,row]) => { if (!seen.has(pid)) fixes.push(db.from('employee_other_costs').delete().eq('id',row.id)); });
+
+      if (fixes.length) { await Promise.all(fixes); if (!cancelled) load(); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[rows, loading, hideEmpFilter, employees]);
 
   const filterFields = [
     ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',label:'Name',width:'150px'}]),
