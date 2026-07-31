@@ -1080,7 +1080,7 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
                       {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />}
                       {g.rows.map(r=>{
                         const out=r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0;
-                        const isDep=r.cost_type==='security_deposit';
+                        const isDep=r.cost_type==='security_deposit'; const isWpsOver=r.cost_type==='wps_overpayment_recovery'; const isWpsUnder=r.cost_type==='wps_underpayment_payable';
                         return (
                           <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:isDep?'#f0fdf4':'transparent',cursor:'pointer'}}
                             onClick={()=>{setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>
@@ -1088,11 +1088,11 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
                             {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
                             <td style={{...S.td,whiteSpace:'normal',maxWidth:'220px',fontSize:'11.5px'}}>{isDep?<span><span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>Income</span> {OTHER_COST_LABEL[r.cost_type]||r.cost_type}</span>:(OTHER_COST_LABEL[r.cost_type]||r.cost_type)}</td>
                             <td style={S.td}>{r.cost_date||'—'}</td>
-                            <td style={{...S.td,fontWeight:700,color:isDep?'#166534':'#0f172a'}}>{isDep?'+':''}{fmt(r.amount)}{r.original_currency&&r.original_amount&&<div style={{fontSize:'10px',color:'#94a3b8'}}>{r.original_currency} {Number(r.original_amount).toLocaleString()}</div>}</td>
+                            <td style={{...S.td,fontWeight:700,color:isDep||isWpsOver?'#166534':isWpsUnder?'#dc2626':'#0f172a'}}>{isDep?'+':''}{fmt(r.amount)}{r.original_currency&&r.original_amount&&<div style={{fontSize:'10px',color:'#94a3b8'}}>{r.original_currency} {Number(r.original_amount).toLocaleString()}</div>}</td>
                             <td style={S.td}>{!isDep&&r.recoverable?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span>:'—'}</td>
                             <td style={S.td}>{!isDep&&r.recoverable?fmt(r.recovered_amount):'—'}</td>
                             <td style={{...S.td,fontWeight:700,color:out>0?'#dc2626':'#94a3b8'}}>{!isDep&&r.recoverable?fmt(out):'—'}</td>
-                            <td style={S.tdWrap}>{r.notes||'—'}</td>
+                            <td style={S.tdWrap}>{(isWpsOver||isWpsUnder)&&<span style={{background:isWpsOver?'#dcfce7':'#fee2e2',color:isWpsOver?'#166534':'#dc2626',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',marginRight:'6px',whiteSpace:'nowrap'}}>{isWpsOver?'Overpaid':'Underpaid'}</span>}{r.notes||'—'}</td>
                             <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
                               <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>&#9998;</button>
                               <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
