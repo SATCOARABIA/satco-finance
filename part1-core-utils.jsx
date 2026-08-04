@@ -542,9 +542,51 @@ function dedupePnlSummaryRows(rows=[], monthlyRows=[], ctx={}) {
   }).sort((a,b)=>canonEmpId(a.employee_id).localeCompare(canonEmpId(b.employee_id), undefined, {numeric:true}));
 }
 
-function EmployeePicker({ employees, value, name, onChange }) {
+function EmployeePicker({ employees, value, name, onChange, skipMasterCheck }) {
+  // Guards against double-firing (e.g. tabbing quickly through both fields) and
+  // against re-prompting while a check/insert from a previous blur is still in flight.
+  const checkingRef = useRef(false);
+
+  // Master roster gap check: `employees` here is sourced from the HR bridge view /
+  // local finance tables and can legitimately contain IDs that were never synced into
+  // wps_employee_master — the one table Ops Portal, WPS payroll, and Petty Cash all
+  // read from. That gap is what let SA1010/SA1011T/SA1012 vanish from Ops after being
+  // used here. So we always re-check wps_employee_master directly (not just the
+  // `employees` prop) once the user finishes with this picker, and offer to create a
+  // minimal master row on the spot if it's missing.
+  async function ensureMaster() {
+    const cleanId = String(value || '').trim().toUpperCase();
+    if (!cleanId || checkingRef.current || skipMasterCheck) return;
+    checkingRef.current = true;
+    try {
+      const { data: existing, error: checkErr } = await db.from('wps_employee_master')
+        .select('employee_id').eq('employee_id', cleanId).maybeSingle();
+      if (checkErr || existing) return; // already in master, or lookup failed — don't nag on transient errors
+      const nm = (name || '').trim();
+      const wantsCreate = window.confirm(
+        `Employee ID "${cleanId}"${nm ? ` (${nm})` : ''} isn't in the WPS master employee list yet, ` +
+        `so it won't show up in the Ops Portal, Petty Cash, or WPS payroll.\n\n` +
+        `Create a minimal master record now? You (or Hiring & WPS) can fill in salary, IBAN and ` +
+        `labour card details later.`
+      );
+      if (!wantsCreate) return;
+      const { error } = await db.from('wps_employee_master').insert({
+        employee_id: cleanId,
+        full_name: nm || cleanId,
+        active: true,
+        remarks: `Auto-created from a cost entry on ${new Date().toISOString().slice(0,10)} — please complete WPS/salary details.`,
+      });
+      if (error && error.code !== '23505') { // 23505 = unique violation (someone else just created it) — safe to ignore
+        alert('Could not create the employee master record: ' + (error.message || error));
+      }
+    } finally {
+      checkingRef.current = false;
+    }
+  }
+
   return (
-    <div style={{ display:'flex', gap:'8px' }}>
+    <div style={{ display:'flex', gap:'8px' }}
+      onBlur={(e)=>{ if (!e.currentTarget.contains(e.relatedTarget)) ensureMaster(); }}>
       <input list="emp-list" placeholder="Employee ID" value={value||''}
         onChange={e=>{ const id=e.target.value; const m=employees.find(x=>x.employee_id===id); onChange(id,m?m.full_name:name||''); }}
         style={{...S.input,width:'150px',fontFamily:'ui-monospace,monospace',fontWeight:700}} />
