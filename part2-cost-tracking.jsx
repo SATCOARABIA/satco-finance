@@ -1132,11 +1132,6 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
 // recovered progressively over future months. Recovery rows feed the same
 // employee_other_costs recoverable pool used on the main P&L Dashboard.
 
-function genInvoiceNumber() {
-  const d = new Date();
-  return `ST/${String(d.getFullYear()).slice(2)}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}`;
-}
-
 function numberToWordsAED(amount) {
   const ones=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
   const tens=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];

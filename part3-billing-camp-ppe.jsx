@@ -119,7 +119,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       employee_id: initialFilter&&initialFilter.employee_id||'', full_name: initialFilter&&initialFilter.full_name||'',
       month:'', client_name:'Brunel Energy Europe B.V. SUCURSAL EN ESPANA',
       client_address_line1:'Calle General Moscrado 1, 2nd floor', client_address_line2:'28020 MADRID', client_address_line3:'Spain. W00331621',
-      project_location:'Netherlands', po_reference:'', invoice_number:genInvoiceNumber(), invoice_date:new Date().toISOString().slice(0,10),
+      project_location:'Netherlands', po_reference:'', invoice_number:'', invoice_date:new Date().toISOString().slice(0,10),
       currency:'EUR', invoice_exchange_rate:'', satco_rate_eur_hr:4.5, brunel_rate_eur_hr:57,
       received_amount_aed:'', received_date:'', received_exchange_rate:'',
       wps_paid_aed:'', wps_paid_date:'', remarks:'',
@@ -158,6 +158,14 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
     if (!draft.employee_id||!draft.month) return alert('Employee ID and month are required');
     if (draftLines.every(l=>!l.project_name && !l.hours)) return alert('Add at least one project line');
 
+    // Invoice numbering continues from the Ops portal's shared counter (ST/YY/series/global) —
+    // only reserved here if the user hasn't already typed/kept a specific number.
+    let invoiceNo = (draft.invoice_number||'').trim();
+    if (!invoiceNo) {
+      try { invoiceNo = await nextOpsInvoiceNumber(draft.invoice_date); }
+      catch (numErr) { return alert('Could not generate the next invoice number from the Ops portal: '+(numErr.message||numErr)); }
+    }
+
     const received = draft.received_amount_aed!==''&&draft.received_amount_aed!=null ? Number(draft.received_amount_aed) : null;
     const computedImpliedRate = (received && totalEurDraft) ? received/totalEurDraft : (draft.received_exchange_rate?Number(draft.received_exchange_rate):null);
 
@@ -166,7 +174,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       client_name:draft.client_name||null, client_address_line1:draft.client_address_line1||null,
       client_address_line2:draft.client_address_line2||null, client_address_line3:draft.client_address_line3||null,
       project_location:draft.project_location||null, po_reference:draft.po_reference||null,
-      invoice_number:draft.invoice_number||null, invoice_date:draft.invoice_date||null,
+      invoice_number:invoiceNo, invoice_date:draft.invoice_date||null,
       currency:draft.currency||'EUR',
       invoice_exchange_rate:Number(draft.invoice_exchange_rate)||null,
       satco_rate_eur_hr:Number(draft.satco_rate_eur_hr)||4.5, brunel_rate_eur_hr:Number(draft.brunel_rate_eur_hr)||57,
@@ -236,6 +244,17 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
         // No longer over- or under-paid (e.g. WPS amount corrected to match exactly) — remove the stale row.
         await db.from('employee_other_costs').delete().eq('id',existingRow.id);
       }
+    }
+
+    // Mirror this invoice into the Ops portal so it shows up there without re-entry.
+    try {
+      await syncInvoiceToOps({
+        invoice_no: invoiceNo, invoice_date: clean.invoice_date, client_name: clean.client_name,
+        currency: clean.currency, value: totalEurDraft,
+        period_from: clean.month, period_to: lastDayOfMonth(clean.month),
+      });
+    } catch (syncErr) {
+      alert('Invoice saved, but syncing to the Ops portal failed: '+(syncErr.message||syncErr));
     }
 
     setDraft(null); setDraftLines([]); load();
@@ -339,7 +358,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
 
             <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
               <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              <div><label style={S.label}>Invoice Number</label><input value={draft.invoice_number||''} onChange={e=>setDraft(d=>({...d,invoice_number:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Invoice Number</label><input value={draft.invoice_number||''} onChange={e=>setDraft(d=>({...d,invoice_number:e.target.value}))} placeholder="Auto-generated on save (Ops portal)" style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Invoice Date</label><input type="date" value={draft.invoice_date||''} onChange={e=>setDraft(d=>({...d,invoice_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>PO Reference</label><input value={draft.po_reference||''} onChange={e=>setDraft(d=>({...d,po_reference:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>
@@ -634,7 +653,7 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
       client_name:p&&p.client_name||'', client_address_line1:p&&p.client_address_line1||'',
       client_address_line2:p&&p.client_address_line2||'', client_address_line3:p&&p.client_address_line3||'',
       client_trn:p&&p.client_trn||'', project_location:p&&p.project_location||'', po_reference:p&&p.po_reference||'',
-      invoice_number:genInvoiceNumber(), invoice_date:new Date().toISOString().slice(0,10),
+      invoice_number:'', invoice_date:new Date().toISOString().slice(0,10),
       month:'', subject_line:'Invoice for Mechanical Support Work',
       payment_terms:p&&p.payment_terms||'30 Days from Invoice Submission date',
       received_amount_aed:'', received_date:'', remarks:'',
@@ -674,11 +693,19 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
     if (!draft.client_name||!draft.month) return alert('Client name and month are required');
     if (draftLines.every(l=>!l.craft && !l.full_name && !l.hours)) return alert('Add at least one employee line');
 
+    // Invoice numbering continues from the Ops portal's shared counter (ST/YY/series/global) —
+    // only reserved here if the user hasn't already typed/kept a specific number.
+    let invoiceNo = (draft.invoice_number||'').trim();
+    if (!invoiceNo) {
+      try { invoiceNo = await nextOpsInvoiceNumber(draft.invoice_date); }
+      catch (numErr) { return alert('Could not generate the next invoice number from the Ops portal: '+(numErr.message||numErr)); }
+    }
+
     const clean = {
       client_name:draft.client_name, client_address_line1:draft.client_address_line1||null,
       client_address_line2:draft.client_address_line2||null, client_address_line3:draft.client_address_line3||null,
       client_trn:draft.client_trn||null, project_location:draft.project_location||null,
-      po_reference:draft.po_reference||null, invoice_number:draft.invoice_number||null,
+      po_reference:draft.po_reference||null, invoice_number:invoiceNo,
       invoice_date:draft.invoice_date||null, month:firstOfMonth(draft.month),
       subject_line:draft.subject_line||null, payment_terms:draft.payment_terms||null,
       received_amount_aed:draft.received_amount_aed!==''&&draft.received_amount_aed!=null?Number(draft.received_amount_aed):null,
@@ -714,6 +741,17 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
       po_reference:draft.po_reference||null, payment_terms:draft.payment_terms||null,
       updated_at:new Date().toISOString(),
     }, {onConflict:'client_name'});
+
+    // Mirror this invoice into the Ops portal so it shows up there without re-entry.
+    try {
+      await syncInvoiceToOps({
+        invoice_no: invoiceNo, invoice_date: clean.invoice_date, client_name: clean.client_name,
+        currency: 'AED', value: draftTotals.incl,
+        period_from: clean.month, period_to: lastDayOfMonth(clean.month),
+      });
+    } catch (syncErr) {
+      alert('Invoice saved, but syncing to the Ops portal failed: '+(syncErr.message||syncErr));
+    }
 
     setDraft(null); setDraftLines([]); load();
   };
@@ -751,7 +789,7 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
 
             <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
               <div><label style={S.label}>Month</label><input type="month" value={draft.month||''} onChange={e=>setDraft(d=>({...d,month:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              <div><label style={S.label}>Invoice Number</label><input value={draft.invoice_number||''} onChange={e=>setDraft(d=>({...d,invoice_number:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div><label style={S.label}>Invoice Number</label><input value={draft.invoice_number||''} onChange={e=>setDraft(d=>({...d,invoice_number:e.target.value}))} placeholder="Auto-generated on save (Ops portal)" style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Invoice Date</label><input type="date" value={draft.invoice_date||''} onChange={e=>setDraft(d=>({...d,invoice_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>PO Reference</label><input value={draft.po_reference||''} onChange={e=>setDraft(d=>({...d,po_reference:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>

@@ -397,6 +397,79 @@ const wpsInvoiceSplit = (inv, lines) => {
 };
 const monthStr = (d) => d ? d.slice(0,7) : '';
 const firstOfMonth = (m) => m ? m + '-01' : null;
+const lastDayOfMonth = (m) => {
+  if (!m) return null;
+  const [y, mo] = m.split('-').map(Number);
+  const d = new Date(y, mo, 0); // day 0 of next month = last day of this month
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
+// ── OPS PORTAL INVOICE SYNC ─────────────────────────────────────
+// The Ops Portal (satco-ops) tracks every invoice against a PO with its own sequential
+// numbering (ST/YY/series/global — ops.next_invoice_number in Supabase). Finance and Ops share
+// this same Supabase project, so instead of re-inventing invoice numbering locally, Finance
+// calls into the Ops schema directly: reserve the next number via the shared RPC on save, then
+// upsert a matching row into ops.invoices so both portals always agree on numbering and value.
+// Used by Client Billing and Client Invoices (Multi-Emp) — see part3.
+
+// Reserves and returns the next sequential invoice number from the Ops portal's shared counter.
+// This mutates the counter, so only call it once per invoice actually being saved (not on every
+// render) — mirrors how the Ops portal itself only generates a number on submit, not on open.
+async function nextOpsInvoiceNumber(invoiceDate) {
+  const { data, error } = await db.schema('ops').rpc('next_invoice_number', {
+    p_invoice_date: invoiceDate || new Date().toISOString().slice(0,10),
+    p_series_code: '01',
+  });
+  if (error) throw error;
+  if (!data) throw new Error('Ops portal did not return an invoice number');
+  return data;
+}
+
+// Client name → Ops portal customer/PO, so a synced invoice lands against the right PO instead
+// of floating unlinked. Kept in the DB (public.client_ops_mapping) rather than hardcoded here so
+// it can be extended via SQL as new clients are onboarded, without a code change.
+async function opsMappingFor(clientName) {
+  if (!clientName) return null;
+  const { data, error } = await db.from('client_ops_mapping').select('*').eq('client_name', clientName).maybeSingle();
+  if (error) { console.warn('client_ops_mapping lookup failed', error); return null; }
+  return data;
+}
+
+// Mirrors a Finance-raised invoice into ops.invoices so it shows up immediately in the Ops
+// Portal's Invoices screen — no manual re-entry on the Ops side. Updates value/date/currency/
+// period on every save (Finance is the source of truth for what was actually billed), but only
+// sets po_id/customer_id/status on first sync, so it never clobbers status changes ("sent",
+// "paid") or a manual PO re-link made later from the Ops side.
+async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currency, value, period_from, period_to }) {
+  if (!invoice_no) return;
+  const { data: existing, error: findErr } = await db.schema('ops').from('invoices').select('id').eq('invoice_no', invoice_no).maybeSingle();
+  if (findErr) throw findErr;
+  if (existing) {
+    const { error } = await db.schema('ops').from('invoices').update({
+      invoice_date: invoice_date || null,
+      invoice_value: Number(value) || 0,
+      currency: currency || 'AED',
+      period_from: period_from || null,
+      period_to: period_to || null,
+    }).eq('id', existing.id);
+    if (error) throw error;
+  } else {
+    const mapping = await opsMappingFor(client_name);
+    const { error } = await db.schema('ops').from('invoices').insert({
+      invoice_no,
+      invoice_date: invoice_date || null,
+      po_id: (mapping && mapping.ops_po_id) || null,
+      customer_id: (mapping && mapping.ops_customer_id) || null,
+      invoice_value: Number(value) || 0,
+      currency: currency || 'AED',
+      payment_terms_days: (mapping && mapping.payment_terms_days) || 30,
+      period_from: period_from || null,
+      period_to: period_to || null,
+      status: 'draft',
+    });
+    if (error) throw error;
+  }
+}
 
 function groupByMonth(rows, dateKey) {
   const map = new Map();
