@@ -471,6 +471,17 @@ async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currenc
   }
 }
 
+// Removes the mirrored row from ops.invoices when the source invoice is deleted in Finance, so a
+// deleted invoice doesn't linger in the Ops portal. If Ops has payments recorded against it, the
+// FK constraint blocks the delete — surfaced as a returned message rather than thrown, so the
+// caller can still complete the local deletion and tell the user why Ops wasn't cleared.
+async function deleteInvoiceFromOps(invoice_no) {
+  if (!invoice_no) return null;
+  const { error } = await db.schema('ops').from('invoices').delete().eq('invoice_no', invoice_no);
+  if (error) return error.message || String(error);
+  return null;
+}
+
 function groupByMonth(rows, dateKey) {
   const map = new Map();
   rows.forEach(r => {

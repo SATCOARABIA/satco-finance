@@ -262,11 +262,16 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
 
   const remove = async (id) => {
     if (!window.confirm('Delete this invoice and its line items / linked recovery?')) return;
+    const target = invoices.find(i=>i.id===id);
     await db.from('employee_client_invoice_lines').delete().eq('invoice_id',id);
     await db.from('employee_client_recoveries').delete().eq('invoice_id',id);
     const { data: existing } = await db.from('employee_other_costs').select('id').ilike('notes', `%[INV:${id}]%`);
     if (existing && existing.length) await db.from('employee_other_costs').delete().in('id', existing.map(e=>e.id));
     await db.from('employee_client_invoices').delete().eq('id',id);
+    if (target && target.invoice_number) {
+      const opsErr = await deleteInvoiceFromOps(target.invoice_number);
+      if (opsErr) alert('Invoice deleted here, but it could not be removed from the Ops portal: '+opsErr+'\n\nIf it has payments recorded in Ops, remove those there first, then delete it from the Ops Invoices screen.');
+    }
     load();
   };
 
@@ -758,8 +763,13 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
 
   const remove = async (id) => {
     if (!window.confirm('Delete this invoice and its line items?')) return;
+    const target = invoices.find(i=>i.id===id);
     await db.from('client_invoice_lines').delete().eq('invoice_id',id);
     await db.from('client_invoices').delete().eq('id',id);
+    if (target && target.invoice_number) {
+      const opsErr = await deleteInvoiceFromOps(target.invoice_number);
+      if (opsErr) alert('Invoice deleted here, but it could not be removed from the Ops portal: '+opsErr+'\n\nIf it has payments recorded in Ops, remove those there first, then delete it from the Ops Invoices screen.');
+    }
     load();
   };
 
