@@ -1097,7 +1097,6 @@ const PORTAL_TABS = [
   { key:'ppe', icon:'🥽', label:'PPE & Uniforms', short:'Coveralls, shoes', desc:'Coveralls, safety shoes, and goggles issued per employee.' },
   { key:'timesheets', icon:'⏱️', label:'Timesheets / Income', short:'Revenue input', desc:'Enter employee time and income for monthly P&L.' },
   { key:'billing', icon:'🧾', label:'Client Billing', short:'Invoices', desc:'Create client invoices, track rates, recovery, and billing status.' },
-  { key:'client_billing_multi', icon:'🧾', label:'Client Invoices (Multi-Emp)', short:'Reliance Gulf, etc.', desc:'Create one invoice per client/month covering multiple employees at once (craft, hours, rate, discount, VAT).' },
   { key:'hiring_history', icon:'📜', label:'Hiring Pipeline History', short:'Recruitment archive', desc:'Historical recruitment/visa-pipeline records imported from the master data sheet — reference only, not linked to P&L.' },
 ];
 const PORTAL_TAB_MAP = Object.fromEntries(PORTAL_TABS.map(t=>[t.key,t]));
@@ -1105,7 +1104,7 @@ const PORTAL_NAV_GROUPS = [
   { title:'Start here', items:['dashboard','salary_pipeline'] },
   { title:'Payroll', items:['salary_profiles','deductions','wps'] },
   { title:'Employee Costs', items:['monthly','visa','flights','training','other','camp','ppe'] },
-  { title:'Revenue', items:['timesheets','billing','client_billing_multi'] },
+  { title:'Revenue', items:['timesheets','billing'] },
   { title:'Archive', items:['hiring_history'] },
 ];
 
@@ -1283,7 +1282,6 @@ function App() {
         {tab==='monthly'   && <MonthlyCostsTable employees={employees} empMeta={empMeta} hrSalaryRows={hrSalaryRows} />}
         {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
         {tab==='billing'    && <ClientBillingTab employees={employees} />}
-        {tab==='client_billing_multi' && <ClientMultiInvoiceTab employees={employees} empMeta={empMeta} />}
         {tab==='hiring_history' && <HiringPipelineTab />}
         {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
       </>

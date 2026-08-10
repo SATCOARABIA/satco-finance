@@ -387,7 +387,7 @@ const wpsInvoiceSplit = (inv, lines) => {
   const totalCcy = lns.reduce((s,l)=>s+(Number(l.hours)||0)*(Number(l.rate_eur_hr)||inv.brunel_rate_eur_hr||0),0);
   const received = Number(inv.received_amount_aed)||0;
   const wps = Number(inv.wps_paid_aed)||0;
-  const impliedRate = received && totalCcy ? received/totalCcy : null;
+  const impliedRate = received && totalCcy ? Math.round((received/totalCcy)*100)/100 : null;
   const satcoAed = impliedRate!==null ? hours*(Number(inv.satco_rate_eur_hr)||4.5)*impliedRate : null;
   const empShare = satcoAed!==null ? received-satcoAed : null;
   // overpaid needs both empShare and an actual WPS payment entered; null means "not enough data yet"

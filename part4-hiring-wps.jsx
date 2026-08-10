@@ -1955,7 +1955,6 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                 <label style={S.label}>Employee</label>
                 <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
                   <EmployeePicker employees={employees} value={draft.employee_id} name={draft.full_name}
-                    skipMasterCheck
                     onChange={async (id,name) => {
                       const exact = employees.find(e=>e.employee_id===id);
                       let hr = exact ? await pullHrProfile(id) : null;

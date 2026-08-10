@@ -167,7 +167,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
     }
 
     const received = draft.received_amount_aed!==''&&draft.received_amount_aed!=null ? Number(draft.received_amount_aed) : null;
-    const computedImpliedRate = (received && totalEurDraft) ? received/totalEurDraft : (draft.received_exchange_rate?Number(draft.received_exchange_rate):null);
+    const computedImpliedRate = (received && totalEurDraft) ? Math.round((received/totalEurDraft)*100)/100 : (draft.received_exchange_rate?Number(draft.received_exchange_rate):null);
 
     const clean = {
       employee_id:draft.employee_id, full_name:draft.full_name, month:firstOfMonth(draft.month),
@@ -431,7 +431,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
               </div>
               {splitCalc && splitCalc.satcoAed!==null && (
                 <div style={{background:'#fff',border:'1px solid #bbf7d0',borderRadius:'8px',padding:'10px 14px',fontSize:'12.5px'}}>
-                  <div>Implied exchange rate on day of transmission: <strong>{fmt4(splitCalc.impliedRate)}</strong></div>
+                  <div>Implied exchange rate on day of transmission: <strong>{fmt2(splitCalc.impliedRate)}</strong></div>
                   <div style={{marginTop:'4px'}}>SATCO share ({fmt2(totalHoursDraft)}h × {currencySymbol(draft.currency)}{draft.satco_rate_eur_hr||4.5} × rate): <strong style={{color:'#166534'}}>AED {fmt2(splitCalc.satcoAed)}</strong></div>
                   <div>Employee ({draft.full_name||'employee'}) share: <strong style={{color:'#1d4ed8'}}>AED {fmt2(splitCalc.empShare)}</strong></div>
                 </div>

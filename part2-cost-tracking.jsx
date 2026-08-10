@@ -205,7 +205,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
 
   const filtered = useMemo(()=>applyFilters(rows,filters),[rows,filters]);
   const grouped  = useMemo(()=>groupByMonth(filtered,'month'),[filtered]);
-  const COLS = hideEmpFilter?12:14;
+  const COLS = hideEmpFilter?11:13;
 
   const csvCols = [
     {key:'employee_id', label:'Emp ID'}, {key:'full_name', label:'Name'},
@@ -217,7 +217,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
     {key:'normal_ot_hours', label:'Normal OT Hrs'}, {key:'holiday_ot_hours', label:'Holiday OT Hrs'},
     {key:'hours_per_day', label:'Hours/Day'},
     {key:'food', label:'Food'}, {key:'accommodation', label:'Accommodation'}, {key:'transport', label:'Transport'},
-    {key:'other', label:'Other'}, {key:'salary_deductions', label:'Deductions'}, {key:'salary_deduction_date', label:'Deduction Date'},
+    {key:'other', label:'Other'}, {key:'salary_deductions', label:'Deductions'},
     {key:'recurring_allowance_total', label:'Recurring Allowance'},
     {key:'hours_worked', label:'Hours Worked'}, {key:'hourly_rate', label:'Hourly Rate'},
     {key:'remarks', label:'Remarks'},
@@ -226,7 +226,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
   const blank = ()=>setDraft({
     employee_id:initialFilter&&initialFilter.employee_id||'', full_name:initialFilter&&initialFilter.full_name||'',
     month:'', salary_type:'prorated',
-    salary:'', food:'', accommodation:'', transport:'', other:'', remarks:'', salary_deductions:'', salary_deduction_date:'',
+    salary:'', food:'', accommodation:'', transport:'', other:'', remarks:'', salary_deductions:'',
     hours_worked:'', hourly_rate:'',
     basic_salary:'', fixed_allowance:'', hours_per_day:8, working_days:'', normal_ot_hours:'', holiday_ot_hours:'',
     manual_override:false,
@@ -279,7 +279,6 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
       food:Number(draft.food)||0, accommodation:Number(draft.accommodation)||0,
       transport:Number(draft.transport)||0, other:Number(draft.other)||0, remarks:combinedRemarks,
       salary_deductions:Number(draft.salary_deductions)||0,
-      salary_deduction_date: (Number(draft.salary_deductions)||0) > 0 ? (draft.salary_deduction_date||null) : null,
       hours_worked:Number(draft.hours_worked)||0, hourly_rate:Number(draft.hourly_rate)||0,
       basic_salary:      isProrated ? (Number(draft.basic_salary)||0) : null,
       fixed_allowance:   isProrated ? (Number(draft.fixed_allowance)||0) : 0,
@@ -443,11 +442,10 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
 
           {isH && (
             <>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',marginBottom:'10px'}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
                 <div><label style={S.label}>Hours Worked</label><input type="number" value={draft.hours_worked||''} onChange={e=>setDraft(d=>({...d,hours_worked:e.target.value}))} style={{...S.input,width:'100%'}} placeholder="208"/></div>
                 <div><label style={S.label}>Hourly Rate (AED/hr)</label><input type="number" step="0.01" value={draft.hourly_rate||''} onChange={e=>setDraft(d=>({...d,hourly_rate:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
                 <div><label style={S.label}>Salary Deductions (AED)</label><input type="number" value={draft.salary_deductions||''} onChange={e=>setDraft(d=>({...d,salary_deductions:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-                <div><label style={S.label}>Deduction Date</label><input type="date" value={draft.salary_deduction_date||''} onChange={e=>setDraft(d=>({...d,salary_deduction_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               </div>
               {(draft.hours_worked&&draft.hourly_rate)&&(
                 <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'10px 14px',marginBottom:'10px',fontSize:'12.5px'}}>
@@ -458,10 +456,9 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
           )}
 
           {isFlat && (
-            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'10px'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:'10px',marginBottom:'10px'}}>
               <div><label style={S.label}>Basic Salary</label><input type="number" value={draft.salary||''} onChange={e=>setDraft(d=>({...d,salary:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               <div><label style={S.label}>Salary Deductions (AED)</label><input type="number" value={draft.salary_deductions||''} onChange={e=>setDraft(d=>({...d,salary_deductions:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
-              <div><label style={S.label}>Deduction Date</label><input type="date" value={draft.salary_deduction_date||''} onChange={e=>setDraft(d=>({...d,salary_deduction_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
             </div>
           )}
 
@@ -566,7 +563,7 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
       <div className="drag-scroll tbl-sticky-scrollbox" style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - var(--stk-3) - 40px)'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
           <thead className="tbl-sticky-th"><tr>
-            {(hideEmpFilter?['Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Deducted On','Net Total','Remarks','']:['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Deducted On','Net Total','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}
+            {(hideEmpFilter?['Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']:['Emp ID','Name','Month','Type','Salary / Gross','Food','Accom.','Transport','Other','Deductions','Net Total','Remarks','']).map(h=><th key={h} style={{...S.th,position:'sticky',top:0,zIndex:'12',background:'#f8fafc',boxShadow:'0 1px 0 #e2e8f0'}}>{h}</th>)}
           </tr></thead>
           <tbody>
             {loading
@@ -612,7 +609,6 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
                             <td style={S.td}>{fmt(r.transport)}</td>
                             <td style={S.td}>{fmt(r.other)}</td>
                             <td style={{...S.td,color:'#dc2626'}}>{ded>0?'-'+fmt(ded):'—'}</td>
-                            <td style={S.td}>{ded>0?(r.salary_deduction_date||'—'):'—'}</td>
                             <td style={{...S.td,fontWeight:700}}>{fmt(tot)}</td>
                             <td style={S.tdWrap}>{r.remarks||'—'}</td>
                             <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
@@ -634,7 +630,6 @@ function MonthlyCostsTable({ employees, empMeta, hrSalaryRows, initialFilter, hi
                           <td style={{...S.td,fontWeight:800}}>{fmt(mTrans)}</td>
                           <td style={{...S.td,fontWeight:800}}>{fmt(mOther)}</td>
                           <td style={{...S.td,fontWeight:800,color:'#dc2626'}}>{mDed>0?'-'+fmt(mDed):'—'}</td>
-                          <td style={S.td}></td>
                           <td style={{...S.td,fontWeight:800}}>{fmt(mNet)}</td>
                           <td style={S.td}></td>
                           <td style={S.td}></td>
@@ -849,7 +844,6 @@ const OTHER_COST_TYPES = [
   {value:'wps_overpayment_recovery',   label:'⏱️ WPS Overpaid vs Client Billing (auto, from Client Billing tab)'},
   {value:'wps_underpayment_payable',   label:'⏱️ WPS Underpaid vs Client Billing — payable to employee (auto, from Client Billing tab)'},
   {value:'camp_food_accommodation',    label:'🏕️ Camp Food/Accommodation/Transport — off-site days (auto, from Camp Costs tab)'},
-  {value:'petty_cash_ops',             label:'💵 Petty Cash Expense (auto, from Ops Portal)'},
   {value:'other',                      label:'Other'},
 ];
 const OTHER_COST_LABEL = Object.fromEntries(OTHER_COST_TYPES.map(o=>[o.value,o.label]));
@@ -871,68 +865,6 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
     setLoading(false);
   };
   useEffect(()=>{load();},[]);
-
-  // Auto-sync from the Ops Portal's Petty Cash book — same shared Supabase project, "ops" schema.
-  // Any petty cash payment tagged with an Employee ID over there should show up here as an
-  // Onboarding & Misc cost, carrying whether it's recoverable from the employee. Mirrors the
-  // Camp Costs auto-repair pattern above: insert if missing, update if drifted, delete if the
-  // ops-side entry (or its employee_id) is gone. Tag lives in notes as [PETTYCASH:<id>], same
-  // trick as [CAMPSTAY:id] / [INV:id] elsewhere in this file. Only runs on the main Onboarding &
-  // Misc tab (not the per-employee drill-down, which renders this same table with hideEmpFilter).
-  useEffect(()=>{
-    if (loading || hideEmpFilter) return;
-    let cancelled = false;
-    (async () => {
-      const { data: opsRows, error: opsErr } = await db.schema('ops').from('petty_cash')
-        .select('id,entry_date,employee_id,purpose,category,supplier,amount,recoverable,entry_type,deleted_at')
-        .eq('entry_type','payment')
-        .not('employee_id','is',null);
-      if (opsErr || cancelled) return; // ops schema unreachable (RLS/offline) — skip silently, try again next load
-
-      const live = (opsRows||[]).filter(r => !r.deleted_at && String(r.employee_id||'').trim());
-      const nameByEmp = {};
-      (employees||[]).forEach(e => { if (e && e.employee_id) nameByEmp[canonEmpId(e.employee_id)] = e.full_name; });
-
-      const synced = {};
-      rows.forEach(r => {
-        if (r.cost_type !== 'petty_cash_ops') return;
-        const m = String(r.notes||'').match(/\[PETTYCASH:([^\]]+)\]/);
-        if (m) synced[m[1]] = r;
-      });
-
-      const fixes = [];
-      const seen = new Set();
-      live.forEach(p => {
-        seen.add(p.id);
-        const empId = canonEmpId(p.employee_id);
-        const fullName = nameByEmp[empId] || empId;
-        const amount = Number(p.amount)||0;
-        const recoverable = !!p.recoverable;
-        const note = `Petty cash — ${p.purpose}${p.category?` (${p.category})`:''}${p.supplier?` — ${p.supplier}`:''} [PETTYCASH:${p.id}]`;
-        const existing = synced[p.id];
-        if (!existing) {
-          fixes.push(db.from('employee_other_costs').insert({
-            employee_id: empId, full_name: fullName, cost_type: 'petty_cash_ops',
-            cost_date: p.entry_date, amount, recoverable, recovered_amount: 0, notes: note,
-          }));
-        } else if (
-          existing.employee_id !== empId || existing.cost_date !== p.entry_date ||
-          Math.abs((Number(existing.amount)||0) - amount) > 0.005 ||
-          !!existing.recoverable !== recoverable || existing.notes !== note
-        ) {
-          fixes.push(db.from('employee_other_costs').update({
-            employee_id: empId, full_name: existing.full_name || fullName, cost_date: p.entry_date,
-            amount, recoverable, notes: note,
-          }).eq('id', existing.id));
-        }
-      });
-      Object.entries(synced).forEach(([pid,row]) => { if (!seen.has(pid)) fixes.push(db.from('employee_other_costs').delete().eq('id',row.id)); });
-
-      if (fixes.length) { await Promise.all(fixes); if (!cancelled) load(); }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[rows, loading, hideEmpFilter, employees]);
 
   const filterFields = [
     ...(hideEmpFilter?[]:[{key:'employee_id', label:'Emp ID',  width:'100px'},{key:'full_name',label:'Name',width:'150px'}]),
@@ -1080,7 +1012,7 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
                       {!hideEmpFilter && <MonthGroup month={g.month} count={g.rows.length} colSpan={COLS} />}
                       {g.rows.map(r=>{
                         const out=r.recoverable?(Number(r.amount)||0)-(Number(r.recovered_amount)||0):0;
-                        const isDep=r.cost_type==='security_deposit'; const isWpsOver=r.cost_type==='wps_overpayment_recovery'; const isWpsUnder=r.cost_type==='wps_underpayment_payable';
+                        const isDep=r.cost_type==='security_deposit';
                         return (
                           <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:isDep?'#f0fdf4':'transparent',cursor:'pointer'}}
                             onClick={()=>{setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>
@@ -1088,11 +1020,11 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
                             {!hideEmpFilter && <td style={{...S.td,fontWeight:600,whiteSpace:'normal'}}>{r.full_name}</td>}
                             <td style={{...S.td,whiteSpace:'normal',maxWidth:'220px',fontSize:'11.5px'}}>{isDep?<span><span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px'}}>Income</span> {OTHER_COST_LABEL[r.cost_type]||r.cost_type}</span>:(OTHER_COST_LABEL[r.cost_type]||r.cost_type)}</td>
                             <td style={S.td}>{r.cost_date||'—'}</td>
-                            <td style={{...S.td,fontWeight:700,color:isDep||isWpsOver?'#166534':isWpsUnder?'#dc2626':'#0f172a'}}>{isDep?'+':''}{fmt(r.amount)}{r.original_currency&&r.original_amount&&<div style={{fontSize:'10px',color:'#94a3b8'}}>{r.original_currency} {Number(r.original_amount).toLocaleString()}</div>}</td>
+                            <td style={{...S.td,fontWeight:700,color:isDep?'#166534':'#0f172a'}}>{isDep?'+':''}{fmt(r.amount)}{r.original_currency&&r.original_amount&&<div style={{fontSize:'10px',color:'#94a3b8'}}>{r.original_currency} {Number(r.original_amount).toLocaleString()}</div>}</td>
                             <td style={S.td}>{!isDep&&r.recoverable?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>Yes</span>:'—'}</td>
                             <td style={S.td}>{!isDep&&r.recoverable?fmt(r.recovered_amount):'—'}</td>
                             <td style={{...S.td,fontWeight:700,color:out>0?'#dc2626':'#94a3b8'}}>{!isDep&&r.recoverable?fmt(out):'—'}</td>
-                            <td style={S.tdWrap}>{(isWpsOver||isWpsUnder)&&<span style={{background:isWpsOver?'#dcfce7':'#fee2e2',color:isWpsOver?'#166534':'#dc2626',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',marginRight:'6px',whiteSpace:'nowrap'}}>{isWpsOver?'Overpaid':'Underpaid'}</span>}{r.notes||'—'}</td>
+                            <td style={S.tdWrap}>{r.notes||'—'}</td>
                             <td style={{...S.td,textAlign:'right',whiteSpace:'nowrap'}}>
                               <button style={S.iconBtn} onClick={e=>{e.stopPropagation();setFxStatus('');setDraft({...r,cost_date:r.cost_date||'',original_currency:r.original_currency||'INR'});}}>&#9998;</button>
                               <button style={S.iconBtn} onClick={e=>{e.stopPropagation();remove(r.id);}}>&#128465;</button>
@@ -1131,6 +1063,11 @@ function OtherCostsTable({ employees, initialFilter, hideEmpFilter, hideExportBu
 // record WPS amount actually paid to employee → track recoverable/recovered balance,
 // recovered progressively over future months. Recovery rows feed the same
 // employee_other_costs recoverable pool used on the main P&L Dashboard.
+
+function genInvoiceNumber() {
+  const d = new Date();
+  return `ST/${String(d.getFullYear()).slice(2)}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}`;
+}
 
 function numberToWordsAED(amount) {
   const ones=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
@@ -1252,20 +1189,6 @@ async function generateBrunelInvoiceDocx(inv, lines) {
     altText: { title: 'SATCO Footer', description: 'SATCO Arabia General Contracting contact footer', name: 'Letterhead Footer' },
   });
 
-  const { signature: _sig, stamp: _stamp } = await loadSignatureAssets();
-  const signatureImage = new ImageRun({
-    type: 'png',
-    data: _sig,
-    transformation: { width: 40, height: 76 },
-    altText: { title: 'Authorized Signature', description: 'Finance Manager signature', name: 'Signature' },
-  });
-  const stampImage = new ImageRun({
-    type: 'png',
-    data: _stamp,
-    transformation: { width: 62, height: 59 },
-    altText: { title: 'Company Stamp', description: 'SATCO Arabia company stamp', name: 'Stamp' },
-  });
-
   const doc = new Document({
     styles: { default: { document: { run: { font:'Arial', size:20 } } } },
     sections: [{
@@ -1341,8 +1264,8 @@ async function generateBrunelInvoiceDocx(inv, lines) {
         new Paragraph({ spacing:{after:300}, children:[new TextRun({text:'TRN: 105042029600003', size:18})] }),
 
         new Paragraph({ spacing:{before:300}, children:[new TextRun({text:'Best regards,', size:18})] }),
-        new Paragraph({ spacing:{after:10}, children:[signatureImage, new TextRun({text:'   ', size:18}), stampImage] }),
-        new Paragraph({ children:[new TextRun({text:'Finance Manager', bold:true, size:18})] }),
+        new Paragraph({ spacing:{after:60}, children:[new TextRun({text:'General Manager', bold:true, size:18})] }),
+        new Paragraph({ children:[new TextRun({text:'Computer generated invoice — no original signature or stamp required.', italics:true, size:16})] }),
       ],
     }],
   });
@@ -1367,202 +1290,3 @@ function currencySymbol(code) {
   return map[code] || (code ? code+' ' : '');
 }
 
-
-
-// ── CLIENT MULTI-EMPLOYEE INVOICE (e.g. Reliance Gulf) ─────────────
-// One invoice per client/month covering many employees/crafts in a single document —
-// unlike generateBrunelInvoiceDocx() which is one invoice per employee. Adds a Discount
-// column (per line, AED amount) and real VAT math; no EUR/exchange-rate handling since
-// this format is always domestic UAE AED billing.
-
-async function generateClientInvoiceDocx(inv, lines) {
-  const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, AlignmentType,
-          BorderStyle, WidthType, ShadingType, VerticalAlign, ImageRun, Header, Footer } = window.docx;
-
-  const border = { style: BorderStyle.SINGLE, size: 1, color: "999999" };
-  const borders = { top: border, bottom: border, left: border, right: border };
-  const cellMargins = { top: 60, bottom: 60, left: 100, right: 100 };
-
-  // 9 columns (adds Discount vs. the Brunel template's 8), still summing to the same
-  // 10106 DXA printable content width used across every generated invoice in this app.
-  const colWidths = [450, 2600, 750, 1000, 1200, 700, 550, 1000, 1856];
-  const tableWidth = colWidths.reduce((a,b)=>a+b,0);
-
-  function headerCell(text, width) {
-    return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, shading:{fill:'E8E8E8',type:ShadingType.CLEAR}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
-      children:[new Paragraph({alignment:AlignmentType.CENTER, children:[new TextRun({text, bold:true, size:18})]})] });
-  }
-  function cell(text, width, opts) {
-    opts = opts||{};
-    return new TableCell({ borders, width:{size:width,type:WidthType.DXA}, margins:cellMargins, verticalAlign:VerticalAlign.CENTER,
-      children:[new Paragraph({alignment:opts.align||AlignmentType.LEFT, children:[new TextRun({text:String(text), bold:!!opts.bold, size:18})]})] });
-  }
-
-  const lineCalc = (l) => {
-    const hours = Number(l.hours)||0;
-    const rate = Number(l.unit_rate)||0;
-    const discount = Number(l.discount)||0;
-    const vatPct = l.vat_pct===''||l.vat_pct==null ? 5 : Number(l.vat_pct);
-    const gross = hours*rate;
-    const taxable = gross - discount;
-    const vatAmt = taxable*vatPct/100;
-    const incl = taxable+vatAmt;
-    return { hours, rate, discount, vatPct, gross, taxable, vatAmt, incl };
-  };
-
-  const totals = lines.reduce((s,l)=>{
-    const c = lineCalc(l);
-    s.hours += c.hours; s.gross += c.gross; s.discount += c.discount; s.taxable += c.taxable; s.vatAmt += c.vatAmt; s.incl += c.incl;
-    return s;
-  }, { hours:0, gross:0, discount:0, taxable:0, vatAmt:0, incl:0 });
-
-  const lineRows = lines.map((l,i)=>{
-    const c = lineCalc(l);
-    return new TableRow({ children:[
-      cell(String(i+1), colWidths[0], {align:AlignmentType.CENTER}),
-      cell(l.craft||l.full_name||'', colWidths[1]),
-      cell(fmt2(c.hours), colWidths[2], {align:AlignmentType.CENTER}),
-      cell(fmt2(c.rate), colWidths[3], {align:AlignmentType.CENTER}),
-      cell(fmt2(c.taxable), colWidths[4], {align:AlignmentType.RIGHT}),
-      cell(fmt2(c.discount), colWidths[5], {align:AlignmentType.RIGHT}),
-      cell(fmt2(c.vatPct)+'%', colWidths[6], {align:AlignmentType.CENTER}),
-      cell(fmt2(c.vatAmt), colWidths[7], {align:AlignmentType.RIGHT}),
-      cell(fmt2(c.incl), colWidths[8], {align:AlignmentType.RIGHT}),
-    ]});
-  });
-
-  const totalsRow = new TableRow({ children:[
-    cell('', colWidths[0]),
-    cell('TOTAL', colWidths[1], {bold:true}),
-    cell(fmt2(totals.hours), colWidths[2], {align:AlignmentType.CENTER,bold:true}),
-    cell('', colWidths[3]),
-    cell(fmt2(totals.taxable), colWidths[4], {align:AlignmentType.RIGHT,bold:true}),
-    cell(fmt2(totals.discount), colWidths[5], {align:AlignmentType.RIGHT,bold:true}),
-    cell('', colWidths[6]),
-    cell(fmt2(totals.vatAmt), colWidths[7], {align:AlignmentType.RIGHT,bold:true}),
-    cell(fmt2(totals.incl), colWidths[8], {align:AlignmentType.RIGHT,bold:true}),
-  ]});
-
-  function infoRow(label, value, opts) {
-    opts=opts||{};
-    return new TableRow({ children:[
-      new TableCell({ borders, width:{size:colWidths.slice(0,8).reduce((a,b)=>a+b,0),type:WidthType.DXA}, margins:cellMargins, columnSpan:8,
-        children:[new Paragraph({alignment:AlignmentType.RIGHT, children:[new TextRun({text:label, bold:true, size:18})]})] }),
-      new TableCell({ borders, width:{size:colWidths[8],type:WidthType.DXA}, margins:cellMargins,
-        children:[new Paragraph({alignment:AlignmentType.RIGHT, children:[new TextRun({text:value, bold:!!opts.bold, size:18})]})] }),
-    ]});
-  }
-
-  function rowLine(label, value) {
-    return new Paragraph({ children:[ new TextRun({text:label+': ', bold:true, size:18}), new TextRun({text:String(value), size:18}) ] });
-  }
-
-  const { header: _lhHeader, footer: _lhFooter } = await loadLetterheadAssets();
-  const headerImage = new ImageRun({
-    type: 'png',
-    data: _lhHeader,
-    transformation: { width: 540, height: 59 },
-    altText: { title: 'SATCO Letterhead', description: 'SATCO Arabia General Contracting letterhead', name: 'Letterhead Header' },
-  });
-  const footerImage = new ImageRun({
-    type: 'png',
-    data: _lhFooter,
-    transformation: { width: 540, height: 37 },
-    altText: { title: 'SATCO Footer', description: 'SATCO Arabia General Contracting contact footer', name: 'Letterhead Footer' },
-  });
-
-  const { signature: _sig, stamp: _stamp } = await loadSignatureAssets();
-  const signatureImage = new ImageRun({
-    type: 'png',
-    data: _sig,
-    transformation: { width: 40, height: 76 },
-    altText: { title: 'Authorized Signature', description: 'Finance Manager signature', name: 'Signature' },
-  });
-  const stampImage = new ImageRun({
-    type: 'png',
-    data: _stamp,
-    transformation: { width: 62, height: 59 },
-    altText: { title: 'Company Stamp', description: 'SATCO Arabia company stamp', name: 'Stamp' },
-  });
-
-  const subject = inv.subject_line || 'Invoice for Mechanical Support Work';
-
-  const doc = new Document({
-    styles: { default: { document: { run: { font:'Arial', size:20 } } } },
-    sections: [{
-      properties: { page: { size:{width:11906,height:16838}, margin:{top:1500,right:900,bottom:1200,left:900,header:500,footer:400} } },
-      headers: { default: new Header({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[headerImage] }) ] }) },
-      footers: { default: new Footer({ children: [ new Paragraph({ alignment:AlignmentType.CENTER, children:[footerImage] }) ] }) },
-      children: [
-        new Paragraph({ alignment:AlignmentType.CENTER, spacing:{before:120,after:300},
-          children:[ new TextRun({ text:'TAX INVOICE', bold:true, size:26 }) ] }),
-
-        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:[5200, 5460], rows:[
-          new TableRow({ children:[
-            new TableCell({ borders, width:{size:5200,type:WidthType.DXA}, margins:cellMargins,
-              children:[
-                new Paragraph({children:[new TextRun({text:'Project Location: '+(inv.project_location||''), size:18})]}),
-                new Paragraph({children:[new TextRun({text:'', size:8})]}),
-                new Paragraph({children:[new TextRun({text:'Customer:', bold:true, size:18})]}),
-                new Paragraph({children:[new TextRun({text:inv.client_name||'', bold:true, size:18})]}),
-                new Paragraph({children:[new TextRun({text:inv.client_address_line1||'', size:18})]}),
-                new Paragraph({children:[new TextRun({text:inv.client_address_line2||'', size:18})]}),
-                new Paragraph({children:[new TextRun({text:inv.client_address_line3||'', size:18})]}),
-                new Paragraph({children:[new TextRun({text:inv.client_trn?('TRN:- '+inv.client_trn):'', bold:true, size:18})]}),
-              ] }),
-            new TableCell({ borders, width:{size:5460,type:WidthType.DXA}, margins:cellMargins,
-              children:[
-                rowLine('Invoice #', inv.invoice_number||''),
-                rowLine('Invoice Date', inv.invoice_date||''),
-                rowLine('Invoice period', monthStr(inv.month)),
-                rowLine('PO Reference', inv.po_reference||''),
-              ] }),
-          ]}),
-        ]}),
-
-        new Paragraph({ spacing:{before:240,after:60}, children:[new TextRun({text:'Subject: '+subject, bold:true, size:20})] }),
-        new Paragraph({ spacing:{after:200}, children:[new TextRun({text:`Please find the below description of work done at your Site for the Month of ${monthStr(inv.month)}`, size:18})] }),
-
-        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:colWidths, rows:[
-          new TableRow({ children:[
-            headerCell('Sl.No.', colWidths[0]), headerCell('Description', colWidths[1]), headerCell('QTY(HRS)', colWidths[2]),
-            headerCell('Unit Rate (Excl.Tax) (AED)', colWidths[3]), headerCell('Taxable Amount (AED)', colWidths[4]),
-            headerCell('Discount', colWidths[5]), headerCell('VAT %', colWidths[6]), headerCell('VAT Amount (AED)', colWidths[7]),
-            headerCell('Amount Incl.VAT (AED)', colWidths[8]),
-          ]}),
-          ...lineRows,
-          totalsRow,
-        ]}),
-
-        new Table({ width:{size:tableWidth,type:WidthType.DXA}, columnWidths:[colWidths.slice(0,8).reduce((a,b)=>a+b,0), colWidths[8]], rows:[
-          infoRow('Gross Taxable Amount (AED)', fmt2(totals.gross)),
-          infoRow('Discount (AED)', totals.discount>0?fmt2(totals.discount):'-'),
-          infoRow('Total Taxable Amount after Discount (AED)', fmt2(totals.taxable), {bold:true}),
-          infoRow('VAT Amount (AED)', fmt2(totals.vatAmt)),
-          infoRow('Total Amount Incl. VAT (AED)', fmt2(totals.incl), {bold:true}),
-        ]}),
-
-        new Paragraph({ spacing:{before:200,after:60}, children:[new TextRun({text:'Amount in words (AED): '+numberToWordsAED(totals.incl), bold:true, size:18})] }),
-        new Paragraph({ spacing:{after:200}, children:[new TextRun({text:'Payment Mode: '+(inv.payment_terms||'7 Days from Invoice Submission date'), size:18})] }),
-
-        new Paragraph({ spacing:{before:200,after:60}, children:[new TextRun({text:'OUR BANK DETAILS:', bold:true, size:18})] }),
-        new Paragraph({ children:[new TextRun({text:'ACCOUNT TITLE: SATCO ARABIA GENERAL CONTRACTING -L.L.C-S.P.C', size:18})] }),
-        new Paragraph({ children:[new TextRun({text:'ACCOUNT NUMBER: 90020200014786   IBAN NO: AE170110090020200014786', size:18})] }),
-        new Paragraph({ children:[new TextRun({text:'BANK NAME: BANK OF BARODA', size:18})] }),
-        new Paragraph({ spacing:{after:300}, children:[new TextRun({text:'TRN: 105042029600003', size:18})] }),
-
-        new Paragraph({ spacing:{before:300}, children:[new TextRun({text:'Best regards,', size:18})] }),
-        new Paragraph({ spacing:{after:10}, children:[signatureImage, new TextRun({text:'   ', size:18}), stampImage] }),
-        new Paragraph({ children:[new TextRun({text:'Finance Manager', bold:true, size:18})] }),
-      ],
-    }],
-  });
-
-  const blob = await Packer.toBlob(doc);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Invoice_${(inv.invoice_number||'draft').replace(/\//g,'-')}_${(inv.client_name||'client').replace(/[^a-zA-Z0-9]+/g,'-')}_${monthStr(inv.month)}.docx`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
