@@ -38,7 +38,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     (tempCands.data || []).forEach(t => { const id = canonEmpId(t.temp_employee_id); if (id) tcMeta[id] = { full_name: t.candidate_name, position: t.position_display }; });
     setTempCandMeta(tcMeta);
     // Temp candidates (Visa Processing, not yet a real employee) don't have a row in the
-    // employee_pnl_summary view — it's joined off the `employees` table, which they're not in
+    // employee_pnl_summary view â it's joined off the `employees` table, which they're not in
     // yet by design. If a deposit was logged against their temp ID, synthesize a minimal row so
     // it's actually visible in this table instead of only being folded into the grand totals.
     if (d.data && d.data.length) {
@@ -147,11 +147,11 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   // wps_overpayment_recovery rows in employee_other_costs come in two flavours:
   //  - Invoice-synced: created/repaired automatically by the Client Billing tab, tagged
   //    "[INV:<id>]" in notes. For these we recompute the amount live from the invoice
-  //    (Received → implied FX rate → SATCO share → Employee share → vs WPS paid) so it
+  //    (Received â implied FX rate â SATCO share â Employee share â vs WPS paid) so it
   //    self-heals even if Client Billing hasn't been reopened since the invoice changed.
   //  - Manual: entered directly on the Onboarding & Misc tab with no invoice behind them
   //    (e.g. a one-off "WPS overpaid this month, recover from salary" note). These have no
-  //    [INV:id] tag, so there's nothing to recompute — just use the stored amount, exactly
+  //    [INV:id] tag, so there's nothing to recompute â just use the stored amount, exactly
   //    like every other recoverable cost type.
   const recoveryMap = useMemo(()=>{
     const m = {};
@@ -162,10 +162,10 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
     recoverySrc.other.forEach(r=>{ if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') ensure(r.employee_id).recoverable += Number(r.amount)||0; });
     recoverySrc.other.forEach(r=>{ if (r.cost_type==='security_deposit') ensure(r.employee_id).recovered += Number(r.amount)||0; });
-    // Manual WPS-overpayment rows (no [INV:id] tag) — use the stored amount/recovered_amount directly.
+    // Manual WPS-overpayment rows (no [INV:id] tag) â use the stored amount/recovered_amount directly.
     // overpaidRaw counts every such row regardless of the "Recoverable" checkbox (a row being marked
-    // not-recoverable-via-salary doesn't erase the underlying fact that WPS overpaid that month —
-    // it just means it'll be settled a different way) — this feeds Net WPS Position below, mirroring
+    // not-recoverable-via-salary doesn't erase the underlying fact that WPS overpaid that month â
+    // it just means it'll be settled a different way) â this feeds Net WPS Position below, mirroring
     // the Employee Detail page's identical wpsOverpaymentRaw logic so the two can never disagree.
     recoverySrc.other.forEach(r=>{
       if (r.cost_type==='wps_overpayment_recovery' && !/\[INV:[^\]]+\]/.test(String(r.notes||''))) {
@@ -177,7 +177,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
         }
       }
     });
-    // Manual WPS-underpayment rows (no [INV:id] tag) — the mirror image: a payable to the employee,
+    // Manual WPS-underpayment rows (no [INV:id] tag) â the mirror image: a payable to the employee,
     // not a recoverable. recoverable is always false on these rows so they never leak into the
     // recoverable loops above.
     recoverySrc.other.forEach(r=>{
@@ -187,10 +187,10 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     });
     recoverySrc.deductions.forEach(r=>{ ensure(r.employee_id).recovered += Number(r.salary_deductions)||0; });
 
-    // WPS over/underpayment per invoice, computed directly (Received → implied FX rate → SATCO share → Employee share → vs WPS paid)
+    // WPS over/underpayment per invoice, computed directly (Received â implied FX rate â SATCO share â Employee share â vs WPS paid)
     const linesByInvoice = {};
     recoverySrc.invoiceLines.forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
-    // Synced employee_other_costs row per invoice — read here so a manual "un-recoverable"
+    // Synced employee_other_costs row per invoice â read here so a manual "un-recoverable"
     // override on a WPS-overpaid row (e.g. it'll be netted against next month's WPS payment
     // instead of a salary deduction) isn't silently overwritten by this recompute.
     const invoiceSyncMap = {};
@@ -205,13 +205,13 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       const { overpaid } = split;
       const synced = invoiceSyncMap[inv.id];
       if (overpaid > 0.5) {
-        // Raw fact (feeds Net WPS Position) — counts regardless of the manual "Recoverable" override.
+        // Raw fact (feeds Net WPS Position) â counts regardless of the manual "Recoverable" override.
         ensure(inv.employee_id).overpaidRaw += Math.round(overpaid*100)/100;
         if (!synced || synced.recoverable) ensure(inv.employee_id).recoverable += Math.round(overpaid*100)/100;
       }
       else if (overpaid < -0.5) ensure(inv.employee_id).payable += Math.round(Math.abs(overpaid)*100)/100;
     });
-    // Logged recoveries against those invoices count as recovered — both toward the general
+    // Logged recoveries against those invoices count as recovered â both toward the general
     // "recovered" total and specifically toward netting down WPS overpayment for Net WPS Position.
     recoverySrc.invoiceRecoveries.forEach(r=>{
       ensure(r.employee_id).recovered += Number(r.amount_aed)||0;
@@ -220,7 +220,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
 
     // Net WPS Position: positive = company still owes the employee (net of any offsetting
     // overpayment that hasn't been recovered another way); negative = employee still owes company.
-    // Mirrors the Employee Detail page's Net WPS Position formula exactly — this used to be a raw,
+    // Mirrors the Employee Detail page's Net WPS Position formula exactly â this used to be a raw,
     // un-netted "payable" figure here, which could show e.g. AED 7,790.08 owed to an employee while
     // the Employee Detail page correctly showed AED 821.77 net (after an offsetting unrecovered
     // overpayment elsewhere), a mismatch with no way to reconcile from this table alone.
@@ -264,7 +264,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       const type = String(r.cost_type||'');
       // Security deposits are recoveries/cash received, not operating cost. WPS overpayment recovery
       // is also not an extra cost because the WPS paid amount is already inside Monthly Costs salary.
-      // WPS underpayment payable is the mirror image (company owes employee extra) — per the Client
+      // WPS underpayment payable is the mirror image (company owes employee extra) â per the Client
       // Billing tab's own documentation it is carried as a payable and must NOT be deducted from
       // expense, so it's excluded here too. (Previously only the first two were excluded, which made
       // this dashboard's Total Expense / Net P/L disagree with the Employee Detail page by exactly
@@ -313,7 +313,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     const rec = recoveryMap[id]||{recoverable:0,recovered:0,payable:0,overpaidRaw:0,recoveredForNet:0,netWpsPosition:0};
     const income = raw ? Number(raw.income)||0 : Number(r.lifetime_income)||0;
     const grossExpense = raw ? Number(raw.expense)||0 : Number(r.lifetime_expense)||0;
-    const netExpense = Math.max(0, grossExpense - (Number(rec.recovered)||0));
+    const netExpense = grossExpense;
     return {income:a.income+income, expense:a.expense+netExpense, net:a.net+(income-netExpense), netWpsPosition:a.netWpsPosition+(Number(rec.netWpsPosition)||0)};
   },{income:0,expense:0,net:0,netWpsPosition:0});
   const totalDeposits=Object.values(depositMap).reduce((s,v)=>s+v,0);
@@ -324,7 +324,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     {key:'visa_total',label:'Visa Total (AED)'},{key:'salary_total',label:'Salary Total (AED)'},{key:'income_total',label:'Income Total (AED)'},
     {key:'lifetime_income',label:'Total Income (AED)'},{key:'lifetime_expense',label:'Total Expense (AED)'},
     {key:'lifetime_net',label:'Net P/L (AED)'},{key:'lifetime_onboarding_cost',label:'Onboarding Cost'},
-    {key:'advance_outstanding',label:'Advance Outstanding'},{key:'deposits_received',label:'Deposits Received (info only — already included in Recovered)'},
+    {key:'advance_outstanding',label:'Advance Outstanding'},{key:'deposits_received',label:'Deposits Received (info only â already included in Recovered)'},
     {key:'recoverable_total',label:'Recoverable'},{key:'recovered_plus_deposits',label:'Recovered / Deposits Received'},{key:'balance_to_recover',label:'Balance to Recover'},
     {key:'wps_overpaid_raw',label:'WPS Overpaid vs Billing (gross, employee owes company)'},
     {key:'wps_underpaid_raw',label:'WPS Underpaid vs Billing (gross, payable to employee)'},
@@ -339,9 +339,9 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     const cat=categoryTotals[id]||{visa:0,salary:0,income:0,expense:0};
     const income = raw ? Number(raw.income)||0 : Number(r.lifetime_income)||0;
     const grossExpense = raw ? Number(raw.expense)||0 : Number(r.lifetime_expense)||0;
-    const netExpense = Math.max(0, grossExpense - (Number(rec.recovered)||0));
+    const netExpense = grossExpense;
     const net = income - netExpense;
-    // rec.recovered already includes deposits received (folded in once when recoveryMap is built) — do not add dep again.
+    // rec.recovered already includes deposits received (folded in once when recoveryMap is built) â do not add dep again.
     return {...r, lifetime_income:income, lifetime_expense:netExpense, lifetime_net:net,
       deposits_received:dep, recoverable_total:rec.recoverable, recovered_plus_deposits:rec.recovered, balance_to_recover:rec.recoverable-rec.recovered,
       wps_overpaid_raw:rec.overpaidRaw, wps_underpaid_raw:rec.payable, wps_net_position:rec.netWpsPosition,
@@ -350,22 +350,22 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
 
   const renderNotesCell=(monthKey)=>{
     const n=empNotes[monthKey];
-    if (!n) return <td style={S.tdWrap}>—</td>;
+    if (!n) return <td style={S.tdWrap}>â</td>;
     const parts=[];
     if (n.remarks) parts.push(<div key="rem" style={{marginBottom:'3px',color:'#475569',fontSize:'11.5px'}}> {n.remarks}</div>);
     if (n.deposit>0) parts.push(<div key="dep" style={{marginBottom:'3px'}}><span style={{background:'#dcfce7',color:'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>Deposit rcvd: AED {fmt(n.deposit)}</span></div>);
     n.recoveries.forEach((rec,i)=>{
       const isPending=rec.outstanding>0;
-      parts.push(<div key={'rec'+i} style={{marginBottom:'2px'}}><span style={{background:isPending?'#fef3c7':'#f0fdf4',color:isPending?'#92400e':'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>{isPending?'Recover':'Recovered'}: AED {fmt(isPending?rec.outstanding:rec.amount)}{rec.notes?` — ${rec.notes}`:''}</span></div>);
+      parts.push(<div key={'rec'+i} style={{marginBottom:'2px'}}><span style={{background:isPending?'#fef3c7':'#f0fdf4',color:isPending?'#92400e':'#166534',fontSize:'10.5px',fontWeight:700,padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap'}}>{isPending?'Recover':'Recovered'}: AED {fmt(isPending?rec.outstanding:rec.amount)}{rec.notes?` â ${rec.notes}`:''}</span></div>);
     });
-    return <td style={{...S.tdWrap,minWidth:'180px',maxWidth:'260px'}}>{parts.length?parts:'—'}</td>;
+    return <td style={{...S.tdWrap,minWidth:'180px',maxWidth:'260px'}}>{parts.length?parts:'â'}</td>;
   };
 
   return (
     <div>
       {tempCandError && (
         <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'8px',padding:'10px 16px',marginBottom:'14px',color:'#991b1b',fontSize:'12.5px'}}>
-          ⚠️ Couldn't load in-process candidate names/positions from HR for this table — temp-ID rows (if any) will still show using the raw ID as the name. Error: <code>{tempCandError}</code>
+          â ï¸ Couldn't load in-process candidate names/positions from HR for this table â temp-ID rows (if any) will still show using the raw ID as the name. Error: <code>{tempCandError}</code>
         </div>
       )}
       <div className="finance-kpi-grid">
@@ -378,7 +378,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
             {Math.abs(G.netWpsPosition)<=0.5 ? 'AED 0.00' : `AED ${fmt(Math.abs(G.netWpsPosition))}`}
           </div>
           <div style={{fontSize:'11px',color:'#64748b',marginTop:'4px'}}>
-            {Math.abs(G.netWpsPosition)<=0.5 ? 'Settled — WPS paid matches Client Billing share overall' : G.netWpsPosition>0 ? 'Net: company owes staff (underpaid vs Client Billing, net of any offsetting overpayment)' : 'Net: staff owe company (overpaid vs Client Billing, net of any offsetting underpayment)'}
+            {Math.abs(G.netWpsPosition)<=0.5 ? 'Settled â WPS paid matches Client Billing share overall' : G.netWpsPosition>0 ? 'Net: company owes staff (underpaid vs Client Billing, net of any offsetting overpayment)' : 'Net: staff owe company (overpaid vs Client Billing, net of any offsetting underpayment)'}
           </div>
         </div>
       </div>
@@ -404,7 +404,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
             </tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={14} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>
+                ? <tr><td colSpan={14} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>Loadingâ¦</td></tr>
                 : filteredSummary.length===0
                   ? <tr><td colSpan={14} style={{padding:'24px',textAlign:'center',color:'#94a3b8'}}>{summary.length===0?'No data yet':'No employees match filters'}</td></tr>
                   : visiblePnlSummary.map(r=>{
@@ -416,37 +416,37 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
                       const adjIncome=raw ? (Number(raw.income)||0) : (Number(r.lifetime_income)||0);
                       // Expense is sourced from original cost tables, then reduced by actual recoveries/deposits received once.
                       const grossExpense=raw ? (Number(raw.expense)||0) : (Number(r.lifetime_expense)||0);
-                      const adjExpense=Math.max(0,grossExpense-(Number(rec.recovered)||0));
-                      const adjNet=adjIncome-adjExpense;
+                      const adjExpense=grossExpense;
+                      const adjNet=adjIncome-grossExpense+(Number(rec.recovered)||0);
                       const meta=empMeta&&(empMeta[r.employee_id]||empMeta[id]);
                       const tcMeta=tempCandMeta[id]||tempCandMeta[r.employee_id];
                       const cat=categoryTotals[id]||{visa:0,flights:0,training:0,salary:0,income:0,expense:grossExpense};
-                      // rec.recovered already includes deposits received (added once when recoveryMap is built) — this is the single source of truth, no further addition needed.
+                      // rec.recovered already includes deposits received (added once when recoveryMap is built) â this is the single source of truth, no further addition needed.
                       return (
                         <tr key={r.employee_id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:selectedEmp===r.employee_id?'#eff6ff':'transparent'}}>
                           <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:r.is_temp?'#0f766e':'#2563eb',cursor:'pointer',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.employee_id}</td>
                           <td style={{...S.td,fontWeight:700,color:'#2563eb',cursor:'pointer',textDecoration:'underline',padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}} onClick={()=>onOpenEmployee&&onOpenEmployee(r.employee_id,r.full_name)}>{r.full_name}</td>
-                          <td style={{...S.td,padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}}>{(meta&&meta.position)||(tcMeta&&tcMeta.position)||'—'}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{r.is_temp?<span style={{background:'#f0fdfa',color:'#0f766e',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>pending</span>:r.is_finance_only?<span style={{background:'#faf5ff',color:'#7c3aed',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Finance only</span>:r.is_roster_only||r.is_hr_only?<span style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>No P&amp;L yet</span>:((meta&&meta.joining_date)||'—')}</td>
-                          <td style={{...S.td,padding:'7px 6px',color:'#166534'}}>{cat.income>0?fmt(cat.income):<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px',whiteSpace:'normal',wordBreak:'break-word',overflowWrap:'anywhere'}}>{(meta&&meta.position)||(tcMeta&&tcMeta.position)||'â'}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{r.is_temp?<span style={{background:'#f0fdfa',color:'#0f766e',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>pending</span>:r.is_finance_only?<span style={{background:'#faf5ff',color:'#7c3aed',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Finance only</span>:r.is_roster_only||r.is_hr_only?<span style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10.5px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>No P&amp;L yet</span>:((meta&&meta.joining_date)||'â')}</td>
+                          <td style={{...S.td,padding:'7px 6px',color:'#166534'}}>{cat.income>0?fmt(cat.income):<span style={{color:'#cbd5e1'}}>â</span>}</td>
                           <td style={{...S.td,color:'#166534',fontWeight:700,padding:'7px 6px'}}>{fmt(adjIncome)}</td>
                           <td style={{...S.td,color:'#dc2626',fontWeight:700,padding:'7px 6px'}}>
-                            <div title={rec.recovered>0?`Gross: AED ${fmt(grossExpense)} · Recovered: AED ${fmt(rec.recovered)} · Net shown: AED ${fmt(adjExpense)}`:''}>{fmt(adjExpense)}</div>
+                            <div title={rec.recovered>0?`Gross: AED ${fmt(grossExpense)} Â· Recovered: AED ${fmt(rec.recovered)} Â· Net shown: AED ${fmt(adjExpense)}`:''}>{fmt(adjExpense)}</div>
                             {rec.recovered>0&&<div style={{fontSize:'9.5px',color:'#94a3b8',fontWeight:600,lineHeight:'1.2',marginTop:'2px'}}>-{fmt(rec.recovered)} rcvd</div>}
                           </td>
                           <td style={{...S.td,padding:'7px 6px'}}><AmountTag value={adjNet} /></td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||rec.recovered>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}{dep>0&&<div style={{fontSize:'10px',color:'#94a3b8',fontWeight:600}}>incl. {fmt(dep)} deposit</div>}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>✓ Cleared</span>):<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,padding:'7px 6px'}} title={`WPS Overpaid vs Billing (gross): AED ${fmt(rec.overpaidRaw)} · WPS Underpaid vs Billing (gross): AED ${fmt(rec.payable)}`}>
+                          <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?fmt(rec.recoverable):<span style={{color:'#cbd5e1'}}>â</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{(rec.recoverable>0||rec.recovered>0)?<span style={{color:'#166534',fontWeight:700}}>{fmt(rec.recovered)}{dep>0&&<div style={{fontSize:'10px',color:'#94a3b8',fontWeight:600}}>incl. {fmt(dep)} deposit</div>}</span>:<span style={{color:'#cbd5e1'}}>â</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{rec.recoverable>0?(balance>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{fmt(balance)}</span>:<span style={{color:'#166534',fontWeight:700}}>â Cleared</span>):<span style={{color:'#cbd5e1'}}>â</span>}</td>
+                          <td style={{...S.td,padding:'7px 6px'}} title={`WPS Overpaid vs Billing (gross): AED ${fmt(rec.overpaidRaw)} Â· WPS Underpaid vs Billing (gross): AED ${fmt(rec.payable)}`}>
                             {Math.abs(rec.netWpsPosition)<=0.5
-                              ? <span style={{color:'#cbd5e1'}}>—</span>
+                              ? <span style={{color:'#cbd5e1'}}>â</span>
                               : rec.netWpsPosition>0
                                 ? <span style={{background:'#dbeafe',color:'#1d4ed8',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Owe {fmt(rec.netWpsPosition)}</span>
                                 : <span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>Owes co. {fmt(Math.abs(rec.netWpsPosition))}</span>}
                           </td>
-                          <td style={{...S.td,padding:'7px 6px'}}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-                          <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer',padding:'7px 6px'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'▲ hide':'▼ months'}</td>
+                          <td style={{...S.td,padding:'7px 6px'}}>{r.idle_months>0?<span style={{background:'#fef3c7',color:'#92400e',fontSize:'11px',fontWeight:700,padding:'2px 6px',borderRadius:'10px',whiteSpace:'nowrap'}}>{r.idle_months} idle</span>:<span style={{color:'#cbd5e1'}}>â</span>}</td>
+                          <td style={{...S.td,textAlign:'right',color:'#94a3b8',fontSize:'11px',cursor:'pointer',padding:'7px 6px'}} onClick={()=>setSelectedEmp(r.employee_id===selectedEmp?null:r.employee_id)}>{selectedEmp===r.employee_id?'â² hide':'â¼ months'}</td>
                         </tr>
                       );
                     })}
@@ -463,10 +463,10 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
 
       {selectedEmp&&empMeta&&(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)])&&(
         <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
-          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot — {(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).full_name}</div>
+          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot â {(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).full_name}</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',fontSize:'12.5px'}}>
             {[['Position',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).position],['Nationality',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).nationality],['Joining Date',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).joining_date],['Status',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).status],['Hired From',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).hired_from],['Supplier / Agent',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).supplier_name],['Mobilization Date',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).mobilization_date],['Site / Location',(empMeta[selectedEmp]||empMeta[canonEmpId(selectedEmp)]).location]].map(([k,v])=>(
-              <div key={k}><div style={{color:'#94a3b8',fontWeight:600}}>{k}</div><div style={{fontWeight:700}}>{v||'—'}</div></div>
+              <div key={k}><div style={{color:'#94a3b8',fontWeight:600}}>{k}</div><div style={{fontWeight:700}}>{v||'â'}</div></div>
             ))}
           </div>
         </div>
@@ -475,9 +475,9 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
       {selectedEmp&&(
         <div style={S.card}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',position:'sticky',top:'var(--stk-1)',zIndex:'15'}} className="tbl-sticky-toolbar" ref={measureToStk2}>
-            <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Breakdown — {selectedEmp} <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8'}}>(most recent first)</span></div>
+            <div style={{fontWeight:800,fontSize:'14px'}}>Monthly Breakdown â {selectedEmp} <span style={{fontWeight:400,fontSize:'12px',color:'#94a3b8'}}>(most recent first)</span></div>
             <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
-              {notesLoading&&<span style={{fontSize:'12px',color:'#94a3b8'}}>Loading notes…</span>}
+              {notesLoading&&<span style={{fontSize:'12px',color:'#94a3b8'}}>Loading notesâ¦</span>}
               <button style={S.btnExp} onClick={()=>exportCSV(empMonthly,'monthly_breakdown_'+selectedEmp,[
                 {key:'month',label:'Month'},{key:'salary',label:'Salary'},{key:'food',label:'Food'},
                 {key:'accommodation',label:'Accom.'},{key:'transport',label:'Transport'},{key:'other_cost',label:'Other'},
@@ -521,7 +521,7 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
   );
 }
 
-// ── LOGIN ─────────────────────────────────────────────────────────
+// ââ LOGIN âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 function LoginScreen({ onLogin }) {
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
@@ -549,12 +549,12 @@ function LoginScreen({ onLogin }) {
             <h1>Finance work without the confusion.</h1>
             <p>Simple screens for salary, employee costs, timesheets, billing, WPS, and profit/loss tracking.</p>
             <div className="login-checks">
-              <div>✓ Start from Dashboard for the big picture</div>
-              <div>✓ Use Payroll for salaries and WPS</div>
-              <div>✓ Use Costs and Revenue to keep P&amp;L clean</div>
+              <div>â Start from Dashboard for the big picture</div>
+              <div>â Use Payroll for salaries and WPS</div>
+              <div>â Use Costs and Revenue to keep P&amp;L clean</div>
             </div>
           </div>
-          <p style={{fontSize:'12px',marginTop:'28px'}}>Designed for everyday finance users — clear, direct, and no unnecessary steps.</p>
+          <p style={{fontSize:'12px',marginTop:'28px'}}>Designed for everyday finance users â clear, direct, and no unnecessary steps.</p>
         </section>
         <form onSubmit={submit} className="login-form">
           <h2>Sign in</h2>
@@ -571,7 +571,7 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ── EMPLOYEE DETAIL PAGE (single-page entry for one employee) ─────
+// ââ EMPLOYEE DETAIL PAGE (single-page entry for one employee) âââââ
 function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSalaryRows, mobDemobByEmp, onBack }) {
   const meta = empMeta && empMeta[employeeId];
   const filt = { employee_id: employeeId, full_name: employeeName||'' };
@@ -599,28 +599,28 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
     const visaRecoverable     = recoverableSum(visa.data, 'cost');
     const flightsRecoverable  = recoverableSum(flights.data, 'cost');
     const trainingRecoverable = recoverableSum(training.data, 'cost');
-    // Onboarding/Misc recoverable total — excludes security_deposit (that's income, tracked under
+    // Onboarding/Misc recoverable total â excludes security_deposit (that's income, tracked under
     // "recovered") and excludes wps_overpayment_recovery (handled separately just below, since that
-    // cost type can be either invoice-synced or entered manually — see comment there).
+    // cost type can be either invoice-synced or entered manually â see comment there).
     const otherRecoverable = (other.data||[]).filter(r=>r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery').reduce((s,r)=>s+(Number(r.amount)||0),0);
 
     // WPS overpayment vs employee's actual Client Billing share. Two sources, both counted:
-    //  - Manual entries on Onboarding & Misc (no "[INV:id]" tag in notes) — e.g. Firangi's
-    //    "WPS paid 1600 vs hourly-rate salary 1350" — use the stored amount directly.
-    //  - Invoice-synced entries (tagged "[INV:id]") — recomputed live from the invoice
-    //    (Received → implied FX rate → SATCO share → Employee share → vs WPS paid), identical
+    //  - Manual entries on Onboarding & Misc (no "[INV:id]" tag in notes) â e.g. Firangi's
+    //    "WPS paid 1600 vs hourly-rate salary 1350" â use the stored amount directly.
+    //  - Invoice-synced entries (tagged "[INV:id]") â recomputed live from the invoice
+    //    (Received â implied FX rate â SATCO share â Employee share â vs WPS paid), identical
     //    formula to the P&L Dashboard and Client Billing's auto-repair, so all three agree.
     const manualWpsRows = (other.data||[]).filter(r=>r.cost_type==='wps_overpayment_recovery' && r.recoverable && !/\[INV:[^\]]+\]/.test(String(r.notes||'')));
     const manualWpsRecoverable = manualWpsRows.reduce((s,r)=>s+(Number(r.amount)||0),0);
     const manualWpsRecovered   = manualWpsRows.reduce((s,r)=>s+(Number(r.recovered_amount)||0),0);
-    // Raw (un-gated) manual overpayment total — includes rows where "Recoverable" has been
+    // Raw (un-gated) manual overpayment total â includes rows where "Recoverable" has been
     // manually unchecked (e.g. to be netted against next month's WPS instead of a salary
     // deduction). Used only for the factual Net WPS Position below, never for the recoverable pool.
     const manualWpsOverpaidRaw = (other.data||[]).filter(r=>r.cost_type==='wps_overpayment_recovery' && !/\[INV:[^\]]+\]/.test(String(r.notes||''))).reduce((s,r)=>s+(Number(r.amount)||0),0);
 
     const linesByInvoice = {};
     (invoiceLines.data||[]).forEach(l=>{ if(!linesByInvoice[l.invoice_id]) linesByInvoice[l.invoice_id]=[]; linesByInvoice[l.invoice_id].push(l); });
-    // Synced employee_other_costs row per invoice ([INV:id] tag) — read here so a manual
+    // Synced employee_other_costs row per invoice ([INV:id] tag) â read here so a manual
     // "un-recoverable" override (e.g. it'll be netted against next month's WPS instead of a
     // salary deduction) isn't silently overwritten by re-deriving recoverable=true from the raw
     // invoice numbers every time this recalculates.
@@ -639,15 +639,15 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       const { overpaid } = split;
       const synced = invoiceSyncMap[inv.id];
       if (overpaid > 0.5) {
-        // Raw fact (feeds Net WPS Position) — counts regardless of the manual "Recoverable" override.
+        // Raw fact (feeds Net WPS Position) â counts regardless of the manual "Recoverable" override.
         invoiceWpsOverpaidRaw += Math.round(overpaid*100)/100;
-        // Recoverable pool (feeds Total Recoverable / salary-deduction suggestions) — respects the override.
+        // Recoverable pool (feeds Total Recoverable / salary-deduction suggestions) â respects the override.
         if (!synced || synced.recoverable) invoiceWpsRecoverable += Math.round(overpaid*100)/100;
       }
       else if (overpaid < -0.5) invoiceWpsPayable += Math.round(Math.abs(overpaid)*100)/100;
     });
     const wpsOverpaymentRecoverable = manualWpsRecoverable + invoiceWpsRecoverable;
-    // Raw overpaid total — independent of the "Recoverable" checkbox. A row being marked
+    // Raw overpaid total â independent of the "Recoverable" checkbox. A row being marked
     // not-recoverable-via-salary doesn't erase the underlying fact that WPS paid more than the
     // employee's actual Client Billing share that month; it just means it'll be settled a
     // different way (netted against next month's WPS). Net WPS Position must use this, not the
@@ -655,7 +655,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
     // out of the salary-recovery bucket. Matches Client Billing tab's own Net WPS Position box.
     const wpsOverpaymentRaw = manualWpsOverpaidRaw + invoiceWpsOverpaidRaw;
 
-    // WPS underpayment — the mirror image: months where WPS paid was less than the employee's
+    // WPS underpayment â the mirror image: months where WPS paid was less than the employee's
     // actual Client Billing share, so the company owes the employee, not the other way round.
     const manualWpsPayableRows = (other.data||[]).filter(r=>r.cost_type==='wps_underpayment_payable' && !/\[INV:[^\]]+\]/.test(String(r.notes||'')));
     const manualWpsPayable = manualWpsPayableRows.reduce((s,r)=>s+(Number(r.amount)||0),0);
@@ -675,23 +675,23 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
       wpsUnderpaymentPayable,
       // Net WPS position across this employee's whole history: positive = company still owes the
       // employee net of what's been recovered the other way; negative = employee still owes company.
-      // Uses the raw (un-gated) overpaid total — this is a factual balance, not a to-do list — so
+      // Uses the raw (un-gated) overpaid total â this is a factual balance, not a to-do list â so
       // unchecking "Recoverable" on one invoice (because it'll be netted against next month's WPS
       // instead of a salary deduction) still nets correctly against other months' underpayments.
       netWpsPosition: wpsUnderpaymentPayable - Math.max(0, wpsOverpaymentRaw - recoveredFromInvoices),
     });
 
     // Lifetime totals (all entries, not just recoverable ones) for the Totals summary card.
-    // "Salary" here is the sum of each month's Net Total (Salary+Food+Accom+Transport+Other−Deductions) —
-    // matching the Net Total column on the Monthly Costs tab, i.e. the actual total paid out per month —
+    // "Salary" here is the sum of each month's Net Total (Salary+Food+Accom+Transport+OtherâDeductions) â
+    // matching the Net Total column on the Monthly Costs tab, i.e. the actual total paid out per month â
     // not just the bare salary field.
     const sumAll = (rows, amtKey) => (rows||[]).reduce((s,r)=>s+(Number(r[amtKey])||0),0);
     const monthlyNetTotal = (monthly.data||[]).reduce((s,r)=>
       s + (Number(r.salary)||0)+(Number(r.food)||0)+(Number(r.accommodation)||0)+(Number(r.transport)||0)+(Number(r.other)||0)-(Number(r.salary_deductions)||0)
     ,0);
-    // Onboarding/Misc actual costs (agent commission, salary advance, camp costs, etc.) — excludes
+    // Onboarding/Misc actual costs (agent commission, salary advance, camp costs, etc.) â excludes
     // security_deposit (income, not a cost) and wps_overpayment_recovery/wps_underpayment_payable
-    // (WPS timing differences, not extra operating cost — see P&L Dashboard's rawPnlMap for the
+    // (WPS timing differences, not extra operating cost â see P&L Dashboard's rawPnlMap for the
     // matching exclusion). Previously this whole table was left out of Lifetime Totals entirely,
     // which understated Costs / overstated Net here vs the P&L Dashboard for any employee with a
     // genuine Onboarding & Misc cost on file.
@@ -730,19 +730,19 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
         db.from('employee_ppe_issued').select('*').eq('employee_id',employeeId).order('issue_date',{ascending:false}),
       ]);
       exportMultiSectionCSV([
-        { title: `Visa Costs — ${employeeName} (${employeeId})`, rows: visa.data||[],
+        { title: `Visa Costs â ${employeeName} (${employeeId})`, rows: visa.data||[],
           cols: [{key:'visa_type',label:'Visa Type'},{key:'cost_date',label:'Date'},{key:'cost',label:'Cost (AED)'},{key:'recoverable',label:'Recoverable'},{key:'remarks',label:'Remarks'}] },
-        { title: `Flight Tickets — ${employeeName} (${employeeId})`, rows: flights.data||[],
+        { title: `Flight Tickets â ${employeeName} (${employeeId})`, rows: flights.data||[],
           cols: [{key:'flight_date',label:'Date'},{key:'sector',label:'Sector'},{key:'purpose',label:'Purpose'},{key:'cost',label:'Cost (AED)'},{key:'recoverable',label:'Recoverable'},{key:'remarks',label:'Remarks'}] },
-        { title: `Training Costs — ${employeeName} (${employeeId})`, rows: training.data||[],
+        { title: `Training Costs â ${employeeName} (${employeeId})`, rows: training.data||[],
           cols: [{key:'training_name',label:'Training Name'},{key:'training_date',label:'Date'},{key:'cost',label:'Cost (AED)'},{key:'recoverable',label:'Recoverable'},{key:'remarks',label:'Remarks'}] },
-        { title: `Onboarding & Misc Costs — ${employeeName} (${employeeId})`, rows: other.data||[],
+        { title: `Onboarding & Misc Costs â ${employeeName} (${employeeId})`, rows: other.data||[],
           cols: [{key:'cost_type',label:'Cost Type'},{key:'cost_date',label:'Date'},{key:'amount',label:'Amount (AED)'},{key:'original_currency',label:'Orig Currency'},{key:'original_amount',label:'Orig Amount'},{key:'exchange_rate',label:'Exchange Rate'},{key:'recoverable',label:'Recoverable'},{key:'recovered_amount',label:'Recovered'},{key:'notes',label:'Remarks'}] },
-        { title: `Monthly Costs — ${employeeName} (${employeeId})`, rows: monthly.data||[],
+        { title: `Monthly Costs â ${employeeName} (${employeeId})`, rows: monthly.data||[],
           cols: [{key:'month',label:'Month'},{key:'salary_type',label:'Type'},{key:'salary',label:'Salary Paid'},{key:'computed_salary',label:'Calculated Salary'},{key:'manual_override',label:'Overridden?'},{key:'basic_salary',label:'Basic Salary'},{key:'fixed_allowance',label:'Fixed Allowance'},{key:'working_days',label:'Working Days'},{key:'month_days',label:'Days in Month'},{key:'normal_ot_hours',label:'Normal OT Hrs'},{key:'holiday_ot_hours',label:'Holiday OT Hrs'},{key:'food',label:'Food'},{key:'accommodation',label:'Accommodation'},{key:'transport',label:'Transport'},{key:'other',label:'Other'},{key:'salary_deductions',label:'Deductions'},{key:'hours_worked',label:'Hours'},{key:'hourly_rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
-        { title: `Timesheets / Income — ${employeeName} (${employeeId})`, rows: timesheets.data||[],
+        { title: `Timesheets / Income â ${employeeName} (${employeeId})`, rows: timesheets.data||[],
           cols: [{key:'month',label:'Month'},{key:'client_project',label:'Client/Project'},{key:'income_type',label:'Mode'},{key:'hours',label:'Hours'},{key:'rate',label:'Rate'},{key:'remarks',label:'Remarks'}] },
-        { title: `PPE & Uniforms Issued — ${employeeName} (${employeeId})`, rows: ppe.data||[],
+        { title: `PPE & Uniforms Issued â ${employeeName} (${employeeId})`, rows: ppe.data||[],
           cols: [{key:'issue_date',label:'Issue Date'},{key:'coverall_size',label:'Coverall Size'},{key:'coverall_qty',label:'Coverall Qty'},{key:'shoes_size',label:'Shoes Size'},{key:'shoes_qty',label:'Shoes Qty'},{key:'goggles_qty',label:'Goggles Qty'},{key:'total_cost',label:'Cost (AED)'},{key:'notes',label:'Remarks'}] },
       ], 'employee_'+employeeId);
     } finally {
@@ -762,7 +762,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
             <div style={{fontSize:'12px',color:'#64748b'}}>All visa, flight, training, onboarding, monthly cost &amp; income entries for this employee</div>
           </div>
         </div>
-        <button style={S.btnExp} disabled={exporting} onClick={exportAll}>{exporting?'Preparing…':'Export CSV (all sections)'}</button>
+        <button style={S.btnExp} disabled={exporting} onClick={exportAll}>{exporting?'Preparingâ¦':'Export CSV (all sections)'}</button>
       </div>
 
       <div style={{...S.card,marginBottom:'16px',overflow:'hidden',width:'fit-content',maxWidth:'360px'}}>
@@ -796,7 +796,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
               <td style={{padding:'8px 14px',textAlign:'right',fontWeight:700,color:'#166534',whiteSpace:'nowrap'}}>{fmt(incomeTotal)}</td>
             </tr>
             <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
-              <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Net (Income − Costs)</td>
+              <td style={{padding:'8px 14px',fontWeight:800,color:'#0f172a',whiteSpace:'nowrap'}}>Net (Income â Costs)</td>
               <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,whiteSpace:'nowrap'}}><AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other+lifetimeTotals.ppe)} /></td>
             </tr>
           </tbody>
@@ -808,14 +808,14 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
           <div style={{fontWeight:800,fontSize:'14px',marginBottom:'8px'}}>HR Snapshot</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px',fontSize:'12.5px'}}>
             {[['Position',meta.position],['Nationality',meta.nationality],['Joining Date',meta.joining_date],['Status',meta.status],['Hired From',meta.hired_from],['Supplier / Agent',meta.supplier_name],['Mobilization Date',meta.mobilization_date],['Site / Location',meta.location]].map(([k,v])=>(
-              <div key={k}><div style={{color:'#94a3b8',fontWeight:600}}>{k}</div><div style={{fontWeight:700}}>{v||'—'}</div></div>
+              <div key={k}><div style={{color:'#94a3b8',fontWeight:600}}>{k}</div><div style={{fontWeight:700}}>{v||'â'}</div></div>
             ))}
           </div>
         </div>
       )}
 
       <div style={{...S.card,marginBottom:'16px',padding:'14px 18px'}}>
-        <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px'}}>Lifetime Totals — {employeeName}</div>
+        <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px'}}>Lifetime Totals â {employeeName}</div>
         <div style={{display:'grid',gridTemplateColumns:'repeat(8,1fr)',gap:'10px',fontSize:'12.5px'}}>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Visa Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.visa)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Flights Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.flights)}</div></div>
@@ -825,8 +825,8 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
           <div><div style={{color:'#94a3b8',fontWeight:600}}>PPE Total</div><div style={{fontWeight:700}}>AED {fmt(lifetimeTotals.ppe)}</div></div>
           <div><div style={{color:'#94a3b8',fontWeight:600}}>Income Total</div><div style={{fontWeight:700,color:'#166534'}}>AED {fmt(incomeTotal)}</div></div>
           <div>
-            <div style={{color:'#94a3b8',fontWeight:600}}>Net (Income − Costs)</div>
-            {/* Effective net: gross costs minus amounts already recovered from salary — matches P&L Dashboard */}
+            <div style={{color:'#94a3b8',fontWeight:600}}>Net (Income â Costs)</div>
+            {/* Effective net: gross costs minus amounts already recovered from salary â matches P&L Dashboard */}
             {recovery && recovery.totalRecovered>0
               ? <div style={{fontWeight:800}}>
                   <AmountTag value={incomeTotal-(lifetimeTotals.visa+lifetimeTotals.flights+lifetimeTotals.training+lifetimeTotals.salary+lifetimeTotals.other+lifetimeTotals.ppe)+recovery.totalRecovered} />
@@ -840,7 +840,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
 
       {!recLoading && recovery && (recovery.totalRecoverable>0 || recovery.wpsUnderpaymentPayable>0) && (
         <div style={{...S.card,marginBottom:'16px',padding:'14px 18px',background:'#fffbeb',border:'1px solid #fbbf24'}}>
-          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px',color:'#92400e'}}>Recovery Summary — money owed between {employeeName.split(' ')[0]} and SATCO</div>
+          <div style={{fontWeight:800,fontSize:'14px',marginBottom:'10px',color:'#92400e'}}>Recovery Summary â money owed between {employeeName.split(' ')[0]} and SATCO</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'10px',fontSize:'12.5px',marginBottom:'10px'}}>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Visa (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.visaRecoverable)}</div></div>
             <div><div style={{color:'#94a3b8',fontWeight:600}}>Flights (recoverable)</div><div style={{fontWeight:700}}>AED {fmt(recovery.flightsRecoverable)}</div></div>
@@ -857,18 +857,18 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Balance to Recover</div><div style={{fontWeight:800,fontSize:'16px',color:recovery.balance>0?'#dc2626':'#166534'}}>AED {fmt(Math.abs(recovery.balance))}{recovery.balance<0?' (over-recovered)':''}</div></div>
             <div><div style={{color:'#92400e',fontWeight:700,fontSize:'11px',textTransform:'uppercase'}}>Net WPS Position</div><div style={{fontWeight:800,fontSize:'16px',color:Math.abs(recovery.netWpsPosition)<=0.5?'#166534':recovery.netWpsPosition>0?'#1d4ed8':'#dc2626'}}>{Math.abs(recovery.netWpsPosition)<=0.5?'Settled':(recovery.netWpsPosition>0?'Owe employee ':'Employee owes ')+'AED '+fmt(Math.abs(recovery.netWpsPosition))}</div></div>
           </div>
-          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}><strong>P&amp;L impact:</strong> As amounts are recovered from this employee&apos;s salary, the <em>Total Expense</em> on the P&amp;L Dashboard reduces by the same amount and Net P/L improves — the P&amp;L always shows the company&apos;s <em>net</em> cost, not the gross upfront cost. Recovered = Deductions entered each month in Monthly Costs + Deposits Received + WPS Overpaid recovered + WPS recoveries logged on Client Billing. WPS Underpaid is carried separately as a payable (money the company owes the employee, since WPS is paid before the client invoice settles) and is not deducted from expense. To recover costs, enter the deduction amount when adding/editing the monthly salary record.</div>
+          <div style={{fontSize:'11px',color:'#92400e',marginTop:'10px'}}><strong>P&amp;L impact:</strong> As amounts are recovered from this employee&apos;s salary, the <em>Total Expense</em> on the P&amp;L Dashboard reduces by the same amount and Net P/L improves â the P&amp;L always shows the company&apos;s <em>net</em> cost, not the gross upfront cost. Recovered = Deductions entered each month in Monthly Costs + Deposits Received + WPS Overpaid recovered + WPS recoveries logged on Client Billing. WPS Underpaid is carried separately as a payable (money the company owes the employee, since WPS is paid before the client invoice settles) and is not deducted from expense. To recover costs, enter the deduction amount when adding/editing the monthly salary record.</div>
         </div>
       )}
 
       <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
-        <CostTable title={'Visa Costs — '+employeeName} table="employee_visa_costs" employees={employees} dateField="cost_date" initialFilter={filt} hideEmpFilter hideExportButton recoverableSupport
+        <CostTable title={'Visa Costs â '+employeeName} table="employee_visa_costs" employees={employees} dateField="cost_date" initialFilter={filt} hideEmpFilter hideExportButton recoverableSupport
           fields={[{key:'visa_type',label:'Visa Type',type:'select',options:['visit_visa','residence_visa','employment_entry_permit','visa_transfer','renewal','cancellation']},{key:'cost_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
 
-        <CostTable title={'Flight Tickets — '+employeeName} table="employee_flights" employees={employees} dateField="flight_date" initialFilter={filt} hideEmpFilter hideExportButton recoverableSupport
+        <CostTable title={'Flight Tickets â '+employeeName} table="employee_flights" employees={employees} dateField="flight_date" initialFilter={filt} hideEmpFilter hideExportButton recoverableSupport
           fields={[{key:'flight_date',label:'Date',type:'date'},{key:'sector',label:'Sector',type:'text'},{key:'purpose',label:'Purpose',type:'select',options:['mobilization','demobilization','annual_leave','emergency']},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
 
-        <CostTable title={'Training Costs — '+employeeName} table="employee_training_costs" employees={employees} dateField="training_date" initialFilter={filt} hideEmpFilter hideExportButton recoverableSupport
+        <CostTable title={'Training Costs â '+employeeName} table="employee_training_costs" employees={employees} dateField="training_date" initialFilter={filt} hideEmpFilter hideExportButton recoverableSupport
           fields={[{key:'training_name',label:'Training Name',type:'text'},{key:'training_date',label:'Date',type:'date'},{key:'cost',label:'Cost (AED)',type:'number'},{key:'remarks',label:'Remarks',type:'text'}]} />
 
         <OtherCostsTable employees={employees} initialFilter={filt} hideEmpFilter hideExportButton />
@@ -887,7 +887,7 @@ function EmployeeDetailPage({ employeeId, employeeName, employees, empMeta, hrSa
   );
 }
 
-// ── SALARY PROFILES TAB ──────────────────────────────────────────
+// ââ SALARY PROFILES TAB ââââââââââââââââââââââââââââââââââââââââââ
 // One row per employee: basic salary + fixed allowance, set once and correctable.
 // HR values are shown as the source; Finance can save/correct a local profile.
 function SalaryProfilesTab({ employees, empMeta, hrSalaryRows=[], hrSalaryStatus={} }) {
@@ -938,7 +938,7 @@ function SalaryProfilesTab({ employees, empMeta, hrSalaryRows=[], hrSalaryStatus
       basic_salary:    row.profile ? row.profile.basic_salary : (hr.basic_salary ?? ''),
       fixed_allowance: row.profile ? row.profile.fixed_allowance : (hr.fixed_allowance ?? ''),
       effective_date:  row.profile ? (row.profile.effective_date||'') : '',
-      remarks:         row.profile ? (row.profile.remarks||'') : (hr.employee_id ? 'Pulled from HR portal — editable by Finance/HR' : ''),
+      remarks:         row.profile ? (row.profile.remarks||'') : (hr.employee_id ? 'Pulled from HR portal â editable by Finance/HR' : ''),
       _existing_id:    row.profile ? row.profile.id : null,
       _hr_basic:       hr.basic_salary ?? '',
       _hr_allowance:   hr.fixed_allowance ?? '',
@@ -981,7 +981,7 @@ function SalaryProfilesTab({ employees, empMeta, hrSalaryRows=[], hrSalaryStatus
         basic_salary:Number(r.basic_salary)||0,
         fixed_allowance:Number(r.fixed_allowance)||0,
         effective_date:null,
-        remarks:(overwrite?'HR sync overwrite':'HR sync initial')+' — '+new Date().toISOString().slice(0,10),
+        remarks:(overwrite?'HR sync overwrite':'HR sync initial')+' â '+new Date().toISOString().slice(0,10),
         updated_at:new Date().toISOString(),
       }));
     if (!payload.length) { setSyncing(false); return alert('All HR salary rows already have Finance profiles. Use overwrite if you want to refresh them.'); }
@@ -1005,26 +1005,26 @@ function SalaryProfilesTab({ employees, empMeta, hrSalaryRows=[], hrSalaryStatus
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'14px',flexWrap:'wrap',gap:'10px'}}>
         <div>
-          <h2 style={{margin:0,fontSize:'17px',fontWeight:800}}>💼 Salary Master — HR Pull + Finance Correction</h2>
+          <h2 style={{margin:0,fontSize:'17px',fontWeight:800}}>ð¼ Salary Master â HR Pull + Finance Correction</h2>
           <div style={{fontSize:'12px',color:'#64748b',marginTop:'3px'}}>
             Basic salary and fixed allowance are entered/synced once. Monthly Costs and WPS can use this master instead of monthly re-entry.
           </div>
         </div>
         <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
-          <input placeholder="Search employee…" value={search} onChange={e=>setSearch(e.target.value)}
+          <input placeholder="Search employeeâ¦" value={search} onChange={e=>setSearch(e.target.value)}
             style={{padding:'7px 12px',borderRadius:'8px',border:'1px solid #e2e8f0',fontSize:'13px',width:'200px'}} />
-          <button onClick={()=>syncFromHr(false)} disabled={syncing || !hrCount} style={{...S.btnExp,opacity:(syncing||!hrCount)?0.6:1}}>⬇ Sync Missing from HR</button>
-          <button onClick={()=>syncFromHr(true)} disabled={syncing || !hrCount} style={{...S.btnPri,background:'#7c3aed',opacity:(syncing||!hrCount)?0.6:1}}>↻ Overwrite from HR</button>
+          <button onClick={()=>syncFromHr(false)} disabled={syncing || !hrCount} style={{...S.btnExp,opacity:(syncing||!hrCount)?0.6:1}}>â¬ Sync Missing from HR</button>
+          <button onClick={()=>syncFromHr(true)} disabled={syncing || !hrCount} style={{...S.btnPri,background:'#7c3aed',opacity:(syncing||!hrCount)?0.6:1}}>â» Overwrite from HR</button>
         </div>
       </div>
 
       {hrSalaryStatus.error ? (
         <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'10px',padding:'12px 16px',marginBottom:'14px',fontSize:'12px',color:'#991b1b'}}>
-          <div style={{fontWeight:800,marginBottom:'4px'}}>⚠️ HR salary pull is blocked or the HR view is missing.</div>
+          <div style={{fontWeight:800,marginBottom:'4px'}}>â ï¸ HR salary pull is blocked or the HR view is missing.</div>
           <div style={{marginBottom:'6px'}}>{hrSalaryStatus.error}</div>
           {hrSalaryStatus.error && hrSalaryStatus.error.includes('permission denied') && (
             <div style={{background:'#fff3cd',border:'1px solid #ffc107',borderRadius:'6px',padding:'8px 12px',marginBottom:'8px',color:'#856404',fontWeight:700,fontSize:'11.5px'}}>
-              🔧 <strong>Fix:</strong> The HR Supabase view reads from <code>public.employees</code> but the <code>anon</code> role lacks SELECT permission on that base table.
+              ð§ <strong>Fix:</strong> The HR Supabase view reads from <code>public.employees</code> but the <code>anon</code> role lacks SELECT permission on that base table.
               Run the SQL below in the <strong>HR Supabase SQL Editor</strong> (project: oaerqjrkdpuhiproppaz) to fix:
               <pre style={{background:'#1e293b',color:'#f8fafc',padding:'8px 10px',borderRadius:'6px',fontSize:'11px',marginTop:'6px',overflowX:'auto',whiteSpace:'pre'}}>GRANT SELECT ON public.employees TO anon, authenticated;
 GRANT SELECT ON public.mob_demob TO anon, authenticated;
@@ -1039,7 +1039,7 @@ NOTIFY pgrst, 'reload schema';</pre>
         </div>
       ) : (
         <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'10px',padding:'10px 14px',marginBottom:'14px',fontSize:'12px',color:'#166534',fontWeight:700}}>
-          ✅ HR salary bridge loaded {hrSalaryRows.length} employee row(s){hrSalaryStatus.source ? ` from ${hrSalaryStatus.source}` : ''}. Finance can still correct any value locally.
+          â HR salary bridge loaded {hrSalaryRows.length} employee row(s){hrSalaryStatus.source ? ` from ${hrSalaryStatus.source}` : ''}. Finance can still correct any value locally.
         </div>
       )}
 
@@ -1058,7 +1058,7 @@ NOTIFY pgrst, 'reload schema';</pre>
         ))}
       </div>
 
-      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loading…</div> : (
+      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loadingâ¦</div> : (
         <div className="drag-scroll" style={{overflowX:'auto'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
             <thead>
@@ -1075,25 +1075,25 @@ NOTIFY pgrst, 'reload schema';</pre>
                 const hr = row.hr;
                 const basic = p ? Number(p.basic_salary)||0 : (hr ? Number(hr.basic_salary)||0 : 0);
                 const allow = p ? Number(p.fixed_allowance)||0 : (hr ? Number(hr.fixed_allowance)||0 : 0);
-                const status = p ? (String(p.remarks||'').toLowerCase().includes('hr sync') ? 'Saved from HR' : 'Finance corrected') : (hr ? 'HR available — not saved' : 'Not set');
+                const status = p ? (String(p.remarks||'').toLowerCase().includes('hr sync') ? 'Saved from HR' : 'Finance corrected') : (hr ? 'HR available â not saved' : 'Not set');
                 return (
                   <tr key={row.employee_id} style={{borderBottom:'1px solid #f1f5f9',background:!p&&hr?'#f8fafc':'#fff'}}>
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb'}}>{row.employee_id}</td>
                     <td style={S.td}>{row.full_name}</td>
-                    <td style={{...S.td,color:'#64748b',fontSize:'12px'}}>{row.meta.position||hr?.position||'—'}</td>
-                    <td style={{...S.td,textAlign:'right',color:hr?'#0f766e':'#cbd5e1'}}>{hr ? 'AED '+fmt(hr.basic_salary||0) : '—'}</td>
-                    <td style={{...S.td,textAlign:'right',color:hr?'#0f766e':'#cbd5e1'}}>{hr ? 'AED '+fmt(hr.fixed_allowance||0) : '—'}</td>
+                    <td style={{...S.td,color:'#64748b',fontSize:'12px'}}>{row.meta.position||hr?.position||'â'}</td>
+                    <td style={{...S.td,textAlign:'right',color:hr?'#0f766e':'#cbd5e1'}}>{hr ? 'AED '+fmt(hr.basic_salary||0) : 'â'}</td>
+                    <td style={{...S.td,textAlign:'right',color:hr?'#0f766e':'#cbd5e1'}}>{hr ? 'AED '+fmt(hr.fixed_allowance||0) : 'â'}</td>
                     <td style={{...S.td,textAlign:'right',fontWeight:p?800:500,color:p?'#166534':'#94a3b8'}}>{p ? 'AED '+fmt(p.basic_salary) : (hr?'preview':'not set')}</td>
-                    <td style={{...S.td,textAlign:'right',fontWeight:p?700:500,color:p?'#7c3aed':'#94a3b8'}}>{p ? 'AED '+fmt(p.fixed_allowance) : (hr?'preview':'—')}</td>
-                    <td style={{...S.td,textAlign:'right',fontWeight:800,color:(p||hr)?'#b45309':'#94a3b8'}}>{(p||hr) ? 'AED '+fmt(basic+allow) : '—'}</td>
+                    <td style={{...S.td,textAlign:'right',fontWeight:p?700:500,color:p?'#7c3aed':'#94a3b8'}}>{p ? 'AED '+fmt(p.fixed_allowance) : (hr?'preview':'â')}</td>
+                    <td style={{...S.td,textAlign:'right',fontWeight:800,color:(p||hr)?'#b45309':'#94a3b8'}}>{(p||hr) ? 'AED '+fmt(basic+allow) : 'â'}</td>
                     <td style={S.td}><span style={{background:p?'#dcfce7':hr?'#e0f2fe':'#f1f5f9',color:p?'#166534':hr?'#0369a1':'#64748b',fontSize:'10.5px',fontWeight:800,padding:'3px 8px',borderRadius:'10px'}}>{status}</span></td>
-                    <td style={{...S.td,fontSize:'12px',color:'#64748b',maxWidth:'220px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p&&p.remarks||'—'}</td>
+                    <td style={{...S.td,fontSize:'12px',color:'#64748b',maxWidth:'220px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p&&p.remarks||'â'}</td>
                     <td style={{...S.td,textAlign:'center'}}>
                       <div style={{display:'flex',gap:'6px',justifyContent:'center'}}>
                         <button onClick={()=>openEdit(row)} style={{...S.btnPri,padding:'4px 12px',fontSize:'12px',background:'#2563eb'}}>
-                          {p ? '✏️ Correct' : (hr?'Save/Correct':'+ Set')}
+                          {p ? 'âï¸ Correct' : (hr?'Save/Correct':'+ Set')}
                         </button>
-                        {p && <button onClick={()=>del(p.id)} style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>🗑</button>}
+                        {p && <button onClick={()=>del(p.id)} style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>ð</button>}
                       </div>
                     </td>
                   </tr>
@@ -1108,9 +1108,9 @@ NOTIFY pgrst, 'reload schema';</pre>
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
           <div style={{background:'#fff',borderRadius:'14px',padding:'28px',width:'560px',maxWidth:'95vw',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',maxHeight:'90vh',overflowY:'auto'}}>
             <h3 style={{margin:'0 0 4px',fontSize:'16px',fontWeight:800}}>
-              {draft._existing_id ? '✏️ Correct Salary Profile' : '+ Set Salary Profile'}
+              {draft._existing_id ? 'âï¸ Correct Salary Profile' : '+ Set Salary Profile'}
             </h3>
-            <div style={{fontSize:'12px',color:'#64748b',marginBottom:'14px'}}>{draft.employee_id} — {draft.full_name}</div>
+            <div style={{fontSize:'12px',color:'#64748b',marginBottom:'14px'}}>{draft.employee_id} â {draft.full_name}</div>
             {(draft._hr_basic!=='' || draft._hr_allowance!=='') && (
               <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:'8px',padding:'10px 12px',marginBottom:'14px',fontSize:'12px',color:'#1e40af'}}>
                 HR portal value: Basic <strong>AED {fmt(draft._hr_basic||0)}</strong> + Allowance <strong>AED {fmt(draft._hr_allowance||0)}</strong>
@@ -1128,7 +1128,7 @@ NOTIFY pgrst, 'reload schema';</pre>
               </div>
             </div>
             <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'8px',padding:'10px 14px',marginBottom:'14px',fontSize:'13px'}}>
-              💰 Monthly WPS total: <strong>AED {fmt((Number(draft.basic_salary)||0)+(Number(draft.fixed_allowance)||0))}</strong>
+              ð° Monthly WPS total: <strong>AED {fmt((Number(draft.basic_salary)||0)+(Number(draft.fixed_allowance)||0))}</strong>
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px',marginBottom:'14px'}}>
               <div><label style={S.label}>Effective From</label><input type="date" value={draft.effective_date} onChange={e=>setDraft(d=>({...d,effective_date:e.target.value}))} style={{...S.input,width:'100%'}} /></div>
@@ -1136,7 +1136,7 @@ NOTIFY pgrst, 'reload schema';</pre>
             </div>
             <div style={{display:'flex',gap:'10px',justifyContent:'flex-end'}}>
               <button onClick={()=>setDraft(null)} style={S.btnSec}>Cancel</button>
-              <button onClick={save} disabled={saving} style={{...S.btnPri,opacity:saving?0.6:1}}>{saving ? 'Saving…' : 'Save Profile'}</button>
+              <button onClick={save} disabled={saving} style={{...S.btnPri,opacity:saving?0.6:1}}>{saving ? 'Savingâ¦' : 'Save Profile'}</button>
             </div>
           </div>
         </div>
@@ -1145,9 +1145,9 @@ NOTIFY pgrst, 'reload schema';</pre>
   );
 }
 
-// ── DEDUCTION LEDGER TAB ──────────────────────────────────────────
+// ââ DEDUCTION LEDGER TAB ââââââââââââââââââââââââââââââââââââââââââ
 // HR uses this to log approved deductions (visa recovery, deposit, advance, etc.)
-// Finance sees it as read-only context when deciding what to put in Monthly Costs → Deductions.
+// Finance sees it as read-only context when deciding what to put in Monthly Costs â Deductions.
 function DeductionLedgerTab({ employees, empMeta }) {
   const [rows,    setRows]    = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1230,7 +1230,7 @@ function DeductionLedgerTab({ employees, empMeta }) {
   const createFromFinanceReview = (r) => setDraft({
     employee_id:r.employee_id||'', full_name:r.full_name||'', deduction_type:r.suggested_type||'other',
     amount:r.review_amount||'', approved_by:'', advance_date:'', effective_month:monthStr(r.cost_date||r.month)||'',
-    deducted_month:'', notes:`From Finance review: ${r.review_type}${r.notes?' — '+r.notes:''}`, status:'pending',
+    deducted_month:'', notes:`From Finance review: ${r.review_type}${r.notes?' â '+r.notes:''}`, status:'pending',
   });
 
   const STATUS_COLOR = { pending:'#92400e', applied:'#166534', waived:'#64748b' };
@@ -1253,13 +1253,13 @@ function DeductionLedgerTab({ employees, empMeta }) {
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'14px',flexWrap:'wrap',gap:'10px'}}>
         <div>
-          <h2 style={{margin:0,fontSize:'17px',fontWeight:800}}>📋 Deduction Ledger (HR)</h2>
+          <h2 style={{margin:0,fontSize:'17px',fontWeight:800}}>ð Deduction Ledger (HR)</h2>
           <div style={{fontSize:'12px',color:'#64748b',marginTop:'3px'}}>
             HR logs approved deductions here. Finance uses this as reference when entering "Deductions" in Monthly Costs.
           </div>
         </div>
         <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
-          <input placeholder="Filter by employee…" value={filter} onChange={e=>setFilter(e.target.value)}
+          <input placeholder="Filter by employeeâ¦" value={filter} onChange={e=>setFilter(e.target.value)}
             style={{padding:'7px 12px',borderRadius:'8px',border:'1px solid #e2e8f0',fontSize:'13px',width:'190px'}} />
           <button onClick={blank} style={S.btnPri}>+ Add Entry</button>
         </div>
@@ -1269,9 +1269,9 @@ function DeductionLedgerTab({ employees, empMeta }) {
       <div style={{display:'flex',gap:'12px',marginBottom:'14px',flexWrap:'wrap'}}>
         {[
           ['Total Entries',rows.length,'#2563eb'],
-          ['⏳ Pending Recovery','AED '+fmt(pending),'#b45309'],
-          ['✅ Applied',rows.filter(r=>r.status==='applied').length+' entries','#166534'],
-          ['🚫 Waived',rows.filter(r=>r.status==='waived').length+' entries','#64748b'],
+          ['â³ Pending Recovery','AED '+fmt(pending),'#b45309'],
+          ['â Applied',rows.filter(r=>r.status==='applied').length+' entries','#166534'],
+          ['ð« Waived',rows.filter(r=>r.status==='waived').length+' entries','#64748b'],
         ].map(([lbl,val,col])=>(
           <div key={lbl} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'10px 16px',minWidth:'140px'}}>
             <div style={{fontSize:'11px',color:'#64748b',fontWeight:600}}>{lbl}</div>
@@ -1293,8 +1293,8 @@ function DeductionLedgerTab({ employees, empMeta }) {
                   <td style={S.td}>{r.full_name}</td>
                   <td style={S.td}>{r.review_type}</td>
                   <td style={{...S.td,fontWeight:800,color:r.info_only?'#166534':'#dc2626',textAlign:'right'}}>AED {fmt(r.review_amount)}</td>
-                  <td style={S.td}>{monthStr(r.cost_date||r.month)||'—'}</td>
-                  <td style={{...S.tdWrap,fontSize:'11.5px',color:'#7c2d12'}}>{r.notes||'—'}</td>
+                  <td style={S.td}>{monthStr(r.cost_date||r.month)||'â'}</td>
+                  <td style={{...S.tdWrap,fontSize:'11.5px',color:'#7c2d12'}}>{r.notes||'â'}</td>
                   <td style={S.td}>{r.info_only ? <span style={{fontSize:'11px',color:'#64748b'}}>Info only</span> : <button onClick={()=>createFromFinanceReview(r)} style={{...S.btnPri,padding:'4px 10px',fontSize:'11px',background:'#c2410c'}}>Create Ledger</button>}</td>
                 </tr>
               ))}
@@ -1303,7 +1303,7 @@ function DeductionLedgerTab({ employees, empMeta }) {
         </div>
       </div>
 
-      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loading…</div> : (() => {
+      {loading ? <div style={{color:'#94a3b8',padding:'20px'}}>Loadingâ¦</div> : (() => {
         // Group by effective_month for per-month view
         const grouped = {};
         filtered.forEach(r => {
@@ -1318,7 +1318,7 @@ function DeductionLedgerTab({ employees, empMeta }) {
             <div key={month} style={{marginBottom:'18px'}}>
               <div style={{fontWeight:800,fontSize:'12px',color:'#475569',textTransform:'uppercase',letterSpacing:'.05em',
                 padding:'6px 12px',background:'#f1f5f9',borderRadius:'6px',marginBottom:'4px',borderLeft:'3px solid #7c3aed'}}>
-                📅 {month==='No Month' ? 'No Month Assigned' : month}
+                ð {month==='No Month' ? 'No Month Assigned' : month}
                 <span style={{fontWeight:400,color:'#94a3b8',marginLeft:'8px'}}>{grouped[month].length} entr{grouped[month].length===1?'y':'ies'}</span>
               </div>
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12.5px'}}>
@@ -1341,18 +1341,18 @@ function DeductionLedgerTab({ employees, empMeta }) {
                       <td style={S.td}>{TYPES.find(t=>t.value===r.deduction_type)?.label||r.deduction_type}</td>
                       <td style={{...S.td,textAlign:'right',fontWeight:700,color:isDeducted?'#166534':'#dc2626'}}>
                         AED {fmt(r.amount)}
-                        {isDeducted && <span style={{fontSize:'10px',display:'block',color:'#166534',fontWeight:600}}>✅ deducted</span>}
+                        {isDeducted && <span style={{fontSize:'10px',display:'block',color:'#166534',fontWeight:600}}>â deducted</span>}
                       </td>
-                      <td style={{...S.td,fontSize:'11.5px',color:'#64748b'}}>{r.advance_date?r.advance_date.slice(0,10):'—'}</td>
-                      <td style={{...S.td,fontSize:'11.5px'}}>{r.approved_by||'—'}</td>
-                      <td style={{...S.td,fontSize:'11.5px',color:'#64748b',maxWidth:'160px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.notes||'—'}</td>
+                      <td style={{...S.td,fontSize:'11.5px',color:'#64748b'}}>{r.advance_date?r.advance_date.slice(0,10):'â'}</td>
+                      <td style={{...S.td,fontSize:'11.5px'}}>{r.approved_by||'â'}</td>
+                      <td style={{...S.td,fontSize:'11.5px',color:'#64748b',maxWidth:'160px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.notes||'â'}</td>
                       <td style={S.td}>
                         <span style={{background:STATUS_BG[r.status]||'#f1f5f9',color:STATUS_COLOR[r.status]||'#475569',fontSize:'11px',fontWeight:700,padding:'3px 10px',borderRadius:'10px'}}>
                           {r.status}
                         </span>
                       </td>
                       <td style={{...S.td,fontSize:'11px',color:isDeducted?'#166534':'#94a3b8'}}>
-                        {isDeducted ? (r.deducted_month?r.deducted_month.slice(0,7):'✅ Applied') : '—'}
+                        {isDeducted ? (r.deducted_month?r.deducted_month.slice(0,7):'â Applied') : 'â'}
                       </td>
                       <td style={{...S.td,textAlign:'center'}}>
                         <div style={{display:'flex',gap:'6px',justifyContent:'center'}}>
@@ -1361,9 +1361,9 @@ function DeductionLedgerTab({ employees, empMeta }) {
                             advance_date:r.advance_date?r.advance_date.slice(0,10):'',
                             deducted_month:r.deducted_month?r.deducted_month.slice(0,7):'',
                           })}
-                            style={{...S.btnSec,padding:'4px 10px',fontSize:'12px'}}>✏️</button>
+                            style={{...S.btnSec,padding:'4px 10px',fontSize:'12px'}}>âï¸</button>
                           <button onClick={()=>del(r.id)}
-                            style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>🗑</button>
+                            style={{...S.btnSec,padding:'4px 10px',fontSize:'12px',color:'#dc2626',border:'1px solid #fecaca'}}>ð</button>
                         </div>
                       </td>
                     </tr>
@@ -1385,7 +1385,7 @@ function DeductionLedgerTab({ employees, empMeta }) {
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
           <div style={{background:'#fff',borderRadius:'14px',padding:'28px',width:'460px',maxWidth:'95vw',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
             <h3 style={{margin:'0 0 16px',fontSize:'16px',fontWeight:800}}>
-              {draft.id ? '✏️ Edit Deduction Entry' : '+ New Deduction Entry'}
+              {draft.id ? 'âï¸ Edit Deduction Entry' : '+ New Deduction Entry'}
             </h3>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'12px'}}>
               <div style={{gridColumn:'1/-1'}}>
@@ -1393,14 +1393,14 @@ function DeductionLedgerTab({ employees, empMeta }) {
                 <select value={draft.employee_id}
                   onChange={e=>{ const emp=employees.find(x=>x.employee_id===e.target.value); setDraft(d=>({...d,employee_id:e.target.value,full_name:emp?.full_name||''})); }}
                   style={{...S.input,width:'100%'}}>
-                  <option value="">— select employee —</option>
+                  <option value="">â select employee â</option>
                   {employees.filter(e=>!e.is_temp).map(e=>(
-                    <option key={e.employee_id} value={e.employee_id}>{e.employee_id} — {e.full_name}</option>
+                    <option key={e.employee_id} value={e.employee_id}>{e.employee_id} â {e.full_name}</option>
                   ))}
                   {employees.filter(e=>e.is_temp).length>0 && (
-                    <optgroup label="── Pending / Pre-joining (Temp IDs) ──">
+                    <optgroup label="ââ Pending / Pre-joining (Temp IDs) ââ">
                       {employees.filter(e=>e.is_temp).map(e=>(
-                        <option key={e.employee_id} value={e.employee_id}>{e.employee_id} — {e.full_name}</option>
+                        <option key={e.employee_id} value={e.employee_id}>{e.employee_id} â {e.full_name}</option>
                       ))}
                     </optgroup>
                   )}
@@ -1434,9 +1434,9 @@ function DeductionLedgerTab({ employees, empMeta }) {
               <div>
                 <label style={S.label}>Status</label>
                 <select value={draft.status} onChange={e=>setDraft(d=>({...d,status:e.target.value}))} style={{...S.input,width:'100%'}}>
-                  <option value="pending">⏳ Pending</option>
-                  <option value="applied">✅ Applied</option>
-                  <option value="waived">🚫 Waived</option>
+                  <option value="pending">â³ Pending</option>
+                  <option value="applied">â Applied</option>
+                  <option value="waived">ð« Waived</option>
                 </select>
               </div>
               {draft.status==='applied' && (
@@ -1449,18 +1449,18 @@ function DeductionLedgerTab({ employees, empMeta }) {
               <div style={{gridColumn:'1/-1'}}>
                 <label style={S.label}>Notes</label>
                 <input type="text" value={draft.notes||''} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))}
-                  style={{...S.input,width:'100%'}} placeholder="e.g. Visa cost AED 2,500 — to recover over 3 months" />
+                  style={{...S.input,width:'100%'}} placeholder="e.g. Visa cost AED 2,500 â to recover over 3 months" />
               </div>
             </div>
             {draft.status==='applied' && (
               <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'8px 12px',marginBottom:'12px',fontSize:'12px',color:'#166534',fontWeight:700}}>
-                ✅ This entry will be marked as <strong>Applied</strong> and shown with a green "deducted" badge in the ledger table. The deducted month will be recorded for reference.
+                â This entry will be marked as <strong>Applied</strong> and shown with a green "deducted" badge in the ledger table. The deducted month will be recorded for reference.
               </div>
             )}
             <div style={{display:'flex',gap:'10px',justifyContent:'flex-end'}}>
               <button onClick={()=>setDraft(null)} style={S.btnSec}>Cancel</button>
               <button onClick={save} disabled={saving} style={{...S.btnPri,opacity:saving?0.6:1}}>
-                {saving?'Saving…':'Save'}
+                {saving?'Savingâ¦':'Save'}
               </button>
             </div>
           </div>
@@ -1472,14 +1472,14 @@ function DeductionLedgerTab({ employees, empMeta }) {
 
 
 
-// ── SALARY PIPELINE TAB (v2) ──────────────────────────────────────
+// ââ SALARY PIPELINE TAB (v2) ââââââââââââââââââââââââââââââââââââââ
 // Features:
-// A) Month Calendar — mark Sundays (auto) + Public Holidays (manual)
-// B) Idle Days Tracker — employees deployed but idle (waiting certs etc.)
-// C) Bulk PDF Timesheet OCR — AI reads all employees in one pass
+// A) Month Calendar â mark Sundays (auto) + Public Holidays (manual)
+// B) Idle Days Tracker â employees deployed but idle (waiting certs etc.)
+// C) Bulk PDF Timesheet OCR â AI reads all employees in one pass
 // D) Name fuzzy-match review screen
 // E) Salary calculation respecting holidays, idle days, OT
 
 const CLAUDE_PROXY = 'https://satco-hr.vercel.app/api/claude';
 
-// ── Fuzzy name matching ──────────────────────────────────────────
+// ââ Fuzzy name matching ââââââââââââââââââââââââââââââââââââââââââ
