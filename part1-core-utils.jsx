@@ -471,27 +471,26 @@ async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currenc
     if (error) throw error;
     invoiceId = ins.id;
   }
-}
-
-// Sync received payment into ops.payments — Finance is source of truth.
-// Uses mode='finance_portal_sync' as unique marker to upsert (no double-counting on re-save).
-if (invoiceId && received_amount_aed && received_date) {
-  const { data: existingPmt } = await db.schema('ops').from('payments')
-    .select('id').eq('invoice_id', invoiceId).eq('mode', 'finance_portal_sync').maybeSingle();
-  if (existingPmt) {
-    await db.schema('ops').from('payments').update({
-      amount: Number(received_amount_aed),
-      paid_date: received_date,
-      remarks: `Auto-synced from Finance Portal (${received_currency || 'AED'} received)`,
-    }).eq('id', existingPmt.id);
-  } else {
-    await db.schema('ops').from('payments').insert({
-      invoice_id: invoiceId,
-      amount: Number(received_amount_aed),
-      paid_date: received_date,
-      mode: 'finance_portal_sync',
-      remarks: `Auto-synced from Finance Portal (${received_currency || 'AED'} received)`,
-    });
+  // Sync received payment into ops.payments — Finance is source of truth.
+  // Uses mode='finance_portal_sync' as unique marker to upsert (no double-counting on re-save).
+  if (invoiceId && received_amount_aed && received_date) {
+    const { data: existingPmt } = await db.schema('ops').from('payments')
+      .select('id').eq('invoice_id', invoiceId).eq('mode', 'finance_portal_sync').maybeSingle();
+    if (existingPmt) {
+      await db.schema('ops').from('payments').update({
+        amount: Number(received_amount_aed),
+        paid_date: received_date,
+        remarks: `Auto-synced from Finance Portal (${received_currency || 'AED'} received)`,
+      }).eq('id', existingPmt.id);
+    } else {
+      await db.schema('ops').from('payments').insert({
+        invoice_id: invoiceId,
+        amount: Number(received_amount_aed),
+        paid_date: received_date,
+        mode: 'finance_portal_sync',
+        remarks: `Auto-synced from Finance Portal (${received_currency || 'AED'} received)`,
+      });
+    }
   }
 }
 
