@@ -494,7 +494,6 @@ if (invoiceId && received_amount_aed && received_date) {
     });
   }
 }
-}
 
 // Removes the mirrored row from ops.invoices when the source invoice is deleted in Finance, so a
 // deleted invoice doesn't linger in the Ops portal. If Ops has payments recorded against it, the
