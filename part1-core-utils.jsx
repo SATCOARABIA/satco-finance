@@ -440,10 +440,11 @@ async function opsMappingFor(clientName) {
 // period on every save (Finance is the source of truth for what was actually billed), but only
 // sets po_id/customer_id/status on first sync, so it never clobbers status changes ("sent",
 // "paid") or a manual PO re-link made later from the Ops side.
-async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currency, value, period_from, period_to }) {
+async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currency, value, period_from, period_to, received_amount_aed, received_date, received_currency }) {
   if (!invoice_no) return;
   const { data: existing, error: findErr } = await db.schema('ops').from('invoices').select('id').eq('invoice_no', invoice_no).maybeSingle();
   if (findErr) throw findErr;
+  let invoiceId = existing ? existing.id : null;
   if (existing) {
     const { error } = await db.schema('ops').from('invoices').update({
       invoice_date: invoice_date || null,
@@ -455,7 +456,7 @@ async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currenc
     if (error) throw error;
   } else {
     const mapping = await opsMappingFor(client_name);
-    const { error } = await db.schema('ops').from('invoices').insert({
+    const { data: ins, error } = await db.schema('ops').from('invoices').insert({
       invoice_no,
       invoice_date: invoice_date || null,
       po_id: (mapping && mapping.ops_po_id) || null,
@@ -468,7 +469,31 @@ async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currenc
       status: 'draft',
     });
     if (error) throw error;
+    invoiceId = ins.id;
   }
+}
+
+// Sync received payment into ops.payments — Finance is source of truth.
+// Uses mode='finance_portal_sync' as unique marker to upsert (no double-counting on re-save).
+if (invoiceId && received_amount_aed && received_date) {
+  const { data: existingPmt } = await db.schema('ops').from('payments')
+    .select('id').eq('invoice_id', invoiceId).eq('mode', 'finance_portal_sync').maybeSingle();
+  if (existingPmt) {
+    await db.schema('ops').from('payments').update({
+      amount: Number(received_amount_aed),
+      paid_date: received_date,
+      remarks: `Auto-synced from Finance Portal (${received_currency || 'AED'} received)`,
+    }).eq('id', existingPmt.id);
+  } else {
+    await db.schema('ops').from('payments').insert({
+      invoice_id: invoiceId,
+      amount: Number(received_amount_aed),
+      paid_date: received_date,
+      mode: 'finance_portal_sync',
+      remarks: `Auto-synced from Finance Portal (${received_currency || 'AED'} received)`,
+    });
+  }
+}
 }
 
 // Removes the mirrored row from ops.invoices when the source invoice is deleted in Finance, so a
