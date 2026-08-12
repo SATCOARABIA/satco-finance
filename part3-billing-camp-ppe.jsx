@@ -122,13 +122,14 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       project_location:'Netherlands', po_reference:'', invoice_number:'', invoice_date:new Date().toISOString().slice(0,10),
       currency:'EUR', invoice_exchange_rate:'', satco_rate_eur_hr:4.5, brunel_rate_eur_hr:57,
       received_amount_aed:'', received_date:'', received_exchange_rate:'',
+    received_currency: 'AED',
       wps_paid_aed:'', wps_paid_date:'', remarks:'',
     });
     setDraftLines([{project_name:'', hours:'', rate_eur_hr:''}]);
   };
 
   const openEdit = (inv) => {
-    setDraft({...inv, month:monthStr(inv.month), currency:inv.currency||'EUR'});
+    setDraft({...inv, month:monthStr(inv.month), currency:inv.currency||'EUR', received_currency:inv.received_currency||'AED'});
     const lns = linesMap[inv.id]||[];
     setDraftLines(lns.length? lns.map(l=>({...l})) : [{project_name:'', hours:'', rate_eur_hr:''}]);
   };
@@ -166,7 +167,11 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       catch (numErr) { return alert('Could not generate the next invoice number from the Ops portal: '+(numErr.message||numErr)); }
     }
 
-    const received = draft.received_amount_aed!==''&&draft.received_amount_aed!=null ? Number(draft.received_amount_aed) : null;
+    // Convert to AED for storage if entered in EUR
+const receivedRaw = draft.received_amount_aed!==''&&draft.received_amount_aed!=null ? Number(draft.received_amount_aed) : null;
+const received = (receivedRaw !== null && (draft.received_currency||'AED')==='EUR' && draft.invoice_exchange_rate)
+  ? Math.round(receivedRaw * Number(draft.invoice_exchange_rate) * 100) / 100
+  : receivedRaw;
     const computedImpliedRate = (received && totalEurDraft) ? Math.round((received/totalEurDraft)*100)/100 : (draft.received_exchange_rate?Number(draft.received_exchange_rate):null);
 
     const clean = {
@@ -180,6 +185,7 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
       satco_rate_eur_hr:Number(draft.satco_rate_eur_hr)||4.5, brunel_rate_eur_hr:Number(draft.brunel_rate_eur_hr)||57,
       received_amount_aed:received, received_date:draft.received_date||null,
       received_exchange_rate:computedImpliedRate,
+      received_currency:draft.received_currency||'AED',
       wps_paid_aed:draft.wps_paid_aed!==''&&draft.wps_paid_aed!=null?Number(draft.wps_paid_aed):null,
       wps_paid_date:draft.wps_paid_date||null,
       remarks:draft.remarks||null, updated_at:new Date().toISOString(),
@@ -252,6 +258,9 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
         invoice_no: invoiceNo, invoice_date: clean.invoice_date, client_name: clean.client_name,
         currency: clean.currency, value: totalEurDraft,
         period_from: clean.month, period_to: lastDayOfMonth(clean.month),
+        received_amount_aed: clean.received_amount_aed,
+        received_date: clean.received_date,
+        received_currency: clean.received_currency,
       });
     } catch (syncErr) {
       alert('Invoice saved, but syncing to the Ops portal failed: '+(syncErr.message||syncErr));
@@ -425,8 +434,15 @@ function ClientBillingTab({ employees, initialFilter, hideEmpFilter }) {
 
             <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px',padding:'12px 14px',marginBottom:'12px'}}>
               <div style={{fontWeight:700,fontSize:'12.5px',marginBottom:'8px',color:'#166534'}}>Step 2 — Once Payment is Received from Client</div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'8px'}}>
-                <div><label style={S.label}>Amount Received (AED)</label><input type="number" step="0.01" value={draft.received_amount_aed||''} onChange={e=>setDraft(d=>({...d,received_amount_aed:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'8px'}}>
+                <div>
+                <label style={S.label}>Payment Currency</label>
+                <select value={draft.received_currency||'AED'} onChange={e=>setDraft(d=>({...d,received_currency:e.target.value}))} style={{...S.input,width:'100%'}}>
+                <option value="AED">AED</option>
+                <option value="EUR">EUR</option>
+                </select>
+                </div>
+                <div><label style={S.label}>Amount Received ({draft.received_currency||'AED'})</label><input type="number" step="0.01" value={draft.received_amount_aed||''} onChange={e=>setDraft(d=>({...d,received_amount_aed:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
                 <div><label style={S.label}>Date Received</label><input type="date" value={draft.received_date||''} onChange={e=>setDraft(d=>({...d,received_date:e.target.value}))} style={{...S.input,width:'100%'}}/></div>
               </div>
               {splitCalc && splitCalc.satcoAed!==null && (
@@ -753,6 +769,9 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
         invoice_no: invoiceNo, invoice_date: clean.invoice_date, client_name: clean.client_name,
         currency: 'AED', value: draftTotals.incl,
         period_from: clean.month, period_to: lastDayOfMonth(clean.month),
+        received_amount_aed: clean.received_amount_aed,
+        received_date: clean.received_date,
+        received_currency: 'AED',
       });
     } catch (syncErr) {
       alert('Invoice saved, but syncing to the Ops portal failed: '+(syncErr.message||syncErr));
