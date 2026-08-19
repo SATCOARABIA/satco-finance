@@ -1951,11 +1951,14 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             </div>
             <div style={{display:'flex',gap:'8px'}}>
               <button style={S.btnExp} onClick={() => setShowSql(v => !v)}>{showSql?'Hide SQL':'📋 Show Setup SQL'}</button>
-              <button style={S.btnPri} onClick={() => setDraft({
-                employee_id:'', full_name:'', labour_card_no:'',
-                bank_routing: '', iban:'',
-                basic_salary:'', fixed_allowance:'', salary_type:'fixed', hourly_rate:'', hours_per_day:'8', contract_days_per_week:'6', remarks:'', active:true,
-              })}>+ Add Employee</button>
+              <button style={S.btnPri} onClick={() => {
+                setDraft({
+                  employee_id:'', full_name:'', labour_card_no:'',
+                  bank_routing: '', iban:'',
+                  basic_salary:'', fixed_allowance:'', salary_type:'fixed', hourly_rate:'', hours_per_day:'8', contract_days_per_week:'6', remarks:'', active:true,
+                });
+                setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
+              }}>+ Add Employee</button>
             </div>
           </div>
 
