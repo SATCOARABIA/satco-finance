@@ -949,12 +949,13 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   const saveMaster = async () => {
     if (!draft.employee_id) return alert('Employee ID is required');
     const routingClean = String(draft.bank_routing || '').replace(/\D/g,'');
-    if (!routingClean) return alert('Bank Routing Code is required. Enter the 9-digit WPS bank routing code once; it will be saved for future months.');
-    if (!/^\d{9}$/.test(routingClean)) return alert('Bank Routing Code must be 9 digits. Please verify the WPS routing code with the bank / WPS template.');
+    // Bank routing is optional at master-save time (new employees may not have bank details yet).
+    // Only reject if the user entered something that is clearly wrong (non-empty but not 9 digits).
+    if (routingClean && !/^\d{9}$/.test(routingClean)) return alert('Bank Routing Code must be exactly 9 digits. Please verify with the bank / WPS template, or leave it blank and update later once the employee\'s bank account is set up.');
     const clean = {
       employee_id: draft.employee_id, full_name: draft.full_name || null,
       labour_card_no: draft.labour_card_no || null,
-      bank_routing: routingClean,
+      bank_routing: routingClean || null,
       iban: (draft.iban || '').replace(/\s/g,'').toUpperCase() || null,
       basic_salary: Number(draft.basic_salary) || 0,
       fixed_allowance: Number(draft.fixed_allowance) || 0,
@@ -1167,6 +1168,16 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
     try {
       const XLSXLib = await ensureXlsx();
       const rows  = computeWps();
+      // Block WPS file generation if any included employee is missing bank details
+      const bankMissing = rows.filter(r => !r.bank_routing || !r.iban);
+      if (bankMissing.length > 0) {
+        setGenerating('');
+        return alert(
+          `Cannot generate WPS file — ${bankMissing.length} employee(s) are missing Bank Routing Code or IBAN:\n\n` +
+          bankMissing.map(r => `• ${r.name} (${r.employee_id})${!r.bank_routing ? ' — No routing code' : ''}${!r.iban ? ' — No IBAN' : ''}`).join('\n') +
+          '\n\nUpdate their WPS Master record (click Correct Master) before generating the file, or mark them inactive to exclude them from this month.'
+        );
+      }
       const [y, mo] = month.split('-').map(Number);
       const lastDay = daysInMonthFn(y, mo);
       const total   = grandTotal(rows);
@@ -1201,6 +1212,15 @@ function WpsReportTab({ employees, empMeta, hrDb, hrSalaryRows=[], hrSalaryStatu
   // ── Export PDF via print ──────────────────────────────────────────────────
   const exportPdf = () => {
     const rows  = computeWps();
+    // Block PDF generation if any included employee is missing bank details
+    const bankMissing = rows.filter(r => !r.bank_routing || !r.iban);
+    if (bankMissing.length > 0) {
+      return alert(
+        `Cannot generate WPS PDF — ${bankMissing.length} employee(s) are missing Bank Routing Code or IBAN:\n\n` +
+        bankMissing.map(r => `• ${r.name} (${r.employee_id})${!r.bank_routing ? ' — No routing code' : ''}${!r.iban ? ' — No IBAN' : ''}`).join('\n') +
+        '\n\nUpdate their WPS Master record (click Correct Master) before generating the file, or mark them inactive to exclude them from this month.'
+      );
+    }
     const [y, mo] = month.split('-').map(Number);
     const lastDay = daysInMonthFn(y, mo);
     const total   = grandTotal(rows);
@@ -1556,7 +1576,9 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
   const activeMaster   = master.filter(m => m.active !== false);
   const months         = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const monthLabel     = `${months[mo-1]}-${y}`;
-  const missingData    = salaryRows.filter(r => !r.labour_card_no || !r.bank_routing || !r.iban || (r.is_hourly && !r.hourly_rate));
+  const bankPendingRows = salaryRows.filter(r => !r.bank_routing || !r.iban);
+  const missingData    = salaryRows.filter(r => !r.labour_card_no || (r.is_hourly && !r.hourly_rate));
+  const anyIssues      = missingData.length > 0 || bankPendingRows.length > 0;
   const sheetTotals    = {
     recoverable: salaryRows.reduce((s,r)=>s+r.finance_recoverable,0),
     recoveredBefore: salaryRows.reduce((s,r)=>s+r.finance_recovered_before,0),
@@ -1657,7 +1679,12 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
             <div><div style={{fontSize:'10px',fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Net WPS Amount</div><div style={{fontSize:'20px',fontWeight:800,color:'#166534'}}>AED {fmt(sheetTotals.net)}</div></div>
             {missingData.length > 0 && (
               <div style={{marginLeft:'auto',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:'6px',padding:'6px 12px',fontSize:'12px',color:'#991b1b',fontWeight:700}}>
-                ⚠️ {missingData.length} employee(s) missing Labour Card / Bank Routing / IBAN / Hourly Rate
+                ⚠️ {missingData.length} employee(s) missing Labour Card / Hourly Rate
+              </div>
+            )}
+            {bankPendingRows.length > 0 && (
+              <div style={{marginLeft: missingData.length > 0 ? '0' : 'auto',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:'6px',padding:'6px 12px',fontSize:'12px',color:'#92400e',fontWeight:700}}>
+                ⏳ {bankPendingRows.length} employee(s) awaiting bank details — WPS file cannot be generated until updated
               </div>
             )}
           </div>
@@ -1687,9 +1714,11 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                   const ov = overrides[r.employee_id] || {};
                   const isVar = r.salary_type === 'variable';
                   const isHourly = !!r.is_hourly;
-                  const missing  = !r.labour_card_no || !r.bank_routing || !r.iban || (r.is_hourly && !r.hourly_rate);
+                  const bankPending  = !r.bank_routing || !r.iban;
+                  const hardMissing  = !r.labour_card_no || (r.is_hourly && !r.hourly_rate);
+                  const missing      = bankPending || hardMissing;
                   return (
-                    <tr key={r.employee_id} style={{borderTop:'1px solid #f1f5f9',background:missing?'#fff7f7':'#fff'}} className="hr-row">
+                    <tr key={r.employee_id} style={{borderTop:'1px solid #f1f5f9',background:hardMissing?'#fff7f7':bankPending?'#fffbeb':'#fff'}} className="hr-row">
                       <td style={{...S.td,textAlign:'center',fontWeight:700}}>{r.sl_no}</td>
                       <td style={S.td}>
                         <div style={{fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{r.employee_id}</div>
@@ -1699,8 +1728,11 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                           style={{marginTop:'4px',padding:'2px 7px',border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1d4ed8',borderRadius:'999px',fontSize:'10px',fontWeight:800,cursor:'pointer'}}>
                           Correct Master
                         </button>
-                        {missing && <div style={{fontSize:'10px',color:'#dc2626',fontWeight:700}}>
-                          ⚠{!r.labour_card_no?' No Labour Card':''}{!r.bank_routing?' No Bank Routing':''}{!r.iban?' No IBAN':''}{(r.is_hourly && !r.hourly_rate)?' No Hourly Rate':''}
+                        {hardMissing && <div style={{fontSize:'10px',color:'#dc2626',fontWeight:700}}>
+                          ⚠{!r.labour_card_no?' No Labour Card':''}{(r.is_hourly && !r.hourly_rate)?' No Hourly Rate':''}
+                        </div>}
+                        {bankPending && <div style={{fontSize:'10px',color:'#92400e',fontWeight:700}}>
+                          ⏳ Bank details pending —{!r.bank_routing?' Routing code':''}{(!r.bank_routing && !r.iban)?',':''}{!r.iban?' IBAN':''} not yet available. Update before generating WPS file.
                         </div>}
                       </td>
                       <td style={{...S.tdWrap,minWidth:'150px'}}>{r.craft||'—'}</td>
@@ -2062,17 +2094,17 @@ Kindly arrange to transfer the Sum of <strong>AED &nbsp; ${fmtTotal}/- (AED – 
                 ) : master.length === 0 ? (
                   <tr><td colSpan={13} style={{padding:'30px',textAlign:'center',color:'#94a3b8'}}>No employees yet. Click <strong>+ Add Employee</strong>.</td></tr>
                 ) : master.map(emp => (
-                  <tr key={emp.id} style={{borderTop:'1px solid #f1f5f9',opacity:emp.active===false?0.5:1}} className="hr-row">
+                  <tr key={emp.id} style={{borderTop:'1px solid #f1f5f9',opacity:emp.active===false?0.5:1,background:(!emp.bank_routing||!emp.iban)?'#fffbeb':undefined}} className="hr-row">
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontWeight:700,color:'#2563eb',fontSize:'11px'}}>{emp.employee_id}</td>
                     <td style={{...S.td,fontWeight:600}}>{emp.full_name||'—'}</td>
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:emp.labour_card_no?'#0f172a':'#dc2626'}}>
                       {emp.labour_card_no||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
                     </td>
-                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:emp.bank_routing?'#0f172a':'#dc2626'}}>
-                      {emp.bank_routing||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'11px',color:emp.bank_routing?'#0f172a':'#92400e'}}>
+                      {emp.bank_routing||<span style={{background:'#fef3c7',color:'#92400e',fontWeight:700,padding:'2px 6px',borderRadius:6,fontSize:'11px'}}>⏳ pending</span>}
                     </td>
-                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'10.5px',color:emp.iban?'#0f172a':'#dc2626'}}>
-                      {emp.iban||<span style={{color:'#dc2626',fontWeight:700}}>⚠ missing</span>}
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:'10.5px',color:emp.iban?'#0f172a':'#92400e'}}>
+                      {emp.iban||<span style={{background:'#fef3c7',color:'#92400e',fontWeight:700,padding:'2px 6px',borderRadius:6,fontSize:'11px'}}>⏳ pending</span>}
                     </td>
                     <td style={S.td}>
                       <span style={{background:(Number(emp.hourly_rate)||0)>0?'#e0f2fe':(emp.salary_type==='variable'?'#fdf4ff':'#f0fdf4'),color:(Number(emp.hourly_rate)||0)>0?'#0369a1':(emp.salary_type==='variable'?'#7e22ce':'#166534'),fontSize:'10.5px',fontWeight:700,padding:'2px 8px',borderRadius:'10px'}}>
