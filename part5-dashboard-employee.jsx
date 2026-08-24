@@ -160,7 +160,14 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     recoverySrc.visa.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
     recoverySrc.flights.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
     recoverySrc.training.forEach(r=>{ if (r.recoverable) ensure(r.employee_id).recoverable += recoverableCap(r,'cost'); });
-    recoverySrc.other.forEach(r=>{ if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') ensure(r.employee_id).recoverable += Number(r.amount)||0; });
+    recoverySrc.other.forEach(r=>{
+      if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') {
+        ensure(r.employee_id).recoverable += Number(r.amount)||0;
+        // Credit any manually-logged recovered_amount so the dashboard balance
+        // matches what the employee detail page shows (e.g. ILOE, insurance, etc.)
+        ensure(r.employee_id).recovered  += Number(r.recovered_amount)||0;
+      }
+    });
     recoverySrc.other.forEach(r=>{ if (r.cost_type==='security_deposit') ensure(r.employee_id).recovered += Number(r.amount)||0; });
     // Manual WPS-overpayment rows (no [INV:id] tag) — use the stored amount/recovered_amount directly.
     // overpaidRaw counts every such row regardless of the "Recoverable" checkbox (a row being marked
