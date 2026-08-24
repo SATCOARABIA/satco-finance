@@ -521,9 +521,14 @@ function groupByMonth(rows, dateKey) {
 }
 
 function applyFilters(rows, filters) {
+  // If filtering by employee_id, skip full_name — stored full_name in cost tables may differ
+  // from the display name used in wps_employee_master (e.g. 'SHAHZAD AHMAD YAMEEN' vs 'Ahmad Shahzad').
+  // employee_id is the authoritative key; full_name filter only applies when no employee_id is set.
+  const hasEmpId = !!(filters.employee_id);
   return rows.filter(row =>
     Object.entries(filters).every(([key, val]) => {
       if (!val) return true;
+      if (key === 'full_name' && hasEmpId) return true; // skip full_name when employee_id is set
       return String(row[key]||'').toLowerCase().includes(val.toLowerCase());
     })
   );
@@ -1087,8 +1092,8 @@ function CostTable({ title, table, employees, fields, dateField, initialFilter, 
   // Recoverable total uses the per-row recoverable_amount cap when set, otherwise the full cost —
   // this is what lets one row's recovery differ from what was actually spent.
   const recoverableAmt = (r) => (r.recoverable_amount!==null && r.recoverable_amount!==undefined && r.recoverable_amount!=='') ? Number(r.recoverable_amount)||0 : Number(r.cost)||0;
-  const total = rows.reduce((s,r)=>s+(Number(r.cost)||0),0);
-  const totalRecoverable = recoverableSupport ? rows.filter(r=>r.recoverable).reduce((s,r)=>s+recoverableAmt(r),0) : 0;
+  const total = filtered.reduce((s,r)=>s+(Number(r.cost)||0),0);
+  const totalRecoverable = recoverableSupport ? filtered.filter(r=>r.recoverable).reduce((s,r)=>s+recoverableAmt(r),0) : 0;
 
   return (
     <div style={S.card}>
