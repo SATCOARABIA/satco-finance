@@ -163,9 +163,13 @@ function PnlDashboard({ employees=[], empMeta={}, hrSalaryRows=[], onOpenEmploye
     recoverySrc.other.forEach(r=>{
       if (r.recoverable && r.cost_type!=='security_deposit' && r.cost_type!=='wps_overpayment_recovery') {
         ensure(r.employee_id).recoverable += Number(r.amount)||0;
-        // Credit any manually-logged recovered_amount so the dashboard balance
-        // matches what the employee detail page shows (e.g. ILOE, insurance, etc.)
-        ensure(r.employee_id).recovered  += Number(r.recovered_amount)||0;
+        // Credit recovered_amount for cost types settled outside of salary deductions
+        // (e.g. ILOE, insurance reimbursed directly). salary_advance rows are excluded here
+        // because their recovery flows through monthly salary_deductions (already counted
+        // in recoverySrc.deductions below) — adding recovered_amount too would double-count.
+        if (r.cost_type !== 'salary_advance') {
+          ensure(r.employee_id).recovered += Number(r.recovered_amount)||0;
+        }
       }
     });
     recoverySrc.other.forEach(r=>{ if (r.cost_type==='security_deposit') ensure(r.employee_id).recovered += Number(r.amount)||0; });
@@ -1483,10 +1487,4 @@ function DeductionLedgerTab({ employees, empMeta }) {
 // Features:
 // A) Month Calendar — mark Sundays (auto) + Public Holidays (manual)
 // B) Idle Days Tracker — employees deployed but idle (waiting certs etc.)
-// C) Bulk PDF Timesheet OCR — AI reads all employees in one pass
-// D) Name fuzzy-match review screen
-// E) Salary calculation respecting holidays, idle days, OT
-
-const CLAUDE_PROXY = 'https://satco-hr.vercel.app/api/claude';
-
-// ── Fuzzy name matching ──────────────────────────────────────────
+// C) Bulk PDF Timesheet OCR — AI rea
