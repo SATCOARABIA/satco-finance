@@ -1314,7 +1314,396 @@ const ALLOWANCE_TYPES = [
 ];
 const ALLOWANCE_LABEL = Object.fromEntries(ALLOWANCE_TYPES.map(o=>[o.value,o.label]));
 
+
 // Manages recurring per-employee allowances (e.g. AED 100/month mobile allowance for a specific
 // site) that auto-apply every "Monthly Costs" salary calculation from start_date onward, and
 // auto-stop (or flag for review) once the employee's HR demobilization_date passes — so it's no
 // longer possible to "forget" to add or remove a site allowance in next month's WPS run.
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INVOICE DOCUMENT GENERATORS
+// These were accidentally removed. Paste this block at the VERY END of
+// part1-core-utils.jsx (after all existing code, before any closing line).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function amountInWords(n) {
+  const num  = Math.round(n * 100) / 100;
+  const aed  = Math.floor(num);
+  const fils = Math.round((num - aed) * 100);
+  const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine',
+                'Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen',
+                'Seventeen','Eighteen','Nineteen'];
+  const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function b1000(x) {
+    if (x===0) return '';
+    if (x<20)  return ones[x];
+    if (x<100) return tens[Math.floor(x/10)]+(x%10?' '+ones[x%10]:'');
+    return ones[Math.floor(x/100)]+' Hundred'+(x%100?' '+b1000(x%100):'');
+  }
+  function cvt(x) {
+    if (x===0) return 'Zero';
+    let r='';
+    if (x>=1000000){ r+=b1000(Math.floor(x/1000000))+' Million '; x%=1000000; }
+    if (x>=1000)   { r+=b1000(Math.floor(x/1000))+' Thousand '; x%=1000; }
+    if (x>0)       { r+=b1000(x); }
+    return r.trim();
+  }
+  let w = cvt(aed)+' Dirhams';
+  if (fils>0) w+=' and '+cvt(fils)+' Fils';
+  return w+' Only';
+}
+
+function monthLabel(monthStr) {
+  if (!monthStr) return '';
+  const [y, m] = monthStr.slice(0,7).split('-');
+  const names = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  return (names[parseInt(m,10)-1]||'')+'-'+y;
+}
+
+// ── Multi-employee TAX INVOICE — Reliance Gulf style (AED + 5% VAT) ───────────
+async function generateClientInvoiceDocx(inv, lns) {
+  try {
+    const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+            AlignmentType, BorderStyle, WidthType, ShadingType, VerticalAlign,
+            ImageRun, Header, Footer } = window.docx;
+
+    const fmt2 = (n) => Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const invoiceMonth = (inv.month||'').slice(0,7);
+    const mLabel = monthLabel(invoiceMonth);
+
+    const lineCalc = (l) => {
+      const hours  = Number(l.hours)||0, rate=Number(l.unit_rate)||0, disc=Number(l.discount)||0;
+      const vatPct = (l.vat_pct===''||l.vat_pct==null)?5:Number(l.vat_pct);
+      const taxable = hours*rate-disc, vatAmt=Math.round(taxable*vatPct)/100;
+      return { hours, rate, disc, vatPct, taxable, vatAmt, incl:taxable+vatAmt };
+    };
+    const lineData = lns.map((l,i)=>({...l,no:i+1,c:lineCalc(l)}));
+    const tot = lineData.reduce((s,l)=>({
+      hours:s.hours+l.c.hours, taxable:s.taxable+l.c.taxable,
+      disc:s.disc+l.c.disc, vatAmt:s.vatAmt+l.c.vatAmt, incl:s.incl+l.c.incl,
+    }),{hours:0,taxable:0,disc:0,vatAmt:0,incl:0});
+
+    const bS={style:BorderStyle.SINGLE,size:6,color:'000000'};
+    const bSt={style:BorderStyle.SINGLE,size:4,color:'888888'};
+    const bN={style:BorderStyle.NONE,size:0,color:'FFFFFF'};
+    const allB={top:bS,bottom:bS,left:bS,right:bS};
+    const allBt={top:bSt,bottom:bSt,left:bSt,right:bSt};
+    const noB={top:bN,bottom:bN,left:bN,right:bN};
+    const botB={top:bN,bottom:bSt,left:bN,right:bN};
+    const botRB={top:bN,bottom:bSt,left:bN,right:bSt};
+    const cm={top:60,bottom:60,left:120,right:120};
+    const cmS={top:40,bottom:40,left:80,right:80};
+
+    const R=(text,o={})=>new TextRun({text:String(text??''),bold:!!o.bold,italics:!!o.italic,size:o.size||18,color:o.color||'000000'});
+    const P=(children,o={})=>new Paragraph({alignment:o.align||AlignmentType.LEFT,spacing:{before:o.before||0,after:o.after||0},children:Array.isArray(children)?children:[children]});
+    const TC=(text,w,o={})=>new TableCell({
+      borders:o.borders||allBt, width:{size:w,type:WidthType.DXA}, margins:o.cm||cm,
+      verticalAlign:VerticalAlign.CENTER, shading:o.shade?{fill:o.shade,type:ShadingType.CLEAR}:undefined, columnSpan:o.span,
+      children:[P(R(text,{bold:o.bold,size:o.size||18,color:o.color}),{align:o.align})],
+    });
+    const MPC=(paragraphs,w,o={})=>new TableCell({
+      borders:o.borders||allBt, width:{size:w,type:WidthType.DXA}, margins:o.cm||cm,
+      verticalAlign:VerticalAlign.TOP, shading:o.shade?{fill:o.shade,type:ShadingType.CLEAR}:undefined, columnSpan:o.span,
+      children:paragraphs,
+    });
+
+    const TW=9906;
+    const META_W=4200, META_LBL=1400, META_VAL=2800;
+    const CUST_W=TW-META_W-100;
+    // Sl.No | Description | QTY(HRS) | Unit Rate(Excl.Tax) | Taxable | Discount | VAT% | VAT Amt | INCLVAT
+    const CW=[500,2006,800,1200,1200,700,600,1100,1800]; // sum=9906
+    const NCOLS=CW.length;
+
+    const {header:lhH,footer:lhF}=await loadLetterheadAssets();
+    const hImg=new ImageRun({type:'png',data:lhH,transformation:{width:540,height:59},altText:{title:'Header',description:'Letterhead',name:'Header'}});
+    const fImg=new ImageRun({type:'png',data:lhF,transformation:{width:540,height:37},altText:{title:'Footer',description:'Footer',name:'Footer'}});
+
+    let stampImg=null;
+    try {
+      const {stamp}=await loadSignatureAssets();
+      if(stamp) stampImg=new ImageRun({type:'png',data:stamp,transformation:{width:80,height:80},altText:{title:'Stamp',description:'SATCO stamp',name:'Stamp'}});
+    } catch(_){}
+
+    const sumRow=(label,value,hi=false)=>{
+      const lW=CW.slice(0,NCOLS-1).reduce((a,b)=>a+b,0);
+      return new TableRow({children:[
+        TC(label,lW,{span:NCOLS-1,align:AlignmentType.RIGHT,bold:true,borders:{top:bN,bottom:bSt,left:bN,right:bSt},shade:hi?'FEF3C7':undefined}),
+        TC(value,CW[NCOLS-1],{align:AlignmentType.RIGHT,bold:hi,borders:{top:bN,bottom:bSt,left:bN,right:bN},shade:hi?'FEF3C7':undefined}),
+      ]});
+    };
+
+    const mainTable=new Table({width:{size:TW,type:WidthType.DXA},columnWidths:CW,rows:[
+      new TableRow({children:[
+        TC('Sl.No.',CW[0],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('Description',CW[1],{shade:'D0D0D0',bold:true,size:16}),
+        TC('QTY(HRS)',CW[2],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('Unit Rate\n(Excl.Tax)\n(AED)',CW[3],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('Taxable\nAmount\n(AED)',CW[4],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('Discount',CW[5],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('VAT%',CW[6],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('VAT Amount\n(AED)',CW[7],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('Amount\nINCLVAT\n(AED)',CW[8],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+      ]}),
+      ...lineData.map(l=>new TableRow({children:[
+        TC(String(l.no),CW[0],{align:AlignmentType.CENTER}),
+        TC(l.craft||l.full_name||'',CW[1]),
+        TC(fmt2(l.c.hours),CW[2],{align:AlignmentType.RIGHT}),
+        TC(fmt2(l.c.rate),CW[3],{align:AlignmentType.RIGHT}),
+        TC(fmt2(l.c.taxable),CW[4],{align:AlignmentType.RIGHT}),
+        TC(l.c.disc>0?fmt2(l.c.disc):'0',CW[5],{align:AlignmentType.RIGHT}),
+        TC(l.c.vatPct+'%',CW[6],{align:AlignmentType.CENTER}),
+        TC(fmt2(l.c.vatAmt),CW[7],{align:AlignmentType.RIGHT}),
+        TC(fmt2(l.c.incl),CW[8],{align:AlignmentType.RIGHT}),
+      ]})),
+      new TableRow({children:[
+        TC('',CW[0],{shade:'E8E8E8'}),TC('TOTAL',CW[1],{shade:'E8E8E8',bold:true}),
+        TC(fmt2(tot.hours),CW[2],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+        TC('',CW[3],{shade:'E8E8E8'}),TC(fmt2(tot.taxable),CW[4],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+        TC('',CW[5],{shade:'E8E8E8'}),TC('',CW[6],{shade:'E8E8E8'}),
+        TC(fmt2(tot.vatAmt),CW[7],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+        TC(fmt2(tot.incl),CW[8],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+      ]}),
+      sumRow('Gross Taxable Amount (AED)',fmt2(tot.taxable)),
+      sumRow('Discount',tot.disc>0?fmt2(tot.disc):'-'),
+      sumRow('Total Taxable Amount after Discount',fmt2(tot.taxable-tot.disc)),
+      sumRow('VAT Amount (AED)',fmt2(tot.vatAmt)),
+      sumRow('Total Amount INCLVAT (AED)',fmt2(tot.incl),true),
+      new TableRow({children:[
+        MPC([P([R('Amount in\nwords',{bold:true,size:16})])],1500,{borders:allBt,shade:'F0F0F0',cm:cmS}),
+        MPC([P(R(amountInWords(tot.incl),{size:16}))],TW-1500,{span:NCOLS-1,borders:allBt,cm:cmS}),
+      ]}),
+      new TableRow({children:[
+        MPC([P([R('Payment\nMode',{bold:true,size:16})])],1500,{borders:allBt,shade:'F0F0F0',cm:cmS}),
+        MPC([P(R(inv.payment_terms||'45 Days  from Invoice Submission date',{size:16}))],TW-1500,{span:NCOLS-1,borders:allBt,cm:cmS}),
+      ]}),
+    ]});
+
+    const doc=new Document({
+      styles:{default:{document:{run:{font:'Arial',size:20}}}},
+      sections:[{
+        properties:{page:{margin:{top:1200,right:900,bottom:1200,left:900,header:500,footer:400}}},
+        headers:{default:new Header({children:[P(hImg,{align:AlignmentType.CENTER})]})},
+        footers:{default:new Footer({children:[P(fImg,{align:AlignmentType.CENTER})]})},
+        children:[
+          P(R(''),{before:200}),
+          P(R('TAX INVOICE',{bold:true,size:36}),{align:AlignmentType.CENTER,after:200}),
+          new Table({width:{size:TW,type:WidthType.DXA},columnWidths:[CUST_W+100,META_W],rows:[
+            new TableRow({children:[
+              MPC([
+                P(R(`Project Location: ${inv.project_location||'Abu Dhabi'}`,{size:18}),{after:80}),
+                new Table({width:{size:CUST_W,type:WidthType.DXA},columnWidths:[800,CUST_W-800],rows:[
+                  new TableRow({children:[
+                    TC('Customer:',800,{bold:true,borders:allB}),
+                    MPC([
+                      P(R(inv.client_name||'—',{bold:true,size:18})),
+                      ...(inv.client_address_line1?[P(R(inv.client_address_line1,{size:18}))]:[]),
+                      ...(inv.client_address_line2?[P(R(inv.client_address_line2,{size:18}))]:[]),
+                      ...(inv.client_address_line3?[P(R(inv.client_address_line3,{size:18}))]:[]),
+                      ...(inv.client_trn?[P(R(`TRN:- ${inv.client_trn}`,{size:18}))]:[]),
+                    ],CUST_W-800,{borders:allB}),
+                  ]}),
+                ]}),
+              ],CUST_W+100,{borders:noB}),
+              MPC([new Table({width:{size:META_W,type:WidthType.DXA},columnWidths:[META_LBL,META_VAL],rows:[
+                new TableRow({children:[TC('Invoice #',META_LBL,{bold:true,borders:allB}),TC(inv.invoice_number||'—',META_VAL,{borders:allB})]}),
+                new TableRow({children:[TC('Invoice Date',META_LBL,{bold:true,borders:allB}),TC(inv.invoice_date||'—',META_VAL,{borders:allB})]}),
+                new TableRow({children:[TC('Invoice period',META_LBL,{bold:true,borders:allB}),TC(mLabel,META_VAL,{borders:allB})]}),
+                new TableRow({children:[TC('PO Reference',META_LBL,{bold:true,borders:allB}),TC(inv.po_reference||'—',META_VAL,{borders:allB})]}),
+              ]})],META_W,{borders:noB}),
+            ]}),
+          ]}),
+          P([R('Subject: ',{bold:true,size:20}),R(inv.subject_line||'Invoice for Mechnical Support Work',{size:20})],{before:180,after:60}),
+          P(R(`Please find the below description of Mechnical Work done at your Site for the Month of ${mLabel}`,{size:18}),{after:160}),
+          mainTable,
+          P(R('OUR BANK DETAILS:-',{bold:true,size:18}),{before:200,after:40}),
+          P(R('ACCOUNT TITLE :- SATCO ARABIA GENERAL CONTRACTING -L.L.C-S.P.C',{size:18}),{after:40}),
+          P(R('ACCOUNT NUMBER:- 90020200014786     IBAN NO: AE170110090020200014786',{size:18}),{after:40}),
+          P(R('BANK NAME:- BANK OF BARODA',{size:18}),{after:40}),
+          P(R('TRN :- 105042029600003',{size:18}),{after:160}),
+          P(R('Best regards,',{size:18}),{after:80}),
+          ...(stampImg?[P(stampImg,{after:40})]:[]),
+          P(R('General Manager',{italic:true,size:18}),{after:80}),
+          P(R('Computer generated invoice- no original signature or stamp required.',{italic:true,size:16,color:'94A3B8'})),
+        ],
+      }],
+    });
+    const blob=await Packer.toBlob(doc);
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=`SATCO_Invoice_${(inv.invoice_number||'draft').replace(/\//g,'-')}_${invoiceMonth}.docx`; a.click();
+    URL.revokeObjectURL(url);
+  } catch(err){ console.error('[generateClientInvoiceDocx]',err); alert('Failed to generate invoice: '+err.message); }
+}
+
+
+// ── Brunel-style invoice (one employee, EUR-billed, export services) ───────────
+async function generateBrunelInvoiceDocx(inv, lns) {
+  try {
+    const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+            AlignmentType, BorderStyle, WidthType, ShadingType, VerticalAlign,
+            ImageRun, Header, Footer } = window.docx;
+
+    const fmt2=(n)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const curr=inv.currency||'EUR', exRate=Number(inv.invoice_exchange_rate)||null;
+    const clientRate=Number(inv.brunel_rate_eur_hr)||57;
+    const invoiceMonth=(inv.month||'').slice(0,7);
+    const mLabel=monthLabel(invoiceMonth);
+
+    const lineData=lns.map((l,i)=>{
+      const hrs=Number(l.hours)||0, rate=Number(l.rate_eur_hr)||clientRate;
+      return {no:i+1,desc:l.project_name||'',hrs,rate,taxable:hrs*rate};
+    });
+    const totHrs=lineData.reduce((s,l)=>s+l.hrs,0);
+    const totTaxable=lineData.reduce((s,l)=>s+l.taxable,0);
+    const totAed=exRate?Math.round(totTaxable*exRate*100)/100:null;
+
+    const bS={style:BorderStyle.SINGLE,size:6,color:'000000'};
+    const bSt={style:BorderStyle.SINGLE,size:4,color:'888888'};
+    const bN={style:BorderStyle.NONE,size:0,color:'FFFFFF'};
+    const allB={top:bS,bottom:bS,left:bS,right:bS};
+    const allBt={top:bSt,bottom:bSt,left:bSt,right:bSt};
+    const noB={top:bN,bottom:bN,left:bN,right:bN};
+    const botB={top:bN,bottom:bSt,left:bN,right:bN};
+    const botRB={top:bN,bottom:bSt,left:bN,right:bSt};
+    const cm={top:60,bottom:60,left:120,right:120};
+    const cmS={top:40,bottom:40,left:80,right:80};
+
+    const R=(text,o={})=>new TextRun({text:String(text??''),bold:!!o.bold,italics:!!o.italic,size:o.size||18,color:o.color||'000000'});
+    const P=(children,o={})=>new Paragraph({alignment:o.align||AlignmentType.LEFT,spacing:{before:o.before||0,after:o.after||0},children:Array.isArray(children)?children:[children]});
+    const TC=(text,w,o={})=>new TableCell({
+      borders:o.borders||allBt,width:{size:w,type:WidthType.DXA},margins:o.cm||cm,
+      verticalAlign:VerticalAlign.CENTER,shading:o.shade?{fill:o.shade,type:ShadingType.CLEAR}:undefined,columnSpan:o.span,
+      children:[P(R(text,{bold:o.bold,size:o.size||18,color:o.color}),{align:o.align})],
+    });
+    const MPC=(paragraphs,w,o={})=>new TableCell({
+      borders:o.borders||allBt,width:{size:w,type:WidthType.DXA},margins:o.cm||cm,
+      verticalAlign:VerticalAlign.TOP,shading:o.shade?{fill:o.shade,type:ShadingType.CLEAR}:undefined,columnSpan:o.span,
+      children:paragraphs,
+    });
+
+    const TW=9906, META_W=4200, META_LBL=1400, META_VAL=2800, CUST_W=TW-META_W-100;
+    // Sl.No | Description | QTY(HRS) | Unit Rate(EUR) | Taxable(EUR) | VAT% | VAT Amt | Incl VAT(EUR)
+    const CW=[500,2706,800,1200,1200,700,1100,1700]; // sum=9906
+    const NCOLS=CW.length;
+
+    const {header:lhH,footer:lhF}=await loadLetterheadAssets();
+    const hImg=new ImageRun({type:'png',data:lhH,transformation:{width:540,height:59},altText:{title:'Header',description:'Letterhead',name:'Header'}});
+    const fImg=new ImageRun({type:'png',data:lhF,transformation:{width:540,height:37},altText:{title:'Footer',description:'Footer',name:'Footer'}});
+
+    let stampImg=null;
+    try {
+      const {stamp}=await loadSignatureAssets();
+      if(stamp) stampImg=new ImageRun({type:'png',data:stamp,transformation:{width:80,height:80},altText:{title:'Stamp',description:'SATCO stamp',name:'Stamp'}});
+    } catch(_){}
+
+    const sumRow=(label,value,hi=false)=>{
+      const lW=CW.slice(0,NCOLS-1).reduce((a,b)=>a+b,0);
+      return new TableRow({children:[
+        TC(label,lW,{span:NCOLS-1,align:AlignmentType.RIGHT,bold:true,borders:{top:bN,bottom:bSt,left:bN,right:bSt},shade:hi?'FEF3C7':undefined}),
+        TC(value,CW[NCOLS-1],{align:AlignmentType.RIGHT,bold:hi,borders:{top:bN,bottom:bSt,left:bN,right:bN},shade:hi?'FEF3C7':undefined}),
+      ]});
+    };
+
+    const mainTable=new Table({width:{size:TW,type:WidthType.DXA},columnWidths:CW,rows:[
+      new TableRow({children:[
+        TC('Sl.No.',CW[0],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('Description',CW[1],{shade:'D0D0D0',bold:true,size:16}),
+        TC('QTY(HRS)',CW[2],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC(`Unit Rate\n(${curr})`,CW[3],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC(`Taxable Amount\n(${curr})`,CW[4],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC('VAT %',CW[5],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC(`VAT Amount\n(${curr})`,CW[6],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+        TC(`Amount Incl. VAT\n(${curr})`,CW[7],{shade:'D0D0D0',bold:true,align:AlignmentType.CENTER,size:16}),
+      ]}),
+      ...lineData.map(l=>new TableRow({children:[
+        TC(String(l.no),CW[0],{align:AlignmentType.CENTER}),
+        TC(l.desc,CW[1]),
+        TC(fmt2(l.hrs),CW[2],{align:AlignmentType.RIGHT}),
+        TC(fmt2(l.rate),CW[3],{align:AlignmentType.RIGHT}),
+        TC(fmt2(l.taxable),CW[4],{align:AlignmentType.RIGHT}),
+        TC('0%',CW[5],{align:AlignmentType.CENTER}),
+        TC('0',CW[6],{align:AlignmentType.RIGHT}),
+        TC(fmt2(l.taxable),CW[7],{align:AlignmentType.RIGHT}),
+      ]})),
+      new TableRow({children:[
+        TC('',CW[0],{shade:'E8E8E8'}),TC('TOTAL',CW[1],{shade:'E8E8E8',bold:true}),
+        TC(fmt2(totHrs),CW[2],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+        TC('',CW[3],{shade:'E8E8E8'}),TC(fmt2(totTaxable),CW[4],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+        TC('',CW[5],{shade:'E8E8E8'}),TC('-',CW[6],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+        TC(fmt2(totTaxable),CW[7],{shade:'E8E8E8',bold:true,align:AlignmentType.RIGHT}),
+      ]}),
+      sumRow(`Gross Taxable Amount (${curr})`,fmt2(totTaxable)),
+      sumRow(`VAT Amount (${curr})`,'-'),
+      sumRow(`Total Taxable Amount (${curr})`,fmt2(totTaxable)),
+      ...(exRate&&totAed!==null?[
+        sumRow('Gross Taxable Amount (AED)',fmt2(totAed)),
+        sumRow('VAT Amount (AED)','-'),
+        sumRow('Total Amount Incl. VAT (AED)',fmt2(totAed),true),
+        new TableRow({children:[
+          MPC([P([R('Amount in\nwords',{bold:true,size:16})])],1500,{borders:allBt,shade:'F0F0F0',cm:cmS}),
+          MPC([P(R(amountInWords(totAed),{size:16}))],TW-1500,{span:NCOLS-1,borders:allBt,cm:cmS}),
+        ]}),
+      ]:[]),
+      new TableRow({children:[
+        MPC([P([R('Payment\nMode',{bold:true,size:16})])],1500,{borders:allBt,shade:'F0F0F0',cm:cmS}),
+        MPC([P(R(inv.payment_terms||'7 Days  from Invoice Submission date',{size:16}))],TW-1500,{span:NCOLS-1,borders:allBt,cm:cmS}),
+      ]}),
+    ]});
+
+    const doc=new Document({
+      styles:{default:{document:{run:{font:'Arial',size:20}}}},
+      sections:[{
+        properties:{page:{margin:{top:1200,right:900,bottom:1200,left:900,header:500,footer:400}}},
+        headers:{default:new Header({children:[P(hImg,{align:AlignmentType.CENTER})]})},
+        footers:{default:new Footer({children:[P(fImg,{align:AlignmentType.CENTER})]})},
+        children:[
+          P(R(''),{before:200}),
+          P(R('TAX INVOICE — EXPORT SERVICES',{bold:true,size:32}),{align:AlignmentType.CENTER,after:200}),
+          new Table({width:{size:TW,type:WidthType.DXA},columnWidths:[CUST_W+100,META_W],rows:[
+            new TableRow({children:[
+              MPC([
+                P(R(`Project Location: ${inv.project_location||'—'}`,{size:18}),{after:80}),
+                new Table({width:{size:CUST_W,type:WidthType.DXA},columnWidths:[800,CUST_W-800],rows:[
+                  new TableRow({children:[
+                    TC('Customer:',800,{bold:true,borders:allB}),
+                    MPC([
+                      P(R(inv.client_name||'—',{bold:true,size:18})),
+                      ...(inv.client_address_line1?[P(R(inv.client_address_line1,{size:18}))]:[]),
+                      ...(inv.client_address_line2?[P(R(inv.client_address_line2,{size:18}))]:[]),
+                      ...(inv.client_address_line3?[P(R(inv.client_address_line3,{size:18}))]:[]),
+                    ],CUST_W-800,{borders:allB}),
+                  ]}),
+                ]}),
+              ],CUST_W+100,{borders:noB}),
+              MPC([new Table({width:{size:META_W,type:WidthType.DXA},columnWidths:[META_LBL,META_VAL],rows:[
+                new TableRow({children:[TC('Invoice #',META_LBL,{bold:true,borders:allB}),TC(inv.invoice_number||'—',META_VAL,{borders:allB})]}),
+                new TableRow({children:[TC('Invoice Date',META_LBL,{bold:true,borders:allB}),TC(inv.invoice_date||'—',META_VAL,{borders:allB})]}),
+                new TableRow({children:[TC('Invoice period',META_LBL,{bold:true,borders:allB}),TC(mLabel,META_VAL,{borders:allB})]}),
+                new TableRow({children:[TC('PO Reference',META_LBL,{bold:true,borders:allB}),TC(inv.po_reference||'—',META_VAL,{borders:allB})]}),
+                ...(exRate?[new TableRow({children:[TC('Exchange Rate',META_LBL,{bold:true,borders:allB}),TC(`1 ${curr} = ${Number(exRate).toFixed(4)} AED`,META_VAL,{borders:allB})]})]:[]),
+              ]})],META_W,{borders:noB}),
+            ]}),
+          ]}),
+          P([R('Subject: ',{bold:true,size:20}),R(`Invoice for ${inv.full_name||''} Support Work`,{size:20})],{before:180,after:60}),
+          P(R(`Please find the below description of ${inv.full_name||''} support services for the month of ${mLabel}`,{size:18}),{after:160}),
+          mainTable,
+          P(R('OUR BANK DETAILS:-',{bold:true,size:18}),{before:200,after:40}),
+          P(R('ACCOUNT TITLE :- SATCO ARABIA GENERAL CONTRACTING -L.L.C-S.P.C',{size:18}),{after:40}),
+          P(R('ACCOUNT NUMBER:- 90020200014786     IBAN NO: AE170110090020200014786',{size:18}),{after:40}),
+          P(R('BANK NAME:- BANK OF BARODA',{size:18}),{after:40}),
+          P(R('TRN :- 105042029600003',{size:18}),{after:160}),
+          P(R('Best regards,',{size:18}),{after:80}),
+          ...(stampImg?[P(stampImg,{after:40})]:[]),
+          P(R('General Manager',{italic:true,size:18}),{after:80}),
+          P(R('Computer generated invoice- no original signature or stamp required.',{italic:true,size:16,color:'94A3B8'})),
+        ],
+      }],
+    });
+    const blob=await Packer.toBlob(doc);
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=`SATCO_Invoice_${(inv.invoice_number||'draft').replace(/\//g,'-')}_${invoiceMonth}.docx`; a.click();
+    URL.revokeObjectURL(url);
+  } catch(err){ console.error('[generateBrunelInvoiceDocx]',err); alert('Failed to generate invoice: '+err.message); }
+}
+
