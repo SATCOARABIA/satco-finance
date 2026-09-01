@@ -448,44 +448,49 @@ async function syncInvoiceToOps({ invoice_no, invoice_date, client_name, currenc
   const { data: existing, error: findErr } = await db.schema('ops').from('invoices').select('id').eq('invoice_no', invoice_no).maybeSingle();
   if (findErr) throw findErr;
   let invoiceId = existing ? existing.id : null;
+  // Resolve correct PO + customer from ops.purchase_orders using the PO reference.
+  // Done for BOTH insert and update so that re-saving an invoice from Finance also
+  // corrects a previously wrong customer_id (e.g. Brunel row that was written as Alghanim).
+  let resolvedPoId = null;
+  let resolvedCustomerId = null;
+  let resolvedPaymentTerms = 30;
+
+  if (po_reference) {
+    const { data: poRow } = await db.schema('ops').from('purchase_orders')
+      .select('id, customer_id, payment_terms_days')
+      .eq('po_no', po_reference)
+      .maybeSingle();
+    if (poRow) {
+      resolvedPoId = poRow.id;
+      resolvedCustomerId = poRow.customer_id;
+      resolvedPaymentTerms = poRow.payment_terms_days || 30;
+    }
+  }
+
+  // Fall back to client_ops_mapping only if PO reference lookup found nothing
+  if (!resolvedPoId) {
+    const mapping = await opsMappingFor(client_name);
+    resolvedPoId = (mapping && mapping.ops_po_id) || null;
+    resolvedCustomerId = (mapping && mapping.ops_customer_id) || null;
+    resolvedPaymentTerms = (mapping && mapping.payment_terms_days) || 30;
+  }
+
   if (existing) {
-    const { error } = await db.schema('ops').from('invoices').update({
+    // Always update value/date/currency/period. Also correct po_id and customer_id
+    // if we resolved them — this fixes rows that were previously written with a wrong
+    // customer (e.g. Brunel invoice showing as Alghanim due to bad client_ops_mapping data).
+    const updatePayload = {
       invoice_date: invoice_date || null,
       invoice_value: Number(value) || 0,
       currency: currency || 'AED',
       period_from: period_from || null,
       period_to: period_to || null,
-    }).eq('id', existing.id);
+    };
+    if (resolvedPoId)       updatePayload.po_id       = resolvedPoId;
+    if (resolvedCustomerId) updatePayload.customer_id = resolvedCustomerId;
+    const { error } = await db.schema('ops').from('invoices').update(updatePayload).eq('id', existing.id);
     if (error) throw error;
   } else {
-    // Resolve the correct PO and customer directly from ops.purchase_orders using the
-    // PO reference number stored on the Finance invoice (e.g. "PL506640B-0").
-    // This is the authoritative link — avoids relying on client_ops_mapping, which had
-    // a stale/wrong ops_customer_id that caused Brunel invoices to show as Alghanim.
-    let resolvedPoId = null;
-    let resolvedCustomerId = null;
-    let resolvedPaymentTerms = 30;
-
-    if (po_reference) {
-      const { data: poRow } = await db.schema('ops').from('purchase_orders')
-        .select('id, customer_id, payment_terms_days')
-        .eq('po_no', po_reference)
-        .maybeSingle();
-      if (poRow) {
-        resolvedPoId = poRow.id;
-        resolvedCustomerId = poRow.customer_id;
-        resolvedPaymentTerms = poRow.payment_terms_days || 30;
-      }
-    }
-
-    // Fall back to client_ops_mapping only if PO reference lookup found nothing
-    if (!resolvedPoId) {
-      const mapping = await opsMappingFor(client_name);
-      resolvedPoId = (mapping && mapping.ops_po_id) || null;
-      resolvedCustomerId = (mapping && mapping.ops_customer_id) || null;
-      resolvedPaymentTerms = (mapping && mapping.payment_terms_days) || 30;
-    }
-
     const { data: ins, error } = await db.schema('ops').from('invoices').insert({
       invoice_no,
       invoice_date: invoice_date || null,
