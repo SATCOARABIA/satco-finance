@@ -261,6 +261,7 @@ const received = (receivedRaw !== null && (draft.received_currency||'AED')==='EU
         received_amount_aed: clean.received_amount_aed,
         received_date: clean.received_date,
         received_currency: clean.received_currency,
+        po_reference: clean.po_reference,   // used to resolve correct PO + customer in Ops
       });
     } catch (syncErr) {
       alert('Invoice saved, but syncing to the Ops portal failed: '+(syncErr.message||syncErr));
@@ -772,6 +773,7 @@ function ClientMultiInvoiceTab({ employees, empMeta }) {
         received_amount_aed: clean.received_amount_aed,
         received_date: clean.received_date,
         received_currency: 'AED',
+        po_reference: clean.po_reference,   // used to resolve correct PO + customer in Ops
       });
     } catch (syncErr) {
       alert('Invoice saved, but syncing to the Ops portal failed: '+(syncErr.message||syncErr));
