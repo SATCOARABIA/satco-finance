@@ -151,7 +151,9 @@ DROP VIEW IF EXISTS public.v_finance_employee_mob_demob CASCADE;
 DROP VIEW IF EXISTS public.v_finance_employee_salary CASCADE;
 
 -- Salary / WPS safe bridge for Finance portal
-CREATE VIEW public.v_finance_employee_salary AS
+-- IMPORTANT: Must filter deleted_at IS NULL — soft-deleted employees (e.g. duplicate IDs)
+-- must not appear in Finance. Without this, cancelled/duplicate IDs like SA1015 show up.
+CREATE OR REPLACE VIEW public.v_finance_employee_salary AS
 SELECT
   e.employee_id,
   e.full_name,
@@ -167,7 +169,8 @@ SELECT
   e.basic_salary,
   e.allowance AS fixed_allowance
 FROM public.employees e
-WHERE e.employee_id IS NOT NULL;
+WHERE e.employee_id IS NOT NULL
+  AND e.deleted_at IS NULL;
 
 -- Full mobilization/demobilization history bridge for Finance portal (v2 — returns every
 -- assignment row per employee, not just the latest, so Finance can reconstruct every
