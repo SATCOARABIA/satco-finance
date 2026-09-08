@@ -184,8 +184,10 @@ WHERE m.employee_id IS NOT NULL
 ORDER BY m.employee_id, m.mobilization_date ASC NULLS FIRST, m.demobilization_date ASC NULLS FIRST;
 
 -- Temporary candidate bridge for Finance deposits/advances before final employee ID
--- Only active (non-deleted) pipeline entries — soft-deleted records (e.g. reassigned IDs
--- like SA1014) must not appear as ghost pending rows in the Finance dashboard.
+-- Only active (non-deleted) pipeline entries — soft-deleted records and candidates already
+-- converted to real employees (pipeline_location = 'converted') must NOT appear as ghost
+-- pending rows in the Finance dashboard. Once a candidate is converted, their T-suffix ID
+-- is renamed to their real SA#### ID in all finance tables, and this view excludes them.
 CREATE OR REPLACE VIEW public.v_temp_candidates AS
 SELECT
   h.temp_employee_id,
@@ -194,7 +196,8 @@ SELECT
   h.status
 FROM public.hiring_pipeline h
 WHERE h.temp_employee_id IS NOT NULL
-  AND h.deleted_at IS NULL;
+  AND h.deleted_at IS NULL
+  AND (h.pipeline_location IS NULL OR h.pipeline_location != 'converted');
 
 -- Finance portal uses HR anon key, therefore anon SELECT is required for these limited views.
 -- If later you move Finance-to-HR access behind logged-in/authenticated users, remove anon grant.
