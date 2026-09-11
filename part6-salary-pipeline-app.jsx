@@ -1099,6 +1099,7 @@ const PORTAL_TABS = [
   { key:'billing', icon:'🧾', label:'Client Billing', short:'Invoices', desc:'Create client invoices, track rates, recovery, and billing status.' },
   { key:'client_invoices', icon:'📄', label:'Client Invoices', short:'Multi-emp billing', desc:'Create and manage multi-employee client invoices with line items, PO tracking, and Ops portal sync.' },
   { key:'hiring_history', icon:'📜', label:'Hiring Pipeline History', short:'Recruitment archive', desc:'Historical recruitment/visa-pipeline records imported from the master data sheet — reference only, not linked to P&L.' },
+  { key:'company_expenses', icon:'🏢', label:'Company Expenses', short:'Rent, commissions', desc:'Capture company-level overheads: rent, commissions, bank charges, PRO fees, utilities and other non-employee expenses.' },
 ];
 const PORTAL_TAB_MAP = Object.fromEntries(PORTAL_TABS.map(t=>[t.key,t]));
 const PORTAL_NAV_GROUPS = [
@@ -1106,6 +1107,7 @@ const PORTAL_NAV_GROUPS = [
   { title:'Payroll', items:['salary_profiles','deductions','wps'] },
   { title:'Employee Costs', items:['monthly','visa','flights','training','other','camp','ppe'] },
   { title:'Revenue', items:['timesheets','billing','client_invoices'] },
+  { title:'Overheads', items:['company_expenses'] },
   { title:'Archive', items:['hiring_history'] },
 ];
 
@@ -1284,7 +1286,8 @@ function App() {
         {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
         {tab==='billing'    && <ClientBillingTab employees={employees} />}
         {tab==='client_invoices' && <ClientMultiInvoiceTab employees={employees} empMeta={empMeta} />}
-        {tab==='hiring_history' && <HiringPipelineTab />}
+        {tab==='hiring_history'         {tab==='hiring_history' && <HiringPipelineTab />}        {tab==='hiring_history' && <HiringPipelineTab />} <HiringPipelineTab />}
+        {tab==='company_expenses' && <CompanyExpensesSection />}
         {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
       </>
     );

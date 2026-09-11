@@ -4,7 +4,7 @@
 
 (function () {
   const { useState, useEffect, useCallback } = React;
-  const supabase = window.__supabase_client__;   // shared client created in part1
+  // Use the shared 'db' client created in part1 (same as all other tabs)
 
   // ── Constants ──────────────────────────────────────────────
   const CATEGORIES = [
@@ -95,7 +95,7 @@
 
     const fetchRows=useCallback(async()=>{
       setLoading(true); setErr(null);
-      let q=supabase.from("company_expenses").select("*")
+      let q=db.from("company_expenses").select("*")
         .eq("month_year",filterMonth).order("expense_date",{ascending:false});
       if(filterCat!=="All") q=q.eq("category",filterCat);
       const {data,error}=await q;
@@ -104,7 +104,7 @@
     },[filterMonth,filterCat]);
 
     const fetchSummary=useCallback(async()=>{
-      const {data,error}=await supabase.from("company_expenses_monthly_summary")
+      const {data,error}=await db.from("company_expenses_monthly_summary")
         .select("*").order("month_year",{ascending:false});
       if(!error) setSummary(data||[]);
     },[]);
@@ -128,9 +128,9 @@
       };
       let error;
       if(editId){
-        ({error}=await supabase.from("company_expenses").update(payload).eq("id",editId));
+        ({error}=await db.from("company_expenses").update(payload).eq("id",editId));
       } else {
-        ({error}=await supabase.from("company_expenses").insert(payload));
+        ({error}=await db.from("company_expenses").insert(payload));
       }
       setSaving(false);
       if(error){ setErr(error.message); }
@@ -151,7 +151,7 @@
 
     const handleDelete=async()=>{
       if(!deleteId) return;
-      await supabase.from("company_expenses").delete().eq("id",deleteId);
+      await db.from("company_expenses").delete().eq("id",deleteId);
       setDeleteId(null); fetchRows(); fetchSummary();
     };
 
@@ -381,14 +381,7 @@
     );
   }
 
-  // ── Register globally so part6 App can pick it up ──────────
-  window.CompanyExpensesSection = {
-    id: "company-expenses",
-    label: "Company Expenses",
-    icon: "🏢",
-    caption: "Rent, commissions & overheads",
-    group: "Finance",
-    component: CompanyExpenses,
-  };
+  // ── Expose as global function for part6 App ──────────────
+  window.CompanyExpensesSection = CompanyExpenses;
 
 })();
