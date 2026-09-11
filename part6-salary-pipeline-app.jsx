@@ -1286,7 +1286,7 @@ function App() {
         {tab==='timesheets'&& <TimesheetsTable employees={employees} />}
         {tab==='billing'    && <ClientBillingTab employees={employees} />}
         {tab==='client_invoices' && <ClientMultiInvoiceTab employees={employees} empMeta={empMeta} />}
-        {tab==='hiring_history'         {tab==='hiring_history' && <HiringPipelineTab />}        {tab==='hiring_history' && <HiringPipelineTab />} <HiringPipelineTab />}
+        {tab==='hiring_history' && <HiringPipelineTab />}
         {tab==='company_expenses' && <CompanyExpensesSection />}
         {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
       </>
