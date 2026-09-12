@@ -1036,44 +1036,32 @@ Respond ONLY with valid JSON, no explanation, no markdown fences, in this exact 
 
 // ── APP SHELL / NAVIGATION ────────────────────────────────────────
 
-// ── CLAUDE DIRECT BROWSER API ─────────────────────────────────────
-// Anthropic supports direct browser calls with this header.
-// The API key is the Finance portal's own key stored in the page.
-// For the timesheet OCR (CLAUDE_PROXY) and invoice scan — same endpoint, same key.
-const ANTHROPIC_API_KEY = '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'; // ← replace this once
+// ── AI INVOICE SCAN PROXY ─────────────────────────────────────────
+// Calls satco-ai-proxy — a separate Vercel serverless function that holds
+// the Anthropic API key securely server-side (set via Vercel env vars).
+// No API key ever lives in this file.
 const CLAUDE_PROXY = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_HEADERS = {
   'Content-Type': 'application/json',
-  'x-api-key': ANTHROPIC_API_KEY,
   'anthropic-version': '2023-06-01',
   'anthropic-dangerous-direct-browser-access': 'true',
 };
+const SI_SCAN_PROXY = 'https://satco-ai-proxy.vercel.app/api/scan-invoice';
 
 async function siScanInvoice(b64, mime) {
-  const prompt = `Extract invoice data and return ONLY valid JSON (no markdown, no explanation, no extra text):
-{"supplier_name":"...","invoice_number":"...","invoice_date":"YYYY-MM-DD","invoice_month":"Mon-YY","description":"...","hours":null,"rate_per_hour":null,"sub_total":0,"vat_rate":0,"vat_amount":0,"total_amount":0,"payment_terms":30}
-
-Rules: invoice_date must be YYYY-MM-DD. invoice_month like "Aug-26". hours/rate_per_hour: null if not shown. vat_rate as number (0 or 5). All amounts as plain numbers. Return ONLY the JSON object.`;
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(SI_SCAN_PROXY, {
       method: 'POST',
-      headers: CLAUDE_HEADERS,
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 800,
-        messages: [{ role: 'user', content: [
-          { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } },
-          { type: 'text', text: prompt }
-        ]}]
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_base64: b64, media_type: mime })
     });
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`API ${res.status}: ${errText.slice(0, 200)}`);
+      throw new Error(`Proxy ${res.status}: ${errText.slice(0, 200)}`);
     }
     const data = await res.json();
-    const text = data.content?.[0]?.text || '{}';
-    return JSON.parse(text.replace(/```json|```/g, '').trim());
+    if (data.error) throw new Error(data.error);
+    return data.result || {};
   } catch(e) {
     console.error('[siScanInvoice]', e);
     throw e;
@@ -1125,7 +1113,7 @@ function SiFormModal({ inv, onClose, onSaved }) {
           const result = await siScanInvoice(b64, file.type || 'image/jpeg');
           const filled = Object.entries(result).filter(([,v]) => v != null && v !== '');
           if (filled.length === 0) {
-            alert('AI scan returned no data. Make sure ANTHROPIC_API_KEY is set at the top of part6-salary-pipeline-app.jsx.');
+            alert('AI scan returned no data. Check that ANTHROPIC_API_KEY is set in the satco-ai-proxy Vercel project environment variables.');
           } else {
             setScanned(result);
             setForm(f => ({...f, ...Object.fromEntries(filled)}));
