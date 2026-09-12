@@ -581,7 +581,7 @@ Respond ONLY with valid JSON, no explanation, no markdown fences, in this exact 
 {"document_month":"<month name printed on the timesheet>","document_year":<year printed on the timesheet>,"employees":[{"name":"...","normal_days":N,"normal_ot_hours":N,"holiday_ot_hours":N,"idle_days":N,"total_days_present":N},...]}`;
 
       const res = await fetch(CLAUDE_PROXY, {
-        method:'POST', headers:{'Content-Type':'application/json'},
+        method:'POST', headers: CLAUDE_HEADERS,
         body: JSON.stringify({
           model:'claude-sonnet-4-6', max_tokens:4000,
           messages:[{ role:'user', content:[
@@ -1038,13 +1038,49 @@ Respond ONLY with valid JSON, no explanation, no markdown fences, in this exact 
 
 const SATCO_LOGO_SRC = './satco-logo.png';
 
-// ─── SUPPLIER INVOICES TAB ────────────────────────────────────────────────────
-// Full add/edit/pay/AI-scan module. Finance portal is the write side.
-// Ops portal is read-only view of the same supplier_invoices table.
+// ── CLAUDE DIRECT BROWSER API ─────────────────────────────────────
+// Anthropic supports direct browser calls with this header.
+// The API key is the Finance portal's own key stored in the page.
+// For the timesheet OCR (CLAUDE_PROXY) and invoice scan — same endpoint, same key.
+const ANTHROPIC_API_KEY = 'PASTE_YOUR_ANTHROPIC_KEY_HERE'; // ← replace this once
+const CLAUDE_PROXY = 'https://api.anthropic.com/v1/messages';
+const CLAUDE_HEADERS = {
+  'Content-Type': 'application/json',
+  'x-api-key': ANTHROPIC_API_KEY,
+  'anthropic-version': '2023-06-01',
+  'anthropic-dangerous-direct-browser-access': 'true',
+};
 
-const SI_STATUSES = ['Received','Approved','Due Soon','Paid','Disputed'];
+async function siScanInvoice(b64, mime) {
+  const prompt = `Extract invoice data and return ONLY valid JSON (no markdown, no explanation, no extra text):
+{"supplier_name":"...","invoice_number":"...","invoice_date":"YYYY-MM-DD","invoice_month":"Mon-YY","description":"...","hours":null,"rate_per_hour":null,"sub_total":0,"vat_rate":0,"vat_amount":0,"total_amount":0,"payment_terms":30}
 
-function siAddDays(dateStr, days) {
+Rules: invoice_date must be YYYY-MM-DD. invoice_month like "Aug-26". hours/rate_per_hour: null if not shown. vat_rate as number (0 or 5). All amounts as plain numbers. Return ONLY the JSON object.`;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: CLAUDE_HEADERS,
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 800,
+        messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } },
+          { type: 'text', text: prompt }
+        ]}]
+      })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`API ${res.status}: ${errText.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '{}';
+    return JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch(e) {
+    console.error('[siScanInvoice]', e);
+    throw e;
+  }
+}
   const d = new Date(dateStr);
   d.setDate(d.getDate() + days);
   return d.toISOString().split('T')[0];
@@ -1053,23 +1089,6 @@ function siToday() { return new Date().toISOString().split('T')[0]; }
 function siFmtDate(d) { return d ? new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—'; }
 function siFmtAed(n) { return n == null ? '—' : 'AED '+Number(n).toLocaleString('en-AE',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function siDaysUntil(d) { if (!d) return null; return Math.ceil((new Date(d)-new Date(siToday()))/86400000); }
-
-async function siScanInvoice(b64, mime) {
-  try {
-    const res = await fetch('/api/scan-invoice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_base64: b64, media_type: mime }),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    return data.result || {};
-  } catch(e) {
-    console.error('[siScanInvoice]', e);
-    alert('Scan failed: ' + e.message);
-    return {};
-  }
-}
 
 function SiFormModal({ inv, onClose, onSaved }) {
   const isEdit = !!inv?.id;
@@ -1103,15 +1122,14 @@ function SiFormModal({ inv, onClose, onSaved }) {
       reader.onload = async(e) => {
         try {
           const b64 = e.target.result.split(',')[1];
-          const result = await siScanInvoice(b64, file.type||'image/jpeg');
-          const filled = Object.entries(result).filter(([,v])=>v!=null&&v!=='');
+          const result = await siScanInvoice(b64, file.type || 'image/jpeg');
+          const filled = Object.entries(result).filter(([,v]) => v != null && v !== '');
           if (filled.length === 0) {
-            alert('AI scan returned no fields. Check that ANTHROPIC_API_KEY is set in Vercel → Settings → Environment Variables, then redeploy.');
-            setScanning(false);
-            return;
+            alert('AI scan returned no data. Make sure ANTHROPIC_API_KEY is set at the top of part6-salary-pipeline-app.jsx.');
+          } else {
+            setScanned(result);
+            setForm(f => ({...f, ...Object.fromEntries(filled)}));
           }
-          setScanned(result);
-          setForm(f=>({...f,...Object.fromEntries(filled)}));
         } catch(err) {
           alert('Scan error: ' + err.message);
         }
