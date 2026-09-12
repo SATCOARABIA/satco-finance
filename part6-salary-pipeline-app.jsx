@@ -1040,7 +1040,7 @@ Respond ONLY with valid JSON, no explanation, no markdown fences, in this exact 
 // Anthropic supports direct browser calls with this header.
 // The API key is the Finance portal's own key stored in the page.
 // For the timesheet OCR (CLAUDE_PROXY) and invoice scan — same endpoint, same key.
-const ANTHROPIC_API_KEY = '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'; // ← replace this once
+const ANTHROPIC_API_KEY = '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'; // ← replace this once
 const CLAUDE_PROXY = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_HEADERS = {
   'Content-Type': 'application/json',
