@@ -1088,6 +1088,7 @@ function siToday() { return new Date().toISOString().split('T')[0]; }
 function siFmtDate(d) { return d ? new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—'; }
 function siFmtAed(n) { return n == null ? '—' : 'AED '+Number(n).toLocaleString('en-AE',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function siDaysUntil(d) { if (!d) return null; return Math.ceil((new Date(d)-new Date(siToday()))/86400000); }
+const SI_STATUSES = ['Received','Approved','Due Soon','Paid','Disputed'];
 
 function SiFormModal({ inv, onClose, onSaved }) {
   const isEdit = !!inv?.id;
