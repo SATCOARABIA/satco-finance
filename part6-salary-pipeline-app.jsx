@@ -1081,6 +1081,7 @@ Rules: invoice_date must be YYYY-MM-DD. invoice_month like "Aug-26". hours/rate_
     throw e;
   }
 }
+function siAddDays(dateStr, days) {
   const d = new Date(dateStr);
   d.setDate(d.getDate() + days);
   return d.toISOString().split('T')[0];
