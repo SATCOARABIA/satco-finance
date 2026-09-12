@@ -1299,44 +1299,90 @@ function SiFormModal({ inv, onClose, onSaved }) {
 }
 
 function SiPayModal({ inv, onClose, onPaid }) {
-  const [ref, setRef] = useState('');
   const [paidDate, setPaidDate] = useState(siToday());
+  const [paidAmount, setPaidAmount] = useState(inv.total_amount||'');
+  const [paidMode, setPaidMode] = useState('cheque');
+  const [paidBank, setPaidBank] = useState('ADCB');
+  const [chequeNo, setChequeNo] = useState('');
+  const [txnRef, setTxnRef] = useState('');
   const [saving, setSaving] = useState(false);
+
   async function handlePay() {
+    if (!paidAmount) return alert('Enter payment amount');
     setSaving(true);
     try {
-      const {error} = await db.from('supplier_invoices').update({status:'Paid',paid_date:paidDate,paid_reference:ref}).eq('id',inv.id);
+      const {error} = await db.from('supplier_invoices').update({
+        status:'Paid',
+        paid_date: paidDate,
+        paid_amount: parseFloat(paidAmount),
+        paid_mode: paidMode,
+        paid_bank: paidBank,
+        paid_cheque_no: chequeNo||null,
+        paid_transaction_ref: txnRef||null,
+        paid_reference: paidMode==='cheque' ? `CHQ: ${chequeNo} | ${paidBank}` : `TRF: ${txnRef} | ${paidBank}`,
+      }).eq('id', inv.id);
       if (error) throw error;
       onPaid();
     } catch(e) { alert('Error: '+e.message); }
     finally { setSaving(false); }
   }
+
+  const inp2 = {...S.input, width:'100%'};
   return (
     <div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
          onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{background:'#fff',borderRadius:18,boxShadow:'0 20px 60px rgba(15,23,42,.22)',width:'100%',maxWidth:420,borderTop:'4px solid #166534'}}>
+      <div style={{background:'#fff',borderRadius:18,boxShadow:'0 20px 60px rgba(15,23,42,.22)',width:'100%',maxWidth:500,borderTop:'4px solid #166534'}}>
         <div style={{padding:'16px 22px 12px',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div style={{fontWeight:900,fontSize:15}}>💳 Mark as Paid</div>
+          <div style={{fontWeight:900,fontSize:15}}>💳 Record Payment</div>
           <button onClick={onClose} style={{...S.iconBtn,fontSize:18,background:'#f1f5f9',borderRadius:'50%',width:30,height:30}}>×</button>
         </div>
-        <div style={{padding:'16px 22px'}}>
-          <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,padding:'10px 12px',marginBottom:12,fontSize:13}}>
+        <div style={{padding:'16px 22px',display:'flex',flexDirection:'column',gap:12}}>
+          <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,padding:'10px 12px',fontSize:13}}>
             <div style={{fontWeight:800}}>{inv.supplier_name}</div>
-            Invoice {inv.invoice_number||'—'} · {siFmtAed(inv.total_amount)}<br/>
-            <span style={{fontSize:11,color:'#166534'}}>Due {siFmtDate(inv.due_date)}</span>
+            Invoice {inv.invoice_number||'—'} · {siFmtAed(inv.total_amount)}
+            <span style={{marginLeft:8,fontSize:11,color:'#166534'}}>Due {siFmtDate(inv.due_date)}</span>
           </div>
-          <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:10}}>
-            <label style={S.label}>Payment Date</label>
-            <input style={{...S.input,width:'100%'}} type="date" value={paidDate} onChange={e=>setPaidDate(e.target.value)}/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div><label style={S.label}>Payment Date *</label>
+              <input style={inp2} type="date" value={paidDate} onChange={e=>setPaidDate(e.target.value)}/></div>
+            <div><label style={S.label}>Amount Paid (AED) *</label>
+              <input style={inp2} type="number" value={paidAmount} onChange={e=>setPaidAmount(e.target.value)}/></div>
           </div>
-          <div style={{display:'flex',flexDirection:'column',gap:4}}>
-            <label style={S.label}>Reference (Cheque / Transfer)</label>
-            <input style={{...S.input,width:'100%'}} value={ref} onChange={e=>setRef(e.target.value)} placeholder="e.g. CHQ-00123"/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div><label style={S.label}>Payment Mode</label>
+              <select style={inp2} value={paidMode} onChange={e=>setPaidMode(e.target.value)}>
+                <option value="cheque">Cheque</option>
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="cash">Cash</option>
+              </select></div>
+            <div><label style={S.label}>Bank</label>
+              <select style={inp2} value={paidBank} onChange={e=>setPaidBank(e.target.value)}>
+                <option value="ADCB">ADCB</option>
+                <option value="Bank of Baroda">Bank of Baroda</option>
+                <option value="FAB">FAB</option>
+                <option value="Emirates NBD">Emirates NBD</option>
+                <option value="ENBD">ENBD</option>
+                <option value="RAK Bank">RAK Bank</option>
+                <option value="Other">Other</option>
+              </select></div>
           </div>
+          {paidMode==='cheque' && (
+            <div><label style={S.label}>Cheque Number</label>
+              <input style={inp2} value={chequeNo} onChange={e=>setChequeNo(e.target.value)} placeholder="e.g. 000123"/></div>
+          )}
+          {paidMode==='bank_transfer' && (
+            <div><label style={S.label}>Transaction Reference</label>
+              <input style={inp2} value={txnRef} onChange={e=>setTxnRef(e.target.value)} placeholder="e.g. TRF20260912001"/></div>
+          )}
+          {parseFloat(paidAmount)>0 && parseFloat(paidAmount)<parseFloat(inv.total_amount) && (
+            <div style={{background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,padding:'8px 12px',fontSize:12,color:'#92400e',fontWeight:700}}>
+              ⚠️ Partial payment — AED {siFmtAed(parseFloat(inv.total_amount)-parseFloat(paidAmount))} still outstanding
+            </div>
+          )}
         </div>
         <div style={{padding:'12px 22px',borderTop:'1px solid #e2e8f0',display:'flex',gap:10,justifyContent:'flex-end'}}>
           <button style={S.btnSec} onClick={onClose}>Cancel</button>
-          <button style={{...S.btnPri,background:'#166534'}} onClick={handlePay} disabled={saving}>{saving?'Saving…':'✅ Confirm Payment'}</button>
+          <button style={{...S.btnPri,background:'#166634'}} onClick={handlePay} disabled={saving}>{saving?'Saving…':'✅ Confirm Payment'}</button>
         </div>
       </div>
     </div>
