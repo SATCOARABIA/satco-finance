@@ -1036,8 +1036,6 @@ Respond ONLY with valid JSON, no explanation, no markdown fences, in this exact 
 
 // ── APP SHELL / NAVIGATION ────────────────────────────────────────
 
-const SATCO_LOGO_SRC = './satco-logo.png';
-
 // ── CLAUDE DIRECT BROWSER API ─────────────────────────────────────
 // Anthropic supports direct browser calls with this header.
 // The API key is the Finance portal's own key stored in the page.
@@ -1461,7 +1459,12 @@ function SupplierInvoicesTab() {
 }
 
 function SatcoLogo() {
-  return <img className="brand-logo" src={SATCO_LOGO_SRC} alt="SATCO Arabia General Contracting - L.L.C - S.P.C" />;
+  return (
+    <div style={{display:'flex',flexDirection:'column',lineHeight:1.1}}>
+      <span style={{fontWeight:950,fontSize:15,letterSpacing:'.04em',color:'inherit'}}>SATCO ARABIA</span>
+      <span style={{fontWeight:700,fontSize:9,letterSpacing:'.08em',color:'#94a3b8',textTransform:'uppercase',marginTop:2}}>General Contracting LLC</span>
+    </div>
+  );
 }
 
 function PortalLaunchpad({ active, onOpen }) {
@@ -1723,7 +1726,7 @@ function App() {
       <div className="satco-shell">
         <aside className="satco-sidebar">
           <div className="brand-card">
-            <div className="brand-logo-wrap"><SatcoLogo /></div>
+            <SatcoLogo />
             <div>
               <div className="portal-name">FINANCE PORTAL</div>
               <div className="brand-subtitle">Employee Finance &amp; P&amp;L</div>
@@ -1755,7 +1758,7 @@ function App() {
           <div className="topbar" ref={topbarRef}>
             <div>
               <div className="topbar-brand">
-                <div className="brand-logo-wrap"><SatcoLogo /></div>
+                <SatcoLogo />
                 <div>
                   <div className="portal-name">FINANCE PORTAL</div>
                   <div className="brand-subtitle">SATCO Employee Finance &amp; P&amp;L</div>
