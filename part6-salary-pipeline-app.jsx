@@ -1080,7 +1080,7 @@ const SI_STATUSES = ['Received','Approved','Due Soon','Paid','Disputed'];
 
 function SiFormModal({ inv, onClose, onSaved }) {
   const isEdit = !!inv?.id;
-  const blank = {supplier_name:'',invoice_number:'',invoice_date:siToday(),invoice_month:'',description:'',hours:'',rate_per_hour:'',sub_total:'',vat_rate:0,vat_amount:0,total_amount:'',payment_terms:30,mob_portal_amount:'',notes:'',status:'Received',paid_date:'',paid_reference:''};
+  const blank = {supplier_name:'',invoice_number:'',invoice_date:siToday(),invoice_month:'',description:'',hours:'',rate_per_hour:'',sub_total:'',vat_rate:0,vat_amount:0,total_amount:'',payment_terms:30,supplier_payment_terms:30,satco_payment_days:30,mob_portal_amount:'',notes:'',status:'Received',paid_date:'',paid_reference:''};
   const [form, setForm] = useState(isEdit ? {...blank,...inv,hours:inv.hours??'',rate_per_hour:inv.rate_per_hour??'',sub_total:inv.sub_total??'',mob_portal_amount:inv.mob_portal_amount??''} : blank);
   const [file, setFile] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -1150,7 +1150,12 @@ function SiFormModal({ inv, onClose, onSaved }) {
         sub_total:form.sub_total?parseFloat(form.sub_total):null,
         vat_rate:parseFloat(form.vat_rate)||0, vat_amount:parseFloat(form.vat_amount)||0,
         total_amount:parseFloat(form.total_amount), payment_terms:parseInt(form.payment_terms)||30,
-        due_date:dueDate, reminder_date:remDate,
+        supplier_payment_terms:parseInt(form.payment_terms)||30,
+        supplier_due_date:dueDate,
+        satco_payment_days:parseInt(form.satco_payment_days)||30,
+        satco_due_date:form.invoice_date?siAddDays(form.invoice_date,parseInt(form.satco_payment_days)||30):null,
+        due_date:dueDate,
+        reminder_date:form.invoice_date?siAddDays(siAddDays(form.invoice_date,parseInt(form.satco_payment_days)||30),-3):remDate,
         mob_portal_amount:form.mob_portal_amount?parseFloat(form.mob_portal_amount):null,
         notes:form.notes||null, image_url, status:form.status||'Received',
         ...(form.status==='Paid'?{paid_date:form.paid_date||null,paid_reference:form.paid_reference||null}:{})
@@ -1260,16 +1265,25 @@ function SiFormModal({ inv, onClose, onSaved }) {
           </div>
 
           <Divider label="Payment Terms"/>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12}}>
-            <Field label="Terms">
-              <select style={inp} value={form.payment_terms} onChange={e=>set('payment_terms',e.target.value)}>
-                <option value={7}>7 Days</option><option value={14}>14 Days</option>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12}}>
+            <Field label="Supplier Terms (days)">
+              <select style={inp} value={form.payment_terms||30} onChange={e=>{set('payment_terms',e.target.value);set('supplier_payment_terms',e.target.value);}}>
+                <option value={3}>3 Days</option><option value={7}>7 Days</option><option value={14}>14 Days</option>
                 <option value={30}>30 Days</option><option value={45}>45 Days</option><option value={60}>60 Days</option>
               </select>
             </Field>
-            <Field label="Due Date (auto)"><input style={{...inp,background:'#f8fafc',color:'#64748b'}} value={dueDate?siFmtDate(dueDate):'—'} readOnly/></Field>
-            <Field label="Reminder (3 days before)"><input style={{...inp,background:'#f8fafc',color:'#64748b'}} value={remDate?siFmtDate(remDate):'—'} readOnly/></Field>
+            <Field label="Supplier Due Date (auto)"><input style={{...inp,background:'#fff3cd',color:'#92400e',fontWeight:700}} value={dueDate?siFmtDate(dueDate):'—'} readOnly/></Field>
+            <Field label="SATCO Payment Days">
+              <select style={inp} value={form.satco_payment_days||30} onChange={e=>set('satco_payment_days',e.target.value)}>
+                <option value={30}>30 Days</option><option value={45}>45 Days</option><option value={60}>60 Days</option>
+              </select>
+            </Field>
+            <Field label="SATCO Due Date (auto)">
+              <input style={{...inp,background:'#f0fdf4',color:'#166534',fontWeight:700}} 
+                value={form.invoice_date?siFmtDate(siAddDays(form.invoice_date,parseInt(form.satco_payment_days)||30)):'—'} readOnly/>
+            </Field>
           </div>
+          <div style={{fontSize:11,color:'#64748b',marginTop:4}}>⚠️ Supplier requested {form.payment_terms||30} days — SATCO pays in {form.satco_payment_days||30} days. Reminder sent 3 days before SATCO due date.</div>
 
           {isEdit && <>
             <Divider label="Status & Payment"/>
@@ -1465,22 +1479,22 @@ function SupplierInvoicesTab() {
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
             <thead>
               <tr style={{background:'#0f172a'}}>
-                {['Supplier','Invoice #','Month','Description','Hrs','Rate','Amount','Mob Portal','Variance','Invoice Date','Due Date','Days','Terms','Status','Actions'].map(h=>(
+                {['Supplier','Invoice #','Month','Description','Hrs','Rate','Amount','Mob Portal','Variance','Invoice Date','Supplier Due','SATCO Due','Days','Status','Payment Details','Actions'].map(h=>(
                   <th key={h} style={{...S.th,color:'rgba(255,255,255,.8)',background:'transparent',position:'sticky',top:0,boxShadow:'0 1px 0 #334155'}}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={15} style={{padding:24,textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>}
-              {!loading && filtered.length===0 && <tr><td colSpan={15} style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No supplier invoices yet — click "+ Add Invoice" to get started</td></tr>}
+              {loading && <tr><td colSpan={16} style={{padding:24,textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>}
+              {!loading && filtered.length===0 && <tr><td colSpan={16} style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No supplier invoices yet — click "+ Add Invoice" to get started</td></tr>}
               {!loading && filtered.map(r=>{
-                const days = siDaysUntil(r.due_date);
+                const days = siDaysUntil(r.satco_due_date || r.due_date);
                 const daysLabel = r.status==='Paid'?'Paid':days==null?'—':days<0?`${Math.abs(days)}d OVERDUE`:days===0?'TODAY':`${days}d`;
                 const daysStyle = r.status==='Paid'?{color:'#166534',fontWeight:800}:days!=null&&days<0?{color:'#dc2626',fontWeight:800}:days!=null&&days<=3?{color:'#d97706',fontWeight:800}:{};
                 const varNum = r.variance;
                 const varStyle = varNum==null?{}:Math.abs(varNum)<0.01?{color:'#166534',fontWeight:700}:Math.abs(varNum)<=50?{color:'#d97706',fontWeight:700}:{color:'#dc2626',fontWeight:800};
                 return (
-                  <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:r.status==='Paid'?'#f0fdf4':'transparent'}}>
+                  <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:r.status==='Paid'?'#dcfce7':r.status==='Due Soon'?'#fffbeb':r.status==='Disputed'?'#fef2f2':'transparent'}}>
                     <td style={{...S.td,fontWeight:700}}>{r.supplier_name}</td>
                     <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:11}}>{r.invoice_number||'—'}</td>
                     <td style={S.td}>{r.invoice_month||'—'}</td>
@@ -1491,13 +1505,28 @@ function SupplierInvoicesTab() {
                     <td style={S.td}>{r.mob_portal_amount?siFmtAed(r.mob_portal_amount):<span style={{color:'#cbd5e1'}}>—</span>}</td>
                     <td style={{...S.td,...varStyle}}>{varNum==null?'—':`${varNum>=0?'+':''}${fmt(varNum)}`}</td>
                     <td style={S.td}>{siFmtDate(r.invoice_date)}</td>
-                    <td style={S.td}>{siFmtDate(r.due_date)}</td>
+                    <td style={{...S.td,color:'#d97706',fontSize:11,fontWeight:600}}>
+                      {siFmtDate(r.supplier_due_date||r.due_date)}
+                      {r.supplier_payment_terms && <div style={{fontSize:10,color:'#94a3b8'}}>{r.supplier_payment_terms}d terms</div>}
+                    </td>
+                    <td style={{...S.td,color:'#166534',fontWeight:700}}>
+                      {siFmtDate(r.satco_due_date||r.due_date)}
+                      {r.satco_payment_days && <div style={{fontSize:10,color:'#94a3b8'}}>{r.satco_payment_days}d terms</div>}
+                    </td>
                     <td style={{...S.td,...daysStyle}}>{daysLabel}</td>
-                    <td style={S.td}>{r.payment_terms}d</td>
                     <td style={S.td}><span style={badgeStyle(r.status)}>{r.status}</span></td>
+                    <td style={{...S.td,fontSize:11,minWidth:120}}>
+                      {r.status==='Paid'
+                        ? <div>
+                            <div style={{color:'#166534',fontWeight:800}}>{siFmtDate(r.paid_date)}</div>
+                            <div style={{color:'#64748b'}}>{siFmtAed(r.paid_amount||r.total_amount)}</div>
+                            <div style={{color:'#94a3b8',fontSize:10}}>{r.paid_mode==='cheque'?'CHQ '+r.paid_cheque_no:r.paid_mode==='bank_transfer'?'TRF '+r.paid_transaction_ref:'Cash'} · {r.paid_bank||''}</div>
+                          </div>
+                        : <span style={{color:'#cbd5e1',fontSize:11}}>Pending</span>}
+                    </td>
                     <td style={S.td}>
                       <button style={{...S.iconBtn,fontSize:13}} onClick={()=>setEditRow(r)} title="Edit">✏️</button>
-                      {r.status!=='Paid' && <button style={{...S.iconBtn,fontSize:13}} onClick={()=>setPayRow(r)} title="Mark paid">💳</button>}
+                      {r.status!=='Paid' && <button style={{...S.iconBtn,fontSize:13}} onClick={()=>setPayRow(r)} title="Record payment">💳</button>}
                       {r.image_url && <a href={r.image_url} target="_blank" style={{...S.iconBtn,fontSize:13,textDecoration:'none'}} title="View document">📎</a>}
                     </td>
                   </tr>
