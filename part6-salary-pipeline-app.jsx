@@ -1234,7 +1234,25 @@ function SiFormModal({ inv, onClose, onSaved }) {
 
           <Divider label="Mob Portal Validation"/>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,alignItems:'start'}}>
-            <Field label="Mob Portal Amount (AED) — enter to cross-check"><input style={inp} type="number" value={form.mob_portal_amount} onChange={e=>set('mob_portal_amount',e.target.value)} placeholder="Paste actual amount from Mob Portal"/></Field>
+            <Field label="Mob Portal Amount (AED)">
+                <div style={{display:'flex',gap:6}}>
+                  <input style={{...inp,flex:1}} type="number" value={form.mob_portal_amount} onChange={e=>set('mob_portal_amount',e.target.value)} placeholder="Auto-fetch or enter manually"/>
+                  <button type="button" style={{...S.btnPri,padding:'8px 12px',fontSize:12,whiteSpace:'nowrap',background:'#0f766e'}} onClick={async()=>{
+                    if (!form.supplier_name||!form.invoice_month) return alert('Enter Supplier Name and Invoice Month first');
+                    try {
+                      const {data,error}=await hrDb.from('v_supplier_timesheet_summary').select('*')
+                        .ilike('supplier_name','%'+form.supplier_name.split(' ')[0]+'%')
+                        .eq('month_label',form.invoice_month).limit(5);
+                      if (error) throw error;
+                      if (!data||data.length===0){alert('No timesheet data found in Mob Portal for this supplier and month.');return;}
+                      const rate=parseFloat(form.rate_per_hour)||0;
+                      const totalHours=data.reduce((s,r)=>s+(parseFloat(r.total_hours)||0),0);
+                      const mobAmt=rate?Math.round(totalHours*rate*100)/100:totalHours;
+                      set('mob_portal_amount',mobAmt.toFixed(2));
+                    }catch(e){alert('Mob Portal fetch error: '+e.message);}
+                  }}>🔄 Fetch from Mob Portal</button>
+                </div>
+              </Field>
             {variance!=null && <div style={{padding:'10px 12px',borderRadius:8,fontSize:12,background:Math.abs(variance)<0.01?'#dcfce7':Math.abs(variance)<=50?'#fef3c7':'#fee2e2',border:`1px solid ${Math.abs(variance)<0.01?'#86efac':Math.abs(variance)<=50?'#fde68a':'#fecaca'}`,color:Math.abs(variance)<0.01?'#166534':Math.abs(variance)<=50?'#92400e':'#991b1b'}}>
               <div style={{fontWeight:800,marginBottom:3}}>{Math.abs(variance)<0.01?'✅ Matches Mob Portal':Math.abs(variance)<=50?'⚠️ Minor variance':'🚨 Variance — review required'}</div>
               Invoice {siFmtAed(form.total_amount)} · Mob Portal {siFmtAed(form.mob_portal_amount)} · Diff {siFmtAed(Math.abs(variance))}
