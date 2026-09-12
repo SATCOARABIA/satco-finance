@@ -1046,7 +1046,7 @@ const CLAUDE_HEADERS = {
   'anthropic-version': '2023-06-01',
   'anthropic-dangerous-direct-browser-access': 'true',
 };
-const SI_SCAN_PROXY = 'https://satco-ai-proxy.vercel.app/api/scan-invoice';
+const SI_SCAN_PROXY = 'https://satco-ai-proxy-shaik-zaheerudeen-s-projects.vercel.app/api/scan-invoice';
 
 async function siScanInvoice(b64, mime) {
   try {
