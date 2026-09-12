@@ -1042,7 +1042,6 @@ const SATCO_LOGO_SRC = './satco-logo.png';
 // Full add/edit/pay/AI-scan module. Finance portal is the write side.
 // Ops portal is read-only view of the same supplier_invoices table.
 
-const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const SI_STATUSES = ['Received','Approved','Due Soon','Paid','Disputed'];
 
 function siAddDays(dateStr, days) {
@@ -1056,21 +1055,20 @@ function siFmtAed(n) { return n == null ? '—' : 'AED '+Number(n).toLocaleStrin
 function siDaysUntil(d) { if (!d) return null; return Math.ceil((new Date(d)-new Date(siToday()))/86400000); }
 
 async function siScanInvoice(b64, mime) {
-  const prompt = `Extract invoice data and return ONLY valid JSON (no markdown, no explanation):
-{"supplier_name":"...","invoice_number":"...","invoice_date":"YYYY-MM-DD","invoice_month":"Mon-YY","description":"...","hours":null,"rate_per_hour":null,"sub_total":0,"vat_rate":0,"vat_amount":0,"total_amount":0,"payment_terms":30}`;
   try {
-    const res = await fetch(CLAUDE_API_URL, {
-      method:'POST',
-      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:800,messages:[{role:'user',content:[
-        {type:'image',source:{type:'base64',media_type:mime,data:b64}},
-        {type:'text',text:prompt}
-      ]}]})
+    const res = await fetch('/api/scan-invoice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_base64: b64, media_type: mime }),
     });
     const data = await res.json();
-    const text = data.content?.[0]?.text || '{}';
-    return JSON.parse(text.replace(/```json|```/g,'').trim());
-  } catch(e) { return {}; }
+    if (data.error) throw new Error(data.error);
+    return data.result || {};
+  } catch(e) {
+    console.error('[siScanInvoice]', e);
+    alert('Scan failed: ' + e.message);
+    return {};
+  }
 }
 
 function SiFormModal({ inv, onClose, onSaved }) {
@@ -1100,15 +1098,31 @@ function SiFormModal({ inv, onClose, onSaved }) {
   async function handleScan() {
     if (!file) return;
     setScanning(true);
-    const reader = new FileReader();
-    reader.onload = async(e) => {
-      const b64 = e.target.result.split(',')[1];
-      const result = await siScanInvoice(b64, file.type||'image/jpeg');
-      setScanned(result);
-      setForm(f=>({...f,...Object.fromEntries(Object.entries(result).filter(([,v])=>v!=null&&v!==''))}));
+    try {
+      const reader = new FileReader();
+      reader.onload = async(e) => {
+        try {
+          const b64 = e.target.result.split(',')[1];
+          const result = await siScanInvoice(b64, file.type||'image/jpeg');
+          const filled = Object.entries(result).filter(([,v])=>v!=null&&v!=='');
+          if (filled.length === 0) {
+            alert('AI scan returned no fields. Check that ANTHROPIC_API_KEY is set in Vercel → Settings → Environment Variables, then redeploy.');
+            setScanning(false);
+            return;
+          }
+          setScanned(result);
+          setForm(f=>({...f,...Object.fromEntries(filled)}));
+        } catch(err) {
+          alert('Scan error: ' + err.message);
+        }
+        setScanning(false);
+      };
+      reader.onerror = () => { alert('Could not read file.'); setScanning(false); };
+      reader.readAsDataURL(file);
+    } catch(err) {
+      alert('Scan failed: ' + err.message);
       setScanning(false);
-    };
-    reader.readAsDataURL(file);
+    }
   }
 
   async function handleSave() {
