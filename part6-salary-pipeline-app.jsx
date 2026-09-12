@@ -1038,6 +1038,395 @@ Respond ONLY with valid JSON, no explanation, no markdown fences, in this exact 
 
 const SATCO_LOGO_SRC = './satco-logo.png';
 
+// ─── SUPPLIER INVOICES TAB ────────────────────────────────────────────────────
+// Full add/edit/pay/AI-scan module. Finance portal is the write side.
+// Ops portal is read-only view of the same supplier_invoices table.
+
+const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+const SI_STATUSES = ['Received','Approved','Due Soon','Paid','Disputed'];
+
+function siAddDays(dateStr, days) {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+function siToday() { return new Date().toISOString().split('T')[0]; }
+function siFmtDate(d) { return d ? new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—'; }
+function siFmtAed(n) { return n == null ? '—' : 'AED '+Number(n).toLocaleString('en-AE',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function siDaysUntil(d) { if (!d) return null; return Math.ceil((new Date(d)-new Date(siToday()))/86400000); }
+
+async function siScanInvoice(b64, mime) {
+  const prompt = `Extract invoice data and return ONLY valid JSON (no markdown, no explanation):
+{"supplier_name":"...","invoice_number":"...","invoice_date":"YYYY-MM-DD","invoice_month":"Mon-YY","description":"...","hours":null,"rate_per_hour":null,"sub_total":0,"vat_rate":0,"vat_amount":0,"total_amount":0,"payment_terms":30}`;
+  try {
+    const res = await fetch(CLAUDE_API_URL, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:800,messages:[{role:'user',content:[
+        {type:'image',source:{type:'base64',media_type:mime,data:b64}},
+        {type:'text',text:prompt}
+      ]}]})
+    });
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '{}';
+    return JSON.parse(text.replace(/```json|```/g,'').trim());
+  } catch(e) { return {}; }
+}
+
+function SiFormModal({ inv, onClose, onSaved }) {
+  const isEdit = !!inv?.id;
+  const blank = {supplier_name:'',invoice_number:'',invoice_date:siToday(),invoice_month:'',description:'',hours:'',rate_per_hour:'',sub_total:'',vat_rate:0,vat_amount:0,total_amount:'',payment_terms:30,mob_portal_amount:'',notes:'',status:'Received',paid_date:'',paid_reference:''};
+  const [form, setForm] = useState(isEdit ? {...blank,...inv,hours:inv.hours??'',rate_per_hour:inv.rate_per_hour??'',sub_total:inv.sub_total??'',mob_portal_amount:inv.mob_portal_amount??''} : blank);
+  const [file, setFile] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanned, setScanned] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [drag, setDrag] = useState(false);
+  const fileRef = useRef();
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  useEffect(()=>{
+    const h=parseFloat(form.hours)||0, r=parseFloat(form.rate_per_hour)||0;
+    if(h&&r){
+      const sub=h*r, vat=sub*(parseFloat(form.vat_rate)||0)/100;
+      setForm(f=>({...f,sub_total:sub.toFixed(2),vat_amount:vat.toFixed(2),total_amount:(sub+vat).toFixed(2)}));
+    }
+  },[form.hours,form.rate_per_hour,form.vat_rate]);
+
+  const dueDate = form.invoice_date ? siAddDays(form.invoice_date, parseInt(form.payment_terms)||30) : null;
+  const remDate = dueDate ? siAddDays(dueDate,-3) : null;
+  const variance = form.mob_portal_amount && form.total_amount ? parseFloat(form.total_amount)-parseFloat(form.mob_portal_amount) : null;
+
+  async function handleScan() {
+    if (!file) return;
+    setScanning(true);
+    const reader = new FileReader();
+    reader.onload = async(e) => {
+      const b64 = e.target.result.split(',')[1];
+      const result = await siScanInvoice(b64, file.type||'image/jpeg');
+      setScanned(result);
+      setForm(f=>({...f,...Object.fromEntries(Object.entries(result).filter(([,v])=>v!=null&&v!==''))}));
+      setScanning(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function handleSave() {
+    if (!form.supplier_name || !form.total_amount) return alert('Supplier name and total amount are required.');
+    setSaving(true);
+    try {
+      let image_url = form.image_url || null;
+      if (file) {
+        const ext = file.name.split('.').pop();
+        const path = `invoices/${Date.now()}_${form.invoice_number||'inv'}.${ext}`;
+        const {error:upErr} = await db.storage.from('supplier-invoices').upload(path, file, {upsert:true});
+        if (!upErr) { const {data:u} = db.storage.from('supplier-invoices').getPublicUrl(path); image_url = u?.publicUrl; }
+      }
+      const payload = {
+        supplier_name:form.supplier_name, invoice_number:form.invoice_number||null,
+        invoice_date:form.invoice_date||null, invoice_month:form.invoice_month||null,
+        description:form.description||null, hours:form.hours?parseFloat(form.hours):null,
+        rate_per_hour:form.rate_per_hour?parseFloat(form.rate_per_hour):null,
+        sub_total:form.sub_total?parseFloat(form.sub_total):null,
+        vat_rate:parseFloat(form.vat_rate)||0, vat_amount:parseFloat(form.vat_amount)||0,
+        total_amount:parseFloat(form.total_amount), payment_terms:parseInt(form.payment_terms)||30,
+        due_date:dueDate, reminder_date:remDate,
+        mob_portal_amount:form.mob_portal_amount?parseFloat(form.mob_portal_amount):null,
+        notes:form.notes||null, image_url, status:form.status||'Received',
+        ...(form.status==='Paid'?{paid_date:form.paid_date||null,paid_reference:form.paid_reference||null}:{})
+      };
+      let err;
+      if (isEdit) { ({error:err} = await db.from('supplier_invoices').update(payload).eq('id',inv.id)); }
+      else { ({error:err} = await db.from('supplier_invoices').insert(payload)); }
+      if (err) throw err;
+      onSaved();
+    } catch(e) { alert('Save failed: '+e.message); }
+    finally { setSaving(false); }
+  }
+
+  const inp = {...S.input, width:'100%'};
+  const Divider = ({label}) => <div style={{fontSize:11,fontWeight:800,color:'#64748b',letterSpacing:'.06em',textTransform:'uppercase',borderBottom:'1px solid #e2e8f0',paddingBottom:5,margin:'16px 0 10px'}}>{label}</div>;
+  const Field = ({label,children,full}) => <div style={{gridColumn:full?'1/-1':'',display:'flex',flexDirection:'column',gap:3}}><label style={S.label}>{label}</label>{children}</div>;
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:20,backdropFilter:'blur(3px)'}}
+         onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{background:'#fff',borderRadius:18,boxShadow:'0 20px 60px rgba(15,23,42,.22)',width:'100%',maxWidth:700,maxHeight:'90vh',overflowY:'auto',borderTop:'4px solid #0f172a'}}>
+        <div style={{padding:'16px 22px 12px',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div style={{fontWeight:900,fontSize:15}}>{isEdit?'✏️ Edit Supplier Invoice':'📥 New Supplier Invoice'}</div>
+          <button onClick={onClose} style={{...S.iconBtn,fontSize:18,background:'#f1f5f9',borderRadius:'50%',width:30,height:30}}>×</button>
+        </div>
+        <div style={{padding:'16px 22px'}}>
+
+          {/* UPLOAD + AI SCAN */}
+          {!isEdit && <>
+            <div
+              onClick={()=>fileRef.current.click()}
+              onDragOver={e=>{e.preventDefault();setDrag(true);}}
+              onDragLeave={()=>setDrag(false)}
+              onDrop={e=>{e.preventDefault();setDrag(false);setFile(e.dataTransfer.files[0]);}}
+              style={{border:`2px dashed ${drag?'#0f172a':file?'#166534':'#cbd5e1'}`,borderRadius:10,padding:22,textAlign:'center',cursor:'pointer',background:file?'#f0fdf4':'#f8fafc',marginBottom:10}}
+            >
+              <input ref={fileRef} type="file" accept="image/*,application/pdf" hidden onChange={e=>setFile(e.target.files[0])}/>
+              <div style={{fontSize:26,marginBottom:5}}>{file?'✅':'📄'}</div>
+              <div style={{fontWeight:800,fontSize:13}}>{file?file.name:'Drop invoice image or PDF here, or click to upload'}</div>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:3}}>JPG · PNG · PDF — max 10 MB</div>
+            </div>
+            {file && <button style={{...S.btnPri,width:'100%',marginBottom:12,padding:'10px 0'}} onClick={handleScan} disabled={scanning}>
+              {scanning?'🤖 Scanning…':'🤖 Scan with AI — Auto-fill Fields'}
+            </button>}
+            {scanned && <div style={{background:'#e0f2fe',border:'1px solid #bae6fd',borderRadius:8,padding:'10px 12px',marginBottom:12,fontSize:12}}>
+              <div style={{fontWeight:800,marginBottom:6,color:'#0369a1'}}>✅ AI extracted — review fields below before saving</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'3px 12px'}}>
+                {Object.entries(scanned).filter(([,v])=>v!=null).map(([k,v])=>(
+                  <div key={k} style={{display:'flex',justifyContent:'space-between',borderBottom:'1px solid #bae6fd',paddingBottom:2}}>
+                    <span style={{color:'#475569'}}>{k.replace(/_/g,' ')}</span>
+                    <span style={{fontWeight:700}}>{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>}
+          </>}
+
+          <Divider label="Invoice Details"/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <Field label="Supplier Name *" full><input style={inp} value={form.supplier_name} onChange={e=>set('supplier_name',e.target.value)} placeholder="e.g. Pak Markhor Maintenance"/></Field>
+            <Field label="Invoice Number"><input style={inp} value={form.invoice_number} onChange={e=>set('invoice_number',e.target.value)} placeholder="e.g. US-44"/></Field>
+            <Field label="Invoice Date"><input style={inp} type="date" value={form.invoice_date} onChange={e=>set('invoice_date',e.target.value)}/></Field>
+            <Field label="Invoice Month"><input style={inp} value={form.invoice_month} onChange={e=>set('invoice_month',e.target.value)} placeholder="e.g. Aug-26"/></Field>
+            <Field label="Description" full><input style={inp} value={form.description} onChange={e=>set('description',e.target.value)} placeholder="e.g. GRINDER — 40 hrs @ AED 16"/></Field>
+          </div>
+
+          <Divider label="Amounts"/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12}}>
+            <Field label="Hours"><input style={inp} type="number" value={form.hours} onChange={e=>set('hours',e.target.value)} placeholder="40"/></Field>
+            <Field label="Rate / Hr (AED)"><input style={inp} type="number" value={form.rate_per_hour} onChange={e=>set('rate_per_hour',e.target.value)} placeholder="16.00"/></Field>
+            <Field label="Sub Total (AED)"><input style={inp} type="number" value={form.sub_total} onChange={e=>set('sub_total',e.target.value)}/></Field>
+            <Field label="VAT Rate">
+              <select style={inp} value={form.vat_rate} onChange={e=>set('vat_rate',e.target.value)}>
+                <option value={0}>0% — Zero Rated</option>
+                <option value={5}>5% — Standard</option>
+              </select>
+            </Field>
+            <Field label="VAT Amount (AED)"><input style={inp} type="number" value={form.vat_amount} onChange={e=>set('vat_amount',e.target.value)}/></Field>
+            <Field label="Total Amount (AED) *"><input style={{...inp,fontWeight:800,background:'#fffbeb'}} type="number" value={form.total_amount} onChange={e=>set('total_amount',e.target.value)}/></Field>
+          </div>
+
+          <Divider label="Mob Portal Validation"/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,alignItems:'start'}}>
+            <Field label="Mob Portal Amount (AED) — enter to cross-check"><input style={inp} type="number" value={form.mob_portal_amount} onChange={e=>set('mob_portal_amount',e.target.value)} placeholder="Paste actual amount from Mob Portal"/></Field>
+            {variance!=null && <div style={{padding:'10px 12px',borderRadius:8,fontSize:12,background:Math.abs(variance)<0.01?'#dcfce7':Math.abs(variance)<=50?'#fef3c7':'#fee2e2',border:`1px solid ${Math.abs(variance)<0.01?'#86efac':Math.abs(variance)<=50?'#fde68a':'#fecaca'}`,color:Math.abs(variance)<0.01?'#166534':Math.abs(variance)<=50?'#92400e':'#991b1b'}}>
+              <div style={{fontWeight:800,marginBottom:3}}>{Math.abs(variance)<0.01?'✅ Matches Mob Portal':Math.abs(variance)<=50?'⚠️ Minor variance':'🚨 Variance — review required'}</div>
+              Invoice {siFmtAed(form.total_amount)} · Mob Portal {siFmtAed(form.mob_portal_amount)} · Diff {siFmtAed(Math.abs(variance))}
+            </div>}
+          </div>
+
+          <Divider label="Payment Terms"/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12}}>
+            <Field label="Terms">
+              <select style={inp} value={form.payment_terms} onChange={e=>set('payment_terms',e.target.value)}>
+                <option value={7}>7 Days</option><option value={14}>14 Days</option>
+                <option value={30}>30 Days</option><option value={45}>45 Days</option><option value={60}>60 Days</option>
+              </select>
+            </Field>
+            <Field label="Due Date (auto)"><input style={{...inp,background:'#f8fafc',color:'#64748b'}} value={dueDate?siFmtDate(dueDate):'—'} readOnly/></Field>
+            <Field label="Reminder (3 days before)"><input style={{...inp,background:'#f8fafc',color:'#64748b'}} value={remDate?siFmtDate(remDate):'—'} readOnly/></Field>
+          </div>
+
+          {isEdit && <>
+            <Divider label="Status & Payment"/>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+              <Field label="Status">
+                <select style={inp} value={form.status||'Received'} onChange={e=>set('status',e.target.value)}>
+                  {SI_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+              {form.status==='Paid' && <>
+                <Field label="Paid Date"><input style={inp} type="date" value={form.paid_date||''} onChange={e=>set('paid_date',e.target.value)}/></Field>
+                <Field label="Payment Reference" full><input style={inp} value={form.paid_reference||''} onChange={e=>set('paid_reference',e.target.value)} placeholder="Cheque no. / transfer ref"/></Field>
+              </>}
+            </div>
+          </>}
+
+          <Divider label="Notes"/>
+          <textarea style={{...inp,resize:'vertical',minHeight:56}} value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder="Any notes about this invoice…"/>
+        </div>
+        <div style={{padding:'12px 22px',borderTop:'1px solid #e2e8f0',display:'flex',gap:10,justifyContent:'flex-end'}}>
+          <button style={S.btnSec} onClick={onClose}>Cancel</button>
+          <button style={S.btnPri} onClick={handleSave} disabled={saving}>{saving?'Saving…':isEdit?'✓ Update Invoice':'✓ Save Invoice'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SiPayModal({ inv, onClose, onPaid }) {
+  const [ref, setRef] = useState('');
+  const [paidDate, setPaidDate] = useState(siToday());
+  const [saving, setSaving] = useState(false);
+  async function handlePay() {
+    setSaving(true);
+    try {
+      const {error} = await db.from('supplier_invoices').update({status:'Paid',paid_date:paidDate,paid_reference:ref}).eq('id',inv.id);
+      if (error) throw error;
+      onPaid();
+    } catch(e) { alert('Error: '+e.message); }
+    finally { setSaving(false); }
+  }
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
+         onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{background:'#fff',borderRadius:18,boxShadow:'0 20px 60px rgba(15,23,42,.22)',width:'100%',maxWidth:420,borderTop:'4px solid #166534'}}>
+        <div style={{padding:'16px 22px 12px',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div style={{fontWeight:900,fontSize:15}}>💳 Mark as Paid</div>
+          <button onClick={onClose} style={{...S.iconBtn,fontSize:18,background:'#f1f5f9',borderRadius:'50%',width:30,height:30}}>×</button>
+        </div>
+        <div style={{padding:'16px 22px'}}>
+          <div style={{background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,padding:'10px 12px',marginBottom:12,fontSize:13}}>
+            <div style={{fontWeight:800}}>{inv.supplier_name}</div>
+            Invoice {inv.invoice_number||'—'} · {siFmtAed(inv.total_amount)}<br/>
+            <span style={{fontSize:11,color:'#166534'}}>Due {siFmtDate(inv.due_date)}</span>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:10}}>
+            <label style={S.label}>Payment Date</label>
+            <input style={{...S.input,width:'100%'}} type="date" value={paidDate} onChange={e=>setPaidDate(e.target.value)}/>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            <label style={S.label}>Reference (Cheque / Transfer)</label>
+            <input style={{...S.input,width:'100%'}} value={ref} onChange={e=>setRef(e.target.value)} placeholder="e.g. CHQ-00123"/>
+          </div>
+        </div>
+        <div style={{padding:'12px 22px',borderTop:'1px solid #e2e8f0',display:'flex',gap:10,justifyContent:'flex-end'}}>
+          <button style={S.btnSec} onClick={onClose}>Cancel</button>
+          <button style={{...S.btnPri,background:'#166534'}} onClick={handlePay} disabled={saving}>{saving?'Saving…':'✅ Confirm Payment'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SupplierInvoicesTab() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editRow, setEditRow] = useState(null);
+  const [payRow, setPayRow] = useState(null);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('All');
+
+  async function load() {
+    setLoading(true);
+    const {data, error} = await db.from('supplier_invoices').select('*').order('created_at',{ascending:false});
+    if (!error) setRows(data||[]);
+    setLoading(false);
+  }
+  useEffect(()=>{load();},[]);
+
+  const filtered = (rows||[]).filter(r=>{
+    const ms = statusFilter==='All' || r.status===statusFilter;
+    const q = search.toLowerCase();
+    const mq = !q || r.supplier_name?.toLowerCase().includes(q) || r.invoice_number?.toLowerCase().includes(q) || r.description?.toLowerCase().includes(q);
+    return ms && mq;
+  });
+
+  const stats = useMemo(()=>{
+    const pending = rows.filter(r=>!['Paid','Disputed'].includes(r.status));
+    const overdue = rows.filter(r=>r.status!=='Paid' && r.due_date && siDaysUntil(r.due_date)<0);
+    const dueSoon = rows.filter(r=>r.status==='Due Soon');
+    const paidMo  = rows.filter(r=>r.status==='Paid' && r.paid_date?.startsWith(siToday().substring(0,7)));
+    return {
+      total:rows.length,
+      pendingAmt:pending.reduce((s,r)=>s+(parseFloat(r.total_amount)||0),0),
+      dueSoon:dueSoon.length,
+      overdue:overdue.length,
+      paidAmt:paidMo.reduce((s,r)=>s+(parseFloat(r.total_amount)||0),0),
+    };
+  },[rows]);
+
+  const badgeStyle = (status) => {
+    const map={Received:{background:'#eff6ff',color:'#2563eb'},Approved:{background:'#f0f9ff',color:'#0369a1'},'Due Soon':{background:'#fef3c7',color:'#92400e'},Paid:{background:'#dcfce7',color:'#166534'},Disputed:{background:'#fee2e2',color:'#991b1b'}};
+    return{padding:'2px 9px',borderRadius:999,fontSize:11,fontWeight:800,...(map[status]||{background:'#f1f5f9',color:'#334155'})};
+  };
+
+  return (
+    <>
+      {showForm && <SiFormModal inv={null} onClose={()=>setShowForm(false)} onSaved={()=>{setShowForm(false);load();}}/>}
+      {editRow  && <SiFormModal inv={editRow} onClose={()=>setEditRow(null)} onSaved={()=>{setEditRow(null);load();}}/>}
+      {payRow   && <SiPayModal  inv={payRow}  onClose={()=>setPayRow(null)}  onPaid={()=>{setPayRow(null);load();}}/>}
+
+      {/* KPIs */}
+      <div className="finance-kpi-grid" style={{gridTemplateColumns:'repeat(5,minmax(0,1fr))'}}>
+        <div style={{...S.card,padding:'14px 16px'}}><div style={{fontSize:11,color:'#64748b',fontWeight:600}}>Total Invoices</div><div style={{fontSize:22,fontWeight:800,marginTop:4}}>{stats.total}</div></div>
+        <div style={{...S.card,padding:'14px 16px'}}><div style={{fontSize:11,color:'#64748b',fontWeight:600}}>Outstanding</div><div style={{fontSize:16,fontWeight:800,color:'#dc2626',marginTop:4}}>{siFmtAed(stats.pendingAmt)}</div></div>
+        <div style={{...S.card,padding:'14px 16px',borderLeft:'3px solid #d97706'}}><div style={{fontSize:11,color:'#64748b',fontWeight:600}}>⚠️ Due Soon</div><div style={{fontSize:22,fontWeight:800,color:'#d97706',marginTop:4}}>{stats.dueSoon}</div></div>
+        <div style={{...S.card,padding:'14px 16px',borderLeft:'3px solid #dc2626'}}><div style={{fontSize:11,color:'#64748b',fontWeight:600}}>🚨 Overdue</div><div style={{fontSize:22,fontWeight:800,color:'#dc2626',marginTop:4}}>{stats.overdue}</div></div>
+        <div style={{...S.card,padding:'14px 16px',borderLeft:'3px solid #166534'}}><div style={{fontSize:11,color:'#64748b',fontWeight:600}}>✅ Paid This Month</div><div style={{fontSize:16,fontWeight:800,color:'#166534',marginTop:4}}>{siFmtAed(stats.paidAmt)}</div></div>
+      </div>
+
+      {/* Toolbar */}
+      <div style={{display:'flex',alignItems:'center',gap:10,margin:'14px 0',flexWrap:'wrap'}}>
+        <button style={S.btnPri} onClick={()=>setShowForm(true)}>+ Add Invoice</button>
+        <select style={{...S.input,padding:'7px 10px'}} value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
+          <option value="All">All Statuses</option>
+          {SI_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+        </select>
+        <div style={{flex:1}}/>
+        <input style={{...S.input,width:260}} placeholder="Search supplier, invoice no., description…" value={search} onChange={e=>setSearch(e.target.value)}/>
+        <button style={S.btnSec} onClick={load}>🔄 Refresh</button>
+      </div>
+
+      {/* Table */}
+      <div style={S.card}>
+        <div className="drag-scroll" style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+            <thead>
+              <tr style={{background:'#0f172a'}}>
+                {['Supplier','Invoice #','Month','Description','Hrs','Rate','Amount','Mob Portal','Variance','Invoice Date','Due Date','Days','Terms','Status','Actions'].map(h=>(
+                  <th key={h} style={{...S.th,color:'rgba(255,255,255,.8)',background:'transparent',position:'sticky',top:0,boxShadow:'0 1px 0 #334155'}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={15} style={{padding:24,textAlign:'center',color:'#94a3b8'}}>Loading…</td></tr>}
+              {!loading && filtered.length===0 && <tr><td colSpan={15} style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No supplier invoices yet — click "+ Add Invoice" to get started</td></tr>}
+              {!loading && filtered.map(r=>{
+                const days = siDaysUntil(r.due_date);
+                const daysLabel = r.status==='Paid'?'Paid':days==null?'—':days<0?`${Math.abs(days)}d OVERDUE`:days===0?'TODAY':`${days}d`;
+                const daysStyle = r.status==='Paid'?{color:'#166534',fontWeight:800}:days!=null&&days<0?{color:'#dc2626',fontWeight:800}:days!=null&&days<=3?{color:'#d97706',fontWeight:800}:{};
+                const varNum = r.variance;
+                const varStyle = varNum==null?{}:Math.abs(varNum)<0.01?{color:'#166534',fontWeight:700}:Math.abs(varNum)<=50?{color:'#d97706',fontWeight:700}:{color:'#dc2626',fontWeight:800};
+                return (
+                  <tr key={r.id} className="hr-row" style={{borderTop:'1px solid #f1f5f9',background:r.status==='Paid'?'#f0fdf4':'transparent'}}>
+                    <td style={{...S.td,fontWeight:700}}>{r.supplier_name}</td>
+                    <td style={{...S.td,fontFamily:'ui-monospace,monospace',fontSize:11}}>{r.invoice_number||'—'}</td>
+                    <td style={S.td}>{r.invoice_month||'—'}</td>
+                    <td style={{...S.td,maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'}}>{r.description||'—'}</td>
+                    <td style={S.td}>{r.hours??'—'}</td>
+                    <td style={S.td}>{r.rate_per_hour??'—'}</td>
+                    <td style={{...S.td,fontWeight:800}}>{siFmtAed(r.total_amount)}</td>
+                    <td style={S.td}>{r.mob_portal_amount?siFmtAed(r.mob_portal_amount):<span style={{color:'#cbd5e1'}}>—</span>}</td>
+                    <td style={{...S.td,...varStyle}}>{varNum==null?'—':`${varNum>=0?'+':''}${fmt(varNum)}`}</td>
+                    <td style={S.td}>{siFmtDate(r.invoice_date)}</td>
+                    <td style={S.td}>{siFmtDate(r.due_date)}</td>
+                    <td style={{...S.td,...daysStyle}}>{daysLabel}</td>
+                    <td style={S.td}>{r.payment_terms}d</td>
+                    <td style={S.td}><span style={badgeStyle(r.status)}>{r.status}</span></td>
+                    <td style={S.td}>
+                      <button style={{...S.iconBtn,fontSize:13}} onClick={()=>setEditRow(r)} title="Edit">✏️</button>
+                      {r.status!=='Paid' && <button style={{...S.iconBtn,fontSize:13}} onClick={()=>setPayRow(r)} title="Mark paid">💳</button>}
+                      {r.image_url && <a href={r.image_url} target="_blank" style={{...S.iconBtn,fontSize:13,textDecoration:'none'}} title="View document">📎</a>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function SatcoLogo() {
   return <img className="brand-logo" src={SATCO_LOGO_SRC} alt="SATCO Arabia General Contracting - L.L.C - S.P.C" />;
 }
@@ -1100,6 +1489,7 @@ const PORTAL_TABS = [
   { key:'client_invoices', icon:'📄', label:'Client Invoices', short:'Multi-emp billing', desc:'Create and manage multi-employee client invoices with line items, PO tracking, and Ops portal sync.' },
   { key:'hiring_history', icon:'📜', label:'Hiring Pipeline History', short:'Recruitment archive', desc:'Historical recruitment/visa-pipeline records imported from the master data sheet — reference only, not linked to P&L.' },
   { key:'company_expenses', icon:'🏢', label:'Company Expenses', short:'Rent, commissions', desc:'Capture company-level overheads: rent, commissions, bank charges, PRO fees, utilities and other non-employee expenses.' },
+  { key:'supplier_invoices', icon:'📥', label:'Supplier Invoices', short:'Payables', desc:'Capture supplier invoices, validate against Mob Portal, set 30/45-day payment terms, and track payment status.' },
 ];
 const PORTAL_TAB_MAP = Object.fromEntries(PORTAL_TABS.map(t=>[t.key,t]));
 const PORTAL_NAV_GROUPS = [
@@ -1108,6 +1498,7 @@ const PORTAL_NAV_GROUPS = [
   { title:'Employee Costs', items:['monthly','visa','flights','training','other','camp','ppe'] },
   { title:'Revenue', items:['timesheets','billing','client_invoices'] },
   { title:'Overheads', items:['company_expenses'] },
+  { title:'Payables', items:['supplier_invoices'] },
   { title:'Archive', items:['hiring_history'] },
 ];
 
@@ -1289,6 +1680,7 @@ function App() {
         {tab==='hiring_history' && <HiringPipelineTab />}
         {tab==='company_expenses' && <CompanyExpensesSection />}
         {tab==='wps'        && <WpsReportTab employees={employees} empMeta={empMeta} hrDb={hrDb} hrSalaryRows={hrSalaryRows} hrSalaryStatus={hrSalaryStatus} />}
+        {tab==='supplier_invoices' && <SupplierInvoicesTab />}
       </>
     );
   };
