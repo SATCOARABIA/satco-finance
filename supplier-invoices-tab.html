@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SATCO — Supplier Invoices</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.29.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --navy: #0a1628;
+    --navy-mid: #142040;
+    --navy-light: #1e3060;
+    --gold: #c9a84c;
+    --gold-light: #e8c96a;
+    --gold-dim: #8a6f2e;
+    --white: #ffffff;
+    --off-white: #f5f7fa;
+    --text: #1a2540;
+    --text-light: #4a5568;
+    --border: #d1d9e6;
+    --red: #dc2626;
+    --red-bg: #fef2f2;
+    --green: #16a34a;
+    --green-bg: #f0fdf4;
+    --amber: #d97706;
+    --amber-bg: #fffbeb;
+    --blue: #2563eb;
+    --blue-bg: #eff6ff;
+    --shadow: 0 1px 4px rgba(10,22,40,0.10);
+    --shadow-lg: 0 4px 20px rgba(10,22,40,0.15);
+    --radius: 8px;
+    --font: 'Segoe UI', system-ui, sans-serif;
+  }
+  body { font-family: var(--font); background: var(--off-white); color: var(--text); font-size: 14px; }
+  
+  /* HEADER */
+  .page-header {
+    background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 100%);
+    padding: 18px 28px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 3px solid var(--gold);
+  }
+  .page-header h1 { color: var(--white); font-size: 18px; font-weight: 600; letter-spacing: 0.3px; }
+  .page-header h1 span { color: var(--gold); }
+  .header-meta { color: rgba(255,255,255,0.55); font-size: 12px; }
+
+  /* TABS */
+  .tabs-bar {
+    background: var(--navy-mid);
+    display: flex; gap: 2px; padding: 0 28px;
+  }
+  .tab-btn {
+    padding: 10px 18px; color: rgba(255,255,255,0.55); font-size: 13px; font-weight: 500;
+    border: none; background: none; cursor: pointer; border-bottom: 3px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab-btn:hover { color: rgba(255,255,255,0.85); }
+  .tab-btn.active { color: var(--gold); border-bottom-color: var(--gold); }
+
+  /* CONTENT */
+  .content { padding: 24px 28px; max-width: 1400px; margin: 0 auto; }
+
+  /* STATS ROW */
+  .stats-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 24px; }
+  .stat-card {
+    background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 18px; box-shadow: var(--shadow);
+  }
+  .stat-label { font-size: 11px; color: var(--text-light); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .stat-value { font-size: 22px; font-weight: 700; color: var(--navy); }
+  .stat-sub { font-size: 11px; color: var(--text-light); margin-top: 3px; }
+  .stat-card.alert { border-left: 3px solid var(--amber); }
+  .stat-card.overdue { border-left: 3px solid var(--red); }
+  .stat-card.paid { border-left: 3px solid var(--green); }
+
+  /* TOOLBAR */
+  .toolbar {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 9px 16px; border-radius: var(--radius); font-size: 13px; font-weight: 500;
+    border: none; cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+  }
+  .btn:hover { opacity: 0.88; transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn-primary { background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 100%); color: var(--white); }
+  .btn-gold { background: linear-gradient(135deg, var(--gold-dim) 0%, var(--gold) 100%); color: var(--white); }
+  .btn-ghost { background: var(--white); color: var(--text); border: 1px solid var(--border); }
+  .btn-danger { background: var(--red); color: var(--white); }
+  .btn-sm { padding: 5px 11px; font-size: 12px; }
+  .spacer { flex: 1; }
+  .search-box {
+    padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+    font-size: 13px; color: var(--text); background: var(--white); width: 240px;
+    outline: none;
+  }
+  .search-box:focus { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(201,168,76,0.15); }
+  .filter-select {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+    font-size: 13px; color: var(--text); background: var(--white); outline: none; cursor: pointer;
+  }
+  .filter-select:focus { border-color: var(--gold); }
+
+  /* TABLE */
+  .table-wrap { background: var(--white); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    background: var(--navy); color: rgba(255,255,255,0.85); font-size: 11px; font-weight: 600;
+    padding: 11px 14px; text-align: left; letter-spacing: 0.4px; white-space: nowrap;
+    position: sticky; top: 0; z-index: 2;
+  }
+  th.gold { color: var(--gold); }
+  td { padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(201,168,76,0.04); }
+
+  /* STATUS BADGES */
+  .badge {
+    display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600;
+  }
+  .badge-received { background: var(--blue-bg); color: var(--blue); }
+  .badge-approved { background: #f0f9ff; color: #0369a1; }
+  .badge-due-soon { background: var(--amber-bg); color: var(--amber); }
+  .badge-paid { background: var(--green-bg); color: var(--green); }
+  .badge-disputed { background: var(--red-bg); color: var(--red); }
+
+  /* VARIANCE */
+  .var-ok { color: var(--green); font-weight: 600; }
+  .var-warn { color: var(--amber); font-weight: 600; }
+  .var-bad { color: var(--red); font-weight: 600; }
+
+  /* MODAL OVERLAY */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(10,22,40,0.55); z-index: 100;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+    backdrop-filter: blur(2px);
+  }
+  .modal {
+    background: var(--white); border-radius: 12px; box-shadow: var(--shadow-lg);
+    width: 100%; max-width: 760px; max-height: 90vh; overflow-y: auto;
+    border-top: 4px solid var(--gold);
+  }
+  .modal-header {
+    padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .modal-header h2 { font-size: 16px; font-weight: 700; color: var(--navy); }
+  .modal-body { padding: 20px 24px; }
+  .modal-footer {
+    padding: 16px 24px; border-top: 1px solid var(--border);
+    display: flex; gap: 10px; justify-content: flex-end;
+  }
+  .close-btn {
+    width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--off-white);
+    cursor: pointer; font-size: 16px; color: var(--text-light); display: flex; align-items: center; justify-content: center;
+  }
+  .close-btn:hover { background: var(--border); }
+
+  /* FORM */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+  .form-full { grid-column: 1 / -1; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  label { font-size: 12px; font-weight: 600; color: var(--text-light); }
+  input, select, textarea {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+    font-size: 13px; color: var(--text); background: var(--white); outline: none; font-family: var(--font);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--gold); box-shadow: 0 0 0 2px rgba(201,168,76,0.18);
+  }
+  input.error { border-color: var(--red); }
+  textarea { resize: vertical; min-height: 60px; }
+
+  /* UPLOAD ZONE */
+  .upload-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius); padding: 28px;
+    text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s;
+    background: var(--off-white); margin-bottom: 16px;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--gold); background: rgba(201,168,76,0.05); }
+  .upload-zone.has-file { border-color: var(--green); background: var(--green-bg); }
+  .upload-icon { font-size: 32px; margin-bottom: 8px; }
+  .upload-label { font-size: 14px; font-weight: 600; color: var(--navy); }
+  .upload-sub { font-size: 12px; color: var(--text-light); margin-top: 4px; }
+
+  /* AI SCAN BOX */
+  .scan-box {
+    background: linear-gradient(135deg, rgba(10,22,40,0.04) 0%, rgba(201,168,76,0.06) 100%);
+    border: 1px solid rgba(201,168,76,0.3); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .scan-header { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--navy); margin-bottom: 10px; }
+  .scan-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 12px; border-bottom: 1px solid rgba(201,168,76,0.15); }
+  .scan-row:last-child { border-bottom: none; }
+  .scan-key { color: var(--text-light); }
+  .scan-val { font-weight: 600; color: var(--navy); }
+
+  /* VALIDATION BOX */
+  .validation-box {
+    border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px; font-size: 13px;
+  }
+  .validation-ok { background: var(--green-bg); border: 1px solid #bbf7d0; color: var(--green); }
+  .validation-warn { background: var(--amber-bg); border: 1px solid #fde68a; color: var(--amber); }
+  .validation-error { background: var(--red-bg); border: 1px solid #fecaca; color: var(--red); }
+  .validation-header { font-weight: 700; margin-bottom: 4px; }
+
+  /* SECTION DIVIDER */
+  .section-divider {
+    font-size: 11px; font-weight: 700; color: var(--text-light); letter-spacing: 0.6px;
+    text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 6px;
+    margin: 18px 0 14px;
+  }
+
+  /* TOAST */
+  .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 999; display: flex; flex-direction: column; gap: 8px; }
+  .toast {
+    background: var(--navy); color: var(--white); padding: 12px 18px; border-radius: var(--radius);
+    font-size: 13px; box-shadow: var(--shadow-lg); border-left: 4px solid var(--gold);
+    max-width: 340px; animation: slideIn 0.2s ease;
+  }
+  .toast.success { border-left-color: var(--green); }
+  .toast.error { border-left-color: var(--red); }
+  .toast.warning { border-left-color: var(--amber); }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* SPINNER */
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* EMPTY STATE */
+  .empty-state { text-align: center; padding: 60px 24px; color: var(--text-light); }
+  .empty-icon { font-size: 48px; margin-bottom: 12px; }
+  .empty-title { font-size: 16px; font-weight: 600; color: var(--navy); margin-bottom: 6px; }
+
+  /* PAYMENT CONFIRM */
+  .pay-confirm {
+    background: var(--green-bg); border: 1px solid #bbf7d0; border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+
+  /* RESPONSIVE */
+  @media (max-width: 900px) {
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .form-grid { grid-template-columns: 1fr; }
+    .form-grid.three { grid-template-columns: 1fr 1fr; }
+    .content { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+const SUPABASE_URL = 'https://mbwsfwebbrzurpozyxks.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1id3Nmd2ViYnJ6dXJwb3p5eGtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTU3NzIwODcsImV4cCI6MjAzMTM0ODA4N30.Rvr3TmMhkMUIW5UDhOWSGHFO6lbBt5-MDWB7uT80bO0';
+const CLAUDE_API   = 'https://api.anthropic.com/v1/messages';
+const MOB_API      = 'https://satco-mobilisation.vercel.app/api'; // adjust if differs
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+const fmt = (n) => n == null ? '—' : Number(n).toLocaleString('en-AE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '—';
+const addDays = (date, days) => { const d = new Date(date); d.setDate(d.getDate() + days); return d.toISOString().split('T')[0]; };
+const today = () => new Date().toISOString().split('T')[0];
+const daysUntil = (date) => { if (!date) return null; return Math.ceil((new Date(date) - new Date(today())) / 86400000); };
+
+const STATUSES = ['Received','Approved','Due Soon','Paid','Disputed'];
+const STATUS_BADGE = { 'Received': 'badge-received', 'Approved': 'badge-approved', 'Due Soon': 'badge-due-soon', 'Paid': 'badge-paid', 'Disputed': 'badge-disputed' };
+
+// ─── TOAST ────────────────────────────────────────────────────────────────────
+let toastSetter = null;
+function Toast() {
+  const [toasts, setToasts] = React.useState([]);
+  toastSetter = (msg, type = 'info') => {
+    const id = Date.now();
+    setToasts(t => [...t, { id, msg, type }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
+  };
+  return (
+    <div className="toast-container">
+      {toasts.map(t => <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>)}
+    </div>
+  );
+}
+const toast = (m, t) => toastSetter && toastSetter(m, t);
+
+// ─── AI INVOICE SCAN ──────────────────────────────────────────────────────────
+async function scanInvoiceWithAI(imageBase64, mimeType) {
+  const prompt = `You are an invoice data extractor. Extract the following fields from this invoice image and return ONLY valid JSON — no markdown, no explanation:
+{
+  "supplier_name": "...",
+  "invoice_number": "...",
+  "invoice_date": "YYYY-MM-DD",
+  "invoice_month": "Mon-YY",
+  "description": "...",
+  "hours": null or number,
+  "rate_per_hour": null or number,
+  "sub_total": number,
+  "vat_rate": number (percentage, e.g. 5 or 0),
+  "vat_amount": number,
+  "total_amount": number,
+  "payment_terms": 30 or 45 (default 30 if not stated)
+}`;
+
+  const res = await fetch(CLAUDE_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mimeType, data: imageBase64 } },
+          { type: 'text', text: prompt }
+        ]
+      }]
+    })
+  });
+  const data = await res.json();
+  const text = data.content?.[0]?.text || '{}';
+  try { return JSON.parse(text.replace(/```json|```/g, '').trim()); }
+  catch { return {}; }
+}
+
+// ─── FORM MODAL ───────────────────────────────────────────────────────────────
+function InvoiceFormModal({ invoice, onClose, onSaved }) {
+  const isEdit = !!invoice?.id;
+  const blank = { supplier_name:'', invoice_number:'', invoice_date:today(), invoice_month:'', description:'', hours:'', rate_per_hour:'', sub_total:'', vat_rate:0, vat_amount:0, total_amount:'', payment_terms:30, mob_portal_amount:'', notes:'' };
+  const [form, setForm] = React.useState(isEdit ? { ...blank, ...invoice, hours: invoice.hours??'', rate_per_hour: invoice.rate_per_hour??'', sub_total: invoice.sub_total??'', mob_portal_amount: invoice.mob_portal_amount??'' } : blank);
+  const [file, setFile] = React.useState(null);
+  const [filePreview, setFilePreview] = React.useState(null);
+  const [scanning, setScanning] = React.useState(false);
+  const [scanned, setScanned] = React.useState(null);
+  const [saving, setSaving] = React.useState(false);
+  const [drag, setDrag] = React.useState(false);
+  const fileRef = React.useRef();
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // Auto-calculate
+  React.useEffect(() => {
+    const h = parseFloat(form.hours) || 0;
+    const r = parseFloat(form.rate_per_hour) || 0;
+    if (h && r) {
+      const sub = h * r;
+      const vatAmt = sub * (parseFloat(form.vat_rate) || 0) / 100;
+      setForm(f => ({ ...f, sub_total: sub.toFixed(2), vat_amount: vatAmt.toFixed(2), total_amount: (sub + vatAmt).toFixed(2) }));
+    }
+  }, [form.hours, form.rate_per_hour, form.vat_rate]);
+
+  // Due date from invoice_date + payment_terms
+  const dueDate = form.invoice_date ? addDays(form.invoice_date, parseInt(form.payment_terms) || 30) : null;
+  const reminderDate = dueDate ? addDays(dueDate, -3) : null;
+
+  // Variance check
+  const variance = form.mob_portal_amount && form.total_amount ? (parseFloat(form.total_amount) - parseFloat(form.mob_portal_amount)) : null;
+  const varClass = variance == null ? '' : Math.abs(variance) < 0.01 ? 'validation-ok' : Math.abs(variance) <= 50 ? 'validation-warn' : 'validation-error';
+
+  const handleFile = async (f) => {
+    if (!f) return;
+    setFile(f);
+    const reader = new FileReader();
+    reader.onload = (e) => setFilePreview(e.target.result);
+    reader.readAsDataURL(f);
+  };
+
+  const handleScan = async () => {
+    if (!file) return toast('Upload an invoice image first', 'error');
+    setScanning(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const b64 = e.target.result.split(',')[1];
+        const mime = file.type || 'image/jpeg';
+        const result = await scanInvoiceWithAI(b64, mime);
+        setScanned(result);
+        setForm(f => ({ ...f, ...Object.fromEntries(Object.entries(result).filter(([k,v]) => v != null && v !== '')) }));
+        toast('✓ Invoice scanned — review and confirm fields', 'success');
+      };
+      reader.readAsDataURL(file);
+    } catch (e) { toast('Scan failed: ' + e.message, 'error'); }
+    finally { setScanning(false); }
+  };
+
+  const handleSave = async () => {
+    if (!form.supplier_name || !form.total_amount) return toast('Supplier name and total amount are required', 'error');
+    setSaving(true);
+    try {
+      let image_url = form.image_url || null;
+      if (file) {
+        const ext = file.name.split('.').pop();
+        const path = `invoices/${Date.now()}_${form.invoice_number || 'inv'}.${ext}`;
+        const { error: upErr } = await sb.storage.from('supplier-invoices').upload(path, file, { upsert: true });
+        if (!upErr) {
+          const { data: urlData } = sb.storage.from('supplier-invoices').getPublicUrl(path);
+          image_url = urlData?.publicUrl;
+        }
+      }
+      const payload = {
+        supplier_name: form.supplier_name,
+        invoice_number: form.invoice_number || null,
+        invoice_date: form.invoice_date || null,
+        invoice_month: form.invoice_month || null,
+        description: form.description || null,
+        hours: form.hours ? parseFloat(form.hours) : null,
+        rate_per_hour: form.rate_per_hour ? parseFloat(form.rate_per_hour) : null,
+        sub_total: form.sub_total ? parseFloat(form.sub_total) : null,
+        vat_rate: parseFloat(form.vat_rate) || 0,
+        vat_amount: parseFloat(form.vat_amount) || 0,
+        total_amount: parseFloat(form.total_amount),
+        payment_terms: parseInt(form.payment_terms) || 30,
+        due_date: dueDate,
+        reminder_date: reminderDate,
+        mob_portal_amount: form.mob_portal_amount ? parseFloat(form.mob_portal_amount) : null,
+        notes: form.notes || null,
+        image_url,
+        status: form.status || 'Received'
+      };
+      let err;
+      if (isEdit) {
+        ({ error: err } = await sb.from('supplier_invoices').update(payload).eq('id', invoice.id));
+      } else {
+        ({ error: err } = await sb.from('supplier_invoices').insert(payload));
+      }
+      if (err) throw err;
+      toast(isEdit ? '✓ Invoice updated' : '✓ Invoice saved', 'success');
+      onSaved();
+    } catch(e) { toast('Save failed: ' + e.message, 'error'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <h2>{isEdit ? '✏️ Edit Invoice' : '📥 Add Supplier Invoice'}</h2>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+
+          {/* UPLOAD ZONE */}
+          {!isEdit && (
+            <>
+              <div
+                className={`upload-zone${drag ? ' drag' : ''}${file ? ' has-file' : ''}`}
+                onClick={() => fileRef.current.click()}
+                onDragOver={e => { e.preventDefault(); setDrag(true); }}
+                onDragLeave={() => setDrag(false)}
+                onDrop={e => { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer.files[0]); }}
+              >
+                <input ref={fileRef} type="file" accept="image/*,application/pdf" hidden onChange={e => handleFile(e.target.files[0])} />
+                <div className="upload-icon">{file ? '✅' : '📄'}</div>
+                <div className="upload-label">{file ? file.name : 'Drop invoice here or click to browse'}</div>
+                <div className="upload-sub">JPG, PNG, PDF — max 10 MB</div>
+              </div>
+
+              {file && (
+                <div style={{ display:'flex', gap:10, marginBottom:16 }}>
+                  <button className="btn btn-gold" onClick={handleScan} disabled={scanning} style={{ flex:1 }}>
+                    {scanning ? <><div className="spinner"/>&nbsp;Scanning...</> : '🤖 Scan with AI — Extract Fields'}
+                  </button>
+                </div>
+              )}
+
+              {scanned && (
+                <div className="scan-box">
+                  <div className="scan-header">🤖 AI Extracted — Review before saving</div>
+                  {Object.entries(scanned).filter(([,v]) => v != null).map(([k,v]) => (
+                    <div className="scan-row" key={k}>
+                      <span className="scan-key">{k.replace(/_/g,' ')}</span>
+                      <span className="scan-val">{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="section-divider">Invoice Details</div>
+          <div className="form-grid">
+            <div className="form-group">
+              <label>Supplier Name *</label>
+              <input value={form.supplier_name} onChange={e => set('supplier_name', e.target.value)} placeholder="e.g. Pak Markhor Maintenance" />
+            </div>
+            <div className="form-group">
+              <label>Invoice Number</label>
+              <input value={form.invoice_number} onChange={e => set('invoice_number', e.target.value)} placeholder="e.g. US-44" />
+            </div>
+            <div className="form-group">
+              <label>Invoice Date</label>
+              <input type="date" value={form.invoice_date} onChange={e => set('invoice_date', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label>Invoice Month</label>
+              <input value={form.invoice_month} onChange={e => set('invoice_month', e.target.value)} placeholder="e.g. Aug-26" />
+            </div>
+            <div className="form-group form-full">
+              <label>Description</label>
+              <input value={form.description} onChange={e => set('description', e.target.value)} placeholder="e.g. GRINDER — 40 hrs" />
+            </div>
+          </div>
+
+          <div className="section-divider">Amounts</div>
+          <div className="form-grid three">
+            <div className="form-group">
+              <label>Hours</label>
+              <input type="number" value={form.hours} onChange={e => set('hours', e.target.value)} placeholder="40" />
+            </div>
+            <div className="form-group">
+              <label>Rate / Hr (AED)</label>
+              <input type="number" value={form.rate_per_hour} onChange={e => set('rate_per_hour', e.target.value)} placeholder="16.00" />
+            </div>
+            <div className="form-group">
+              <label>Sub Total (AED)</label>
+              <input type="number" value={form.sub_total} onChange={e => set('sub_total', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label>VAT Rate (%)</label>
+              <select value={form.vat_rate} onChange={e => set('vat_rate', e.target.value)}>
+                <option value={0}>0% — Zero Rated</option>
+                <option value={5}>5% — Standard</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>VAT Amount (AED)</label>
+              <input type="number" value={form.vat_amount} onChange={e => set('vat_amount', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label>Total Amount (AED) *</label>
+              <input type="number" value={form.total_amount} onChange={e => set('total_amount', e.target.value)} style={{ fontWeight:700, background:'#fffbeb' }} />
+            </div>
+          </div>
+
+          <div className="section-divider">Mob Portal Validation</div>
+          <div className="form-grid">
+            <div className="form-group">
+              <label>Mob Portal Amount (AED)</label>
+              <input type="number" value={form.mob_portal_amount} onChange={e => set('mob_portal_amount', e.target.value)} placeholder="Enter amount from Mob Portal to validate" />
+            </div>
+            <div className="form-group" style={{ justifyContent:'flex-end', paddingBottom:4 }}>
+              {variance != null && (
+                <div className={`validation-box ${varClass}`}>
+                  <div className="validation-header">
+                    {Math.abs(variance) < 0.01 ? '✅ Invoice matches Mob Portal' : Math.abs(variance) <= 50 ? '⚠️ Minor variance detected' : '🚨 Significant variance — review required'}
+                  </div>
+                  <div>Invoice: AED {fmt(form.total_amount)} &nbsp;|&nbsp; Mob Portal: AED {fmt(form.mob_portal_amount)} &nbsp;|&nbsp; Diff: AED {fmt(Math.abs(variance))}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="section-divider">Payment Terms</div>
+          <div className="form-grid three">
+            <div className="form-group">
+              <label>Payment Terms</label>
+              <select value={form.payment_terms} onChange={e => set('payment_terms', e.target.value)}>
+                <option value={30}>30 Days</option>
+                <option value={45}>45 Days</option>
+                <option value={60}>60 Days</option>
+                <option value={7}>7 Days</option>
+                <option value={14}>14 Days</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Due Date (auto)</label>
+              <input value={dueDate ? fmtDate(dueDate) : '—'} readOnly style={{ background:'#f5f7fa', color:'#64748b' }} />
+            </div>
+            <div className="form-group">
+              <label>Reminder Date (3 days before)</label>
+              <input value={reminderDate ? fmtDate(reminderDate) : '—'} readOnly style={{ background:'#f5f7fa', color:'#64748b' }} />
+            </div>
+          </div>
+
+          {isEdit && (
+            <>
+              <div className="section-divider">Status</div>
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>Status</label>
+                  <select value={form.status || 'Received'} onChange={e => set('status', e.target.value)}>
+                    {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                {form.status === 'Paid' && (
+                  <>
+                    <div className="form-group">
+                      <label>Paid Date</label>
+                      <input type="date" value={form.paid_date || ''} onChange={e => set('paid_date', e.target.value)} />
+                    </div>
+                    <div className="form-group form-full">
+                      <label>Payment Reference</label>
+                      <input value={form.paid_reference || ''} onChange={e => set('paid_reference', e.target.value)} placeholder="Cheque no. / transfer ref" />
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          <div className="section-divider">Notes</div>
+          <textarea value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Any notes about this invoice..." rows={3} style={{ width:'100%' }} />
+        </div>
+
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? <><div className="spinner"/>&nbsp;Saving...</> : isEdit ? '✓ Update Invoice' : '✓ Save Invoice'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── PAY MODAL ────────────────────────────────────────────────────────────────
+function PayModal({ invoice, onClose, onPaid }) {
+  const [ref, setRef] = React.useState('');
+  const [paidDate, setPaidDate] = React.useState(today());
+  const [saving, setSaving] = React.useState(false);
+
+  const handlePay = async () => {
+    setSaving(true);
+    try {
+      const { error } = await sb.from('supplier_invoices').update({ status:'Paid', paid_date: paidDate, paid_reference: ref }).eq('id', invoice.id);
+      if (error) throw error;
+      toast('✅ Invoice marked as Paid', 'success');
+      onPaid();
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth:480 }}>
+        <div className="modal-header">
+          <h2>💳 Mark as Paid</h2>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="pay-confirm">
+            <strong>{invoice.supplier_name}</strong><br/>
+            Invoice {invoice.invoice_number} — AED {fmt(invoice.total_amount)}<br/>
+            <span style={{ fontSize:12, color:'#64748b' }}>Due: {fmtDate(invoice.due_date)}</span>
+          </div>
+          <div className="form-group" style={{ marginBottom:14 }}>
+            <label>Payment Date</label>
+            <input type="date" value={paidDate} onChange={e => setPaidDate(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label>Payment Reference (Cheque / Transfer Ref)</label>
+            <input value={ref} onChange={e => setRef(e.target.value)} placeholder="e.g. CHQ-00123 or TRF-ABC" />
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handlePay} disabled={saving} style={{ background:'#16a34a' }}>
+            {saving ? <><div className="spinner"/>&nbsp;</> : '✅ Confirm Payment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [invoices, setInvoices] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [showForm, setShowForm] = React.useState(false);
+  const [editInv, setEditInv] = React.useState(null);
+  const [payInv, setPayInv] = React.useState(null);
+  const [search, setSearch] = React.useState('');
+  const [statusFilter, setStatusFilter] = React.useState('All');
+  const [activeTab, setActiveTab] = React.useState('invoices');
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await sb.from('supplier_invoices').select('*').order('created_at', { ascending: false });
+    if (!error) {
+      // Auto-update Due Soon status
+      const now = today();
+      const updated = (data || []).map(inv => {
+        if (inv.status === 'Approved' && inv.due_date && daysUntil(inv.due_date) <= 3 && daysUntil(inv.due_date) >= 0) {
+          return { ...inv, status: 'Due Soon' };
+        }
+        return inv;
+      });
+      setInvoices(updated);
+    }
+    setLoading(false);
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  const filtered = invoices.filter(inv => {
+    const matchStatus = statusFilter === 'All' || inv.status === statusFilter;
+    const q = search.toLowerCase();
+    const matchSearch = !q || inv.supplier_name?.toLowerCase().includes(q) || inv.invoice_number?.toLowerCase().includes(q) || inv.description?.toLowerCase().includes(q);
+    return matchStatus && matchSearch;
+  });
+
+  // Stats
+  const stats = React.useMemo(() => {
+    const total = invoices.length;
+    const pending = invoices.filter(i => !['Paid','Disputed'].includes(i.status));
+    const dueSoon = invoices.filter(i => i.status === 'Due Soon');
+    const overdue = invoices.filter(i => i.status !== 'Paid' && i.due_date && daysUntil(i.due_date) < 0);
+    const paidThisMonth = invoices.filter(i => i.status === 'Paid' && i.paid_date?.startsWith(today().substring(0,7)));
+    return {
+      total,
+      pendingAmt: pending.reduce((s,i) => s + (parseFloat(i.total_amount)||0), 0),
+      dueSoonCount: dueSoon.length,
+      overdueCount: overdue.length,
+      paidAmt: paidThisMonth.reduce((s,i) => s + (parseFloat(i.total_amount)||0), 0),
+      variantCount: invoices.filter(i => i.variance && Math.abs(i.variance) > 0.01).length
+    };
+  }, [invoices]);
+
+  const TABS = [
+    { key:'invoices', label:'All Invoices' },
+    { key:'due', label:`Due Soon (${invoices.filter(i=>i.status==='Due Soon').length})` },
+    { key:'approved', label:'Approved' },
+    { key:'paid', label:'Paid' },
+  ];
+
+  const tabFiltered = activeTab === 'invoices' ? filtered
+    : activeTab === 'due' ? filtered.filter(i => i.status === 'Due Soon')
+    : activeTab === 'approved' ? filtered.filter(i => i.status === 'Approved')
+    : filtered.filter(i => i.status === 'Paid');
+
+  return (
+    <>
+      <Toast />
+      {showForm && <InvoiceFormModal invoice={null} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); }} />}
+      {editInv && <InvoiceFormModal invoice={editInv} onClose={() => setEditInv(null)} onSaved={() => { setEditInv(null); load(); }} />}
+      {payInv && <PayModal invoice={payInv} onClose={() => setPayInv(null)} onPaid={() => { setPayInv(null); load(); }} />}
+
+      {/* HEADER */}
+      <div className="page-header">
+        <h1>SATCO Arabia — <span>Supplier Invoices</span></h1>
+        <div className="header-meta">Finance Portal · {today()}</div>
+      </div>
+
+      {/* TABS */}
+      <div className="tabs-bar">
+        {TABS.map(t => <button key={t.key} className={`tab-btn${activeTab===t.key?' active':''}`} onClick={() => setActiveTab(t.key)}>{t.label}</button>)}
+      </div>
+
+      <div className="content">
+
+        {/* STATS */}
+        <div className="stats-row">
+          <div className="stat-card">
+            <div className="stat-label">Total Invoices</div>
+            <div className="stat-value">{stats.total}</div>
+            <div className="stat-sub">All time</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Outstanding (AED)</div>
+            <div className="stat-value">{fmt(stats.pendingAmt)}</div>
+            <div className="stat-sub">Unpaid invoices</div>
+          </div>
+          <div className="stat-card alert">
+            <div className="stat-label">⚠️ Due Soon</div>
+            <div className="stat-value" style={{ color:'#d97706' }}>{stats.dueSoonCount}</div>
+            <div className="stat-sub">Within 3 days</div>
+          </div>
+          <div className="stat-card overdue">
+            <div className="stat-label">🚨 Overdue</div>
+            <div className="stat-value" style={{ color:'#dc2626' }}>{stats.overdueCount}</div>
+            <div className="stat-sub">Past due date</div>
+          </div>
+          <div className="stat-card paid">
+            <div className="stat-label">✅ Paid This Month</div>
+            <div className="stat-value" style={{ color:'#16a34a' }}>{fmt(stats.paidAmt)}</div>
+            <div className="stat-sub">AED</div>
+          </div>
+        </div>
+
+        {/* TOOLBAR */}
+        <div className="toolbar">
+          <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Add Invoice</button>
+          <select className="filter-select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="All">All Statuses</option>
+            {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <div className="spacer" />
+          <input className="search-box" placeholder="Search supplier, invoice no., description…" value={search} onChange={e => setSearch(e.target.value)} />
+          <button className="btn btn-ghost btn-sm" onClick={load}>🔄 Refresh</button>
+        </div>
+
+        {/* TABLE */}
+        <div className="table-wrap">
+          {loading ? (
+            <div className="empty-state"><div className="spinner" style={{ width:32, height:32, borderColor:'rgba(10,22,40,0.15)', borderTopColor:'var(--navy)', margin:'0 auto 12px' }}/><div>Loading invoices…</div></div>
+          ) : tabFiltered.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon">📄</div>
+              <div className="empty-title">No invoices yet</div>
+              <div>Click "+ Add Invoice" to capture the first supplier invoice</div>
+            </div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Supplier</th>
+                  <th>Invoice #</th>
+                  <th>Month</th>
+                  <th>Description</th>
+                  <th className="gold">Amount (AED)</th>
+                  <th>Mob Portal</th>
+                  <th>Variance</th>
+                  <th>Due Date</th>
+                  <th>Days</th>
+                  <th>Terms</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tabFiltered.map(inv => {
+                  const days = daysUntil(inv.due_date);
+                  const daysLabel = days == null ? '—' : days < 0 ? `${Math.abs(days)}d OVERDUE` : days === 0 ? 'TODAY' : `${days}d`;
+                  const daysStyle = days == null ? {} : days < 0 ? { color:'#dc2626', fontWeight:700 } : days <= 3 ? { color:'#d97706', fontWeight:700 } : {};
+                  const varNum = inv.variance;
+                  const varLabel = varNum == null ? '—' : `${varNum >= 0 ? '+' : ''}${fmt(varNum)}`;
+                  const varStyle = varNum == null ? {} : Math.abs(varNum) < 0.01 ? { color:'#16a34a' } : Math.abs(varNum) <= 50 ? { color:'#d97706' } : { color:'#dc2626', fontWeight:700 };
+                  return (
+                    <tr key={inv.id}>
+                      <td style={{ fontWeight:600 }}>{inv.supplier_name}</td>
+                      <td style={{ fontFamily:'monospace', fontSize:12 }}>{inv.invoice_number || '—'}</td>
+                      <td>{inv.invoice_month || '—'}</td>
+                      <td style={{ maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{inv.description || '—'}</td>
+                      <td style={{ fontWeight:700 }}>AED {fmt(inv.total_amount)}</td>
+                      <td>{inv.mob_portal_amount ? `AED ${fmt(inv.mob_portal_amount)}` : <span style={{ color:'#94a3b8' }}>Not set</span>}</td>
+                      <td style={varStyle}>{varLabel}</td>
+                      <td>{fmtDate(inv.due_date)}</td>
+                      <td style={daysStyle}>{inv.status === 'Paid' ? '✅ Paid' : daysLabel}</td>
+                      <td>{inv.payment_terms}d</td>
+                      <td><span className={`badge ${STATUS_BADGE[inv.status] || 'badge-received'}`}>{inv.status}</span></td>
+                      <td>
+                        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                          <button className="btn btn-ghost btn-sm" onClick={() => setEditInv(inv)}>✏️</button>
+                          {inv.status !== 'Paid' && <button className="btn btn-sm" style={{ background:'#16a34a', color:'white' }} onClick={() => setPayInv(inv)}>💳 Pay</button>}
+                          {inv.image_url && <a href={inv.image_url} target="_blank" className="btn btn-ghost btn-sm">📎</a>}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
