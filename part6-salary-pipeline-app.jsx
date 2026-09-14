@@ -1252,7 +1252,9 @@ function SiFormModal({ inv, onClose, onSaved }) {
                       if (!data||data.length===0){alert('No timesheet data found in Mob Portal for this supplier and month.');return;}
                       const rate=parseFloat(form.rate_per_hour)||0;
                       const totalHours=data.reduce((s,r)=>s+(parseFloat(r.total_hours)||0),0);
-                      const mobAmt=rate?Math.round(totalHours*rate*100)/100:totalHours;
+const vatMult = 1 + (parseFloat(form.vat_rate) || 0) / 100;
+const mobAmt = rate ? Math.round(totalHours * rate * vatMult * 100) / 100 : totalHours;
+                      
                       set('mob_portal_amount',mobAmt.toFixed(2));
                     }catch(e){alert('Mob Portal fetch error: '+e.message);}
                   }}>🔄 Fetch from Mob Portal</button>
