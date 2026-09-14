@@ -262,7 +262,7 @@
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://mbwsfwebbrzurpozyxks.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1id3Nmd2ViYnJ6dXJwb3p5eGtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTU3NzIwODcsImV4cCI6MjAzMTM0ODA4N30.Rvr3TmMhkMUIW5UDhOWSGHFO6lbBt5-MDWB7uT80bO0';
-const CLAUDE_API   = 'https://api.anthropic.com/v1/messages';
+// CLAUDE_API removed — scan routes through /api/scan-invoice serverless proxy
 const MOB_API      = 'https://satco-mobilisation.vercel.app/api'; // adjust if differs
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -296,41 +296,19 @@ const toast = (m, t) => toastSetter && toastSetter(m, t);
 
 // ─── AI INVOICE SCAN ──────────────────────────────────────────────────────────
 async function scanInvoiceWithAI(imageBase64, mimeType) {
-  const prompt = `You are an invoice data extractor. Extract the following fields from this invoice image and return ONLY valid JSON — no markdown, no explanation:
-{
-  "supplier_name": "...",
-  "invoice_number": "...",
-  "invoice_date": "YYYY-MM-DD",
-  "invoice_month": "Mon-YY",
-  "description": "...",
-  "hours": null or number,
-  "rate_per_hour": null or number,
-  "sub_total": number,
-  "vat_rate": number (percentage, e.g. 5 or 0),
-  "vat_amount": number,
-  "total_amount": number,
-  "payment_terms": 30 or 45 (default 30 if not stated)
-}`;
-
-  const res = await fetch(CLAUDE_API, {
+  // Routes through /api/scan-invoice serverless function (keeps API key server-side)
+  const res = await fetch('/api/scan-invoice', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1000,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mimeType, data: imageBase64 } },
-          { type: 'text', text: prompt }
-        ]
-      }]
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_base64: imageBase64, media_type: mimeType })
   });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error('Scan error: ' + err);
+  }
   const data = await res.json();
-  const text = data.content?.[0]?.text || '{}';
-  try { return JSON.parse(text.replace(/```json|```/g, '').trim()); }
-  catch { return {}; }
+  if (data.error) throw new Error(data.error);
+  return data.result || {};
 }
 
 // ─── FORM MODAL ───────────────────────────────────────────────────────────────
